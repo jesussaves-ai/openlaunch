@@ -159,7 +159,9 @@ def load_logo(path: str) -> bytes:
 
 
 def build_header(arm9, arm7, twl: bool, logo: bytes, rom_size: int,
-                 capacity: int) -> bytearray:
+                 capacity: int, title: bytes = TITLE,
+                 game_code: bytes = GAME_CODE,
+                 maker_code: bytes = MAKER_CODE) -> bytearray:
     """Return the 0x4000-byte header block."""
     arm9_off, arm9_entry, arm9_ram, arm9_size = arm9
     arm7_off, arm7_entry, arm7_ram, arm7_size = arm7
@@ -173,9 +175,9 @@ def build_header(arm9, arm7, twl: bool, logo: bytes, rom_size: int,
         struct.pack_into("<H", h, off, value & 0xFFFF)
 
     # ---- NTR header ----
-    h[0x00:0x00 + len(TITLE)] = TITLE
-    h[0x0C:0x10] = GAME_CODE
-    h[0x10:0x12] = MAKER_CODE
+    h[0x00:0x00 + len(title)] = title
+    h[0x0C:0x10] = game_code
+    h[0x10:0x12] = maker_code
     h[0x12] = UNIT_CODE_NDS_DSI if twl else UNIT_CODE_NDS
     h[0x13] = 0x00                    # encryption seed select (unencrypted)
     h[0x14] = capacity & 0xFF         # device capacity (128 KiB << capacity)
@@ -242,6 +244,15 @@ def main(argv) -> int:
     ap.add_argument("--arm7-ram", type=lambda s: int(s, 0), default=0x02380000)
     ap.add_argument("--logo-source", default="asm/UNLAUNCH.DSI",
                     help="ROM to copy the 156-byte Nintendo logo from")
+    ap.add_argument("--title", default=None,
+                    help="ROM title, up to 12 bytes (default: %s)"
+                         % TITLE.decode("ascii"))
+    ap.add_argument("--gamecode", default=None,
+                    help="4-byte game code (default: %s)"
+                         % GAME_CODE.decode("ascii"))
+    ap.add_argument("--maker", default=None,
+                    help="2-byte maker code (default: %s)"
+                         % MAKER_CODE.decode("ascii"))
     ap.add_argument("--twl", dest="twl", action="store_true", default=True,
                     help="populate the DSi/TWL extended header (default)")
     ap.add_argument("--no-twl", dest="twl", action="store_false",
@@ -275,10 +286,21 @@ def main(argv) -> int:
 
     logo = load_logo(args.logo_source)
 
+    title = args.title.encode("ascii") if args.title else TITLE
+    game_code = args.gamecode.encode("ascii") if args.gamecode else GAME_CODE
+    maker_code = args.maker.encode("ascii") if args.maker else MAKER_CODE
+    if len(title) > 12:
+        ap.error("--title must be at most 12 bytes (got %d)" % len(title))
+    if len(game_code) != 4:
+        ap.error("--gamecode must be exactly 4 bytes (got %d)" % len(game_code))
+    if len(maker_code) != 2:
+        ap.error("--maker must be exactly 2 bytes (got %d)" % len(maker_code))
+
     header = build_header(
         (arm9_off, arm9_entry, args.arm9_ram, len(arm9_bin)),
         (arm7_off, arm7_entry, args.arm7_ram, len(arm7_bin)),
         args.twl, logo, padded_size, capacity,
+        title=title, game_code=game_code, maker_code=maker_code,
     )
 
     # Fill the padding with 0xFF, matching a blank cartridge/EEPROM image.
@@ -294,6 +316,10 @@ def main(argv) -> int:
     ndstool = find_ndstool()
     print("[*] packed %s (%d bytes, content %d, padded to %d)"
           % (args.out, len(rom), content_size, padded_size))
+    print("    title %-12s  game code %-4s  maker %-2s"
+          % (title.decode("ascii", "replace"),
+             game_code.decode("ascii", "replace"),
+             maker_code.decode("ascii", "replace")))
     print("    ARM9 off 0x%05X  entry 0x%08X  ram 0x%08X  size 0x%X"
           % (arm9_off, arm9_entry, args.arm9_ram, len(arm9_bin)))
     print("    ARM7 off 0x%05X  entry 0x%08X  ram 0x%08X  size 0x%X"

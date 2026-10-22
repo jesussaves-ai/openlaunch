@@ -27,6 +27,32 @@
  * reservation) so it is never confused with the destination image. */
 static u8 s_header_sector[NDS_HEADER_SECTOR_SIZE];
 
+#ifdef LOADER_HOST_TEST
+/*
+ * Host integration tests (tests/test_sd_image.c) run the full staging pipeline
+ * against a synthetic FAT16 volume. They cannot write to the fixed ARM9/ARM7
+ * load addresses and have no IPC peer, so when LOADER_HOST_TEST is defined the
+ * stager redirects every absolute-address write into a scratch arena supplied
+ * by the test and reports the handoff request instead of touching the IPC FIFO.
+ *
+ * The target build never defines LOADER_HOST_TEST, so the production path is
+ * byte-for-byte unchanged.
+ */
+u8 *loader_host_test_stage(u32 addr, u32 len);
+void loader_host_test_handoff(const u32 *args);
+#endif
+
+/* Destination of a payload write: identity on target, a test arena on host. */
+static u8 *loader_stage_ptr(u32 addr, u32 len)
+{
+#ifdef LOADER_HOST_TEST
+    return loader_host_test_stage(addr, len);
+#else
+    (void)len;
+    return (u8 *)(uintptr_t)addr;
+#endif
+}
+
 void loader_plan_from_header(const nds_header_t *hdr, bool extended_ram,
                              loader_plan_t *out)
 {
@@ -165,7 +191,7 @@ nds_load_status_t loader_stage_and_boot(fat_volume_t *vol,
      *    this function is executing.
      */
     if (!fat_read_file_range(vol, entry, hdr.arm9_rom_offset,
-                             (u8 *)(uintptr_t)hdr.arm9_ram_addr,
+                             loader_stage_ptr(hdr.arm9_ram_addr, hdr.arm9_size),
                              hdr.arm9_size, &got, &chain) ||
         got != hdr.arm9_size) {
         if (out != NULL) {
@@ -180,7 +206,8 @@ nds_load_status_t loader_stage_and_boot(fat_volume_t *vol,
      *    handoff, avoiding a self-overwrite.
      */
     if (!fat_read_file_range(vol, entry, hdr.arm7_rom_offset,
-                             (u8 *)(uintptr_t)LOADER_ARM7_BOUNCE_ADDR,
+                             loader_stage_ptr(LOADER_ARM7_BOUNCE_ADDR,
+                                              hdr.arm7_size),
                              hdr.arm7_size, &got, &chain) ||
         got != hdr.arm7_size) {
         if (out != NULL) {
@@ -194,8 +221,9 @@ nds_load_status_t loader_stage_and_boot(fat_volume_t *vol,
      *    (0x027FFE00 on DS / 0x02FFFE00 on a 16 MiB DSi), then make every
      *    staged buffer visible to the ARM7 and the fresh instruction stream.
      */
-    dsi_memcpy((void *)(uintptr_t)(extended_ram ? NDS_HEADER_COPY_ADDR_TWL
-                                                : NDS_HEADER_COPY_ADDR_DS),
+    dsi_memcpy(loader_stage_ptr(extended_ram ? NDS_HEADER_COPY_ADDR_TWL
+                                             : NDS_HEADER_COPY_ADDR_DS,
+                                NDS_HEADER_SECTOR_SIZE),
                s_header_sector, NDS_HEADER_SECTOR_SIZE);
 
     dc_flush_range((const void *)(uintptr_t)hdr.arm9_ram_addr, hdr.arm9_size);
@@ -217,10 +245,15 @@ nds_load_status_t loader_stage_and_boot(fat_volume_t *vol,
         args[2] = hdr.arm7_ram_addr;
         args[3] = hdr.arm7_size;
 
+#ifdef LOADER_HOST_TEST
+        (void)reply;
+        loader_host_test_handoff(args);
+#else
         (void)arm9_ipc_query_args(IPC_CH_SYSTEM, IPC_CMD_BOOT_HANDOFF,
                                   args, IPC_REQ_BOOT_HANDOFF_WORDS,
                                   reply, ARRAY_SIZE(reply),
                                   ARM9_STORAGE_IPC_TIMEOUT);
+#endif
     }
 
     if (out != NULL) {

@@ -960,5 +960,114 @@ boot stub and stacks that perform the handoff; only Main-RAM ARM7 targets
 (e.g. `0x02380000`) are exercised end to end. The boot guard is off by default,
 so this path is inert unless explicitly enabled.
 
+## 26. Deterministic SD image builder + chainload test payload
+
+`make sd-image` builds two artefacts that let the whole read-only chainload
+pipeline be demonstrated end to end in melonDS and checked in CI:
+
+* `build/hello_payload.nds` — a tiny, self-contained ARM9/ARM7 payload; and
+* `build/sdcard.img` — a deterministic 16 MiB MBR + FAT16 SD-card image
+  containing `HELLO.NDS`, `BADCRC.NDS`, `OVERLAP.NDS` and `README.TXT`.
+
+### 26.1 The chainload test payload (`payload/`)
+
+`payload/arm9_payload.s` / `payload/arm7_payload.s` are assembled and linked by
+`payload/arm9.ld` / `payload/arm7.ld` and packed with `scripts/pack_nds.py`:
+
+| Field        | Value        | Why |
+| :----------- | :----------- | :-- |
+| ARM9 load/entry | `0x02004000` | inside Main RAM, well below the loader reservation `0x02100000..0x02280000` |
+| ARM7 load/entry | `0x02380000` | canonical homebrew ARM7 address (Main RAM) |
+| title        | `CHAINLOAD OK` | 12 bytes |
+| game code    | `TSTL`       | |
+| unit code    | `0x02`       | NDS + DSi hybrid, so melonDS keeps TWL mode |
+
+The ARM9 stub clears any leftover master-brightness fade, paints Engine A's
+backdrop bright green (`BGR555 0x03E0`) and Engine B's bright blue
+(`0x7C00`), enables normal 2D display (`DISPCNT` bits 16-17 = 1, forced blank
+clear) and then idles in a VCOUNT-synchronised loop. The ARM7 stub is a bare
+loop. There is no crt0, no stack and no MMIO outside the documented GBATEK map.
+
+`pack_nds.py` gained `--title`, `--gamecode` and `--maker` options (the previous
+`OPENUNLAUNCH` / `HNAA` defaults are unchanged).
+
+### 26.2 The FAT16 image (`scripts/make_sd_image.py`)
+
+Pure Python, no `sudo`/`mount`/`mtools`; the MBR, BPB, FAT tables, root
+directory and data clusters are written directly and deterministically (fixed
+geometry, fixed volume serial, no timestamps):
+
+| Item              | Value |
+| :---------------- | :---- |
+| image size        | 16 MiB (32768 sectors) |
+| MBR partition 1   | type `0x06` (FAT16), LBA 64, 32704 sectors |
+| bytes/sector      | 512 |
+| sectors/cluster   | 4 (2 KiB) |
+| FATs              | 2 |
+| root entries      | 512 (32 sectors) |
+
+Files:
+
+| File          | Content |
+| :------------ | :------ |
+| `HELLO.NDS`   | the payload, 32 KiB across a **fragmented** 16-cluster chain (every other cluster) so `fat_read_file_range()` exercises the multi-cluster walk |
+| `BADCRC.NDS`  | synthetic `.nds` with a deliberately wrong stored header CRC16 (`NDS_ERR_BAD_CRC`) |
+| `OVERLAP.NDS` | synthetic `.nds` with a valid CRC but an ARM9 load address of `0x02200000` (`NDS_ERR_OVERLAP_BOOTLOADER`) |
+| `README.TXT`  | a non-`.nds` file the browser filter must hide |
+
+### 26.3 Host integration test (`tests/test_sd_image.c`)
+
+`make host-test` first builds `build/sdcard.img`, then `tests/test_sd_image.c`
+loads it and drives the real production functions in order:
+
+```
+fat_mbr_find_fat_partition() -> fat_mount() -> fat_dir_iter_*()
+    -> loader_validate_file() -> loader_stage_and_boot() (dry run)
+```
+
+asserting that `HELLO.NDS` validates as `NDS_LOAD_OK` and stages cleanly (both
+payloads copied, one `IPC_CMD_BOOT_HANDOFF` request), that `BADCRC.NDS` is
+rejected with `NDS_ERR_BAD_CRC`, that `OVERLAP.NDS` is rejected with
+`NDS_ERR_OVERLAP_BOOTLOADER`, and that `README.TXT` is hidden by the
+`.nds`/`.srl` filter. It also streams the whole `HELLO.NDS` back through the
+cluster-chain reader and compares the staged payloads against their ROM offsets.
+
+Because the host cannot write to the fixed load addresses or reach an IPC peer,
+`src/arm9/loader.c` is compiled with `-DLOADER_HOST_TEST` for this test only;
+that redirects the absolute-address writes into a scratch arena and reports the
+handoff request instead of touching hardware. The target build never defines the
+macro, so the production path is unchanged.
+
+`scripts/verify_sd_image.py` independently re-checks the generated image's MBR,
+BPB, root entries, FAT chains and the two negative-test headers, and is wired
+into `make verify` together with a `verify_rom.py` pass over
+`build/hello_payload.nds`.
+
+### 26.4 Running it in melonDS
+
+Build the ROM and image (optionally with the live handoff enabled):
+
+```
+make clean
+make rom sd-image
+make CHAINLOAD_BOOT=1 rom sd-image     # arms the real dual-CPU branch
+```
+
+Mount the image in DSi mode:
+
+* **Config → Emu settings → Console type:** **DSi**.
+* **Config → Emu settings → DSi-mode → DSi SD card:** point at
+  `build/sdcard.img` (enable the SD card).
+* Provide the DSi BIOS (`bios9i.bin`, `bios7i.bin`, `bios9.bin`, `bios7.bin`)
+  and a matching NAND/firmware, or use melonDS' direct-boot path.
+
+Then use menu item `[6] Browse SD Card (.nds)`, select `HELLO.NDS`, press `Y`
+to verify (`LOADABLE: YES`) and `A` to stage. Without
+`ENABLE_CHAINLOAD_BOOT` the UI reports `STAGE: DRY-RUN OK`; with it, the payload
+takes over and the screens turn **green (top)** / **blue (bottom)**, which is
+the unmistakable handoff proof. Selecting `BADCRC.NDS` or `OVERLAP.NDS` shows
+the specific rejection reason instead.
+
+
 
 

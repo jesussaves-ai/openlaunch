@@ -11,6 +11,7 @@
 # Targets:
 #   make            build the runnable ROM (build/dsi_bootloader.nds)
 #   make rom        alias for the above
+#   make sd-image   build build/hello_payload.nds + build/sdcard.img
 #   make check      strict cross-compile of every object (-Werror)
 #   make verify     validate the packaged ROM (CRCs, offsets, no NAND writes)
 #   make host-test  host unit tests for the hardware-independent logic
@@ -37,6 +38,14 @@ ARM9_ELF   := $(BUILD)/arm9.elf
 ARM7_ELF   := $(BUILD)/arm7.elf
 ARM9_BIN   := $(BUILD)/arm9.bin
 ARM7_BIN   := $(BUILD)/arm7.bin
+
+# ---- Chainload test payload + deterministic SD image ---------------------
+HELLO_ROM        := $(BUILD)/hello_payload.nds
+SD_IMAGE         := $(BUILD)/sdcard.img
+PAYLOAD_ARM9_ELF := $(BUILD)/payload/arm9.elf
+PAYLOAD_ARM7_ELF := $(BUILD)/payload/arm7.elf
+PAYLOAD_ARM9_BIN := $(BUILD)/payload/arm9.bin
+PAYLOAD_ARM7_BIN := $(BUILD)/payload/arm7.bin
 
 # ---- Shared freestanding flags -------------------------------------------
 CFLAGS_COMMON := -std=c99 -Wall -Wextra -Werror -Os -g \
@@ -80,7 +89,7 @@ OBJS_ARM7 := $(patsubst %.c,$(BUILD)/arm7/%.o,$(SRCS_ARM7)) \
 OBJS_ARM9 := $(patsubst %.c,$(BUILD)/arm9/%.o,$(SRCS_ARM9)) \
              $(patsubst %.s,$(BUILD)/arm9/%.o,$(ASM_ARM9))
 
-.PHONY: all rom run check verify size clean host-test arm9-decompile
+.PHONY: all rom run check verify size clean host-test arm9-decompile sd-image
 
 all: rom
 
@@ -132,12 +141,57 @@ $(ROM): $(ARM9_BIN) $(ARM7_BIN) scripts/pack_nds.py
 		--arm7 $(ARM7_BIN) --arm7-elf $(ARM7_ELF) \
 		--twl --out $@
 
+# ---- Chainload test payload (build/hello_payload.nds) --------------------
+# A tiny bare-metal ARM9/ARM7 stub linked outside the bootloader reservation
+# (ARM9 0x02004000, ARM7 0x02380000) and packed as a loadable .nds. It paints
+# the backdrops and idles, so a live `make CHAINLOAD_BOOT=1` handoff is obvious.
+$(BUILD)/payload/arm9_payload.o: payload/arm9_payload.s
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS_ARM9) -c $< -o $@
+
+$(BUILD)/payload/arm7_payload.o: payload/arm7_payload.s
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS_ARM7) -c $< -o $@
+
+$(PAYLOAD_ARM9_ELF): $(BUILD)/payload/arm9_payload.o payload/arm9.ld
+	$(CC) $(CFLAGS_ARM9) $(LDFLAGS_FREESTANDING) -T payload/arm9.ld \
+		-Wl,-Map=$(BUILD)/payload/arm9.map \
+		$(BUILD)/payload/arm9_payload.o -lgcc -o $@
+
+$(PAYLOAD_ARM7_ELF): $(BUILD)/payload/arm7_payload.o payload/arm7.ld
+	$(CC) $(CFLAGS_ARM7) $(LDFLAGS_FREESTANDING) -T payload/arm7.ld \
+		-Wl,-Map=$(BUILD)/payload/arm7.map \
+		$(BUILD)/payload/arm7_payload.o -lgcc -o $@
+
+$(PAYLOAD_ARM9_BIN): $(PAYLOAD_ARM9_ELF)
+	$(OBJCOPY) -O binary $< $@
+
+$(PAYLOAD_ARM7_BIN): $(PAYLOAD_ARM7_ELF)
+	$(OBJCOPY) -O binary $< $@
+
+$(HELLO_ROM): $(PAYLOAD_ARM9_BIN) $(PAYLOAD_ARM7_BIN) scripts/pack_nds.py
+	python3 scripts/pack_nds.py \
+		--arm9 $(PAYLOAD_ARM9_BIN) --arm9-elf $(PAYLOAD_ARM9_ELF) \
+		--arm7 $(PAYLOAD_ARM7_BIN) --arm7-elf $(PAYLOAD_ARM7_ELF) \
+		--arm9-ram 0x02004000 --arm7-ram 0x02380000 \
+		--title "CHAINLOAD OK" --gamecode TSTL --twl --out $@
+
+# ---- Deterministic MBR + FAT16 SD image (build/sdcard.img) ---------------
+$(SD_IMAGE): $(HELLO_ROM) scripts/make_sd_image.py
+	python3 scripts/make_sd_image.py --hello $(HELLO_ROM) --out $@
+
+sd-image: $(HELLO_ROM) $(SD_IMAGE)
+
 # ---- Verification harness ------------------------------------------------
-verify: $(ROM)
+verify: $(ROM) $(HELLO_ROM) $(SD_IMAGE)
 	python3 scripts/verify_rom.py --rom $(ROM) \
 		--arm9-elf $(ARM9_ELF) --arm7-elf $(ARM7_ELF) \
 		--arm9-bin $(ARM9_BIN) --arm7-bin $(ARM7_BIN) \
 		--arm7-map $(BUILD)/arm7.map --arm9-map $(BUILD)/arm9.map
+	python3 scripts/verify_rom.py --rom $(HELLO_ROM) \
+		--arm9-elf $(PAYLOAD_ARM9_ELF) --arm7-elf $(PAYLOAD_ARM7_ELF) \
+		--arm9-bin $(PAYLOAD_ARM9_BIN) --arm7-bin $(PAYLOAD_ARM7_BIN)
+	python3 scripts/verify_sd_image.py --image $(SD_IMAGE) --hello $(HELLO_ROM)
 
 # ---- Memory footprint ----------------------------------------------------
 size: $(ARM9_ELF) $(ARM7_ELF)
@@ -194,8 +248,15 @@ HOST_SRCS_LOADER := tests/test_loader.c \
                     src/common/mem.c src/common/cache.c src/arm9/ipc.c
 # SCFG/MBK pure decoders (mode, clock, RAM window, slot packer).
 HOST_SRCS_SCFG := tests/test_scfg.c src/arm9/scfg.c
+# End-to-end chainload pipeline over the generated build/sdcard.img. loader.c is
+# compiled with -DLOADER_HOST_TEST so it stages into the test's scratch arena.
+HOST_SRCS_SDIMG := tests/test_sd_image.c \
+                   src/arm9/loader.c \
+                   src/common/fat_ro.c src/common/nds_header.c \
+                   src/common/mem.c src/common/cache.c src/arm9/ipc.c
+HOST_CFLAGS_SDIMG := $(HOST_CFLAGS) -DLOADER_HOST_TEST
 
-host-test:
+host-test: $(SD_IMAGE)
 	@mkdir -p $(BUILD)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_mem $(HOST_SRCS_MEM)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_arm9 $(HOST_SRCS_ARM9)
@@ -205,6 +266,7 @@ host-test:
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_fat $(HOST_SRCS_FAT)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_loader $(HOST_SRCS_LOADER)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_scfg $(HOST_SRCS_SCFG)
+	$(HOST_CC) $(HOST_CFLAGS_SDIMG) -o $(BUILD)/host_test_sd_image $(HOST_SRCS_SDIMG)
 	$(BUILD)/host_test_mem
 	$(BUILD)/host_test_arm9
 	$(BUILD)/host_test_console
@@ -213,3 +275,4 @@ host-test:
 	$(BUILD)/host_test_fat
 	$(BUILD)/host_test_loader
 	$(BUILD)/host_test_scfg
+	$(BUILD)/host_test_sd_image $(SD_IMAGE)

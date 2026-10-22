@@ -1,6 +1,6 @@
 # tests/
 
-Five layers of verification.
+Layers of verification.
 
 ## 1. Host unit tests — shared primitives
 
@@ -78,16 +78,42 @@ write-protect field layout. Built as `build/host_test_scfg`.
 Built as `build/host_test_loader` (`src/arm9/loader.c` compiles on the host with
 the hardware CPU handoff compiled out).
 
+## 6d. Host integration test — chainload SD image
+
+`tests/test_sd_image.c` mounts the deterministic image built by
+`scripts/make_sd_image.py` (`build/sdcard.img`) and drives the real production
+pipeline:
+
+```
+fat_mbr_find_fat_partition() -> fat_mount() -> fat_dir_iter_*()
+    -> loader_validate_file() -> loader_stage_and_boot() (dry run)
+```
+
+It asserts that `HELLO.NDS` is listed, validates as `NDS_LOAD_OK` and stages
+cleanly (both payloads copied and exactly one `IPC_CMD_BOOT_HANDOFF` request),
+that `BADCRC.NDS` is rejected with `NDS_ERR_BAD_CRC`, that `OVERLAP.NDS` is
+rejected with `NDS_ERR_OVERLAP_BOOTLOADER`, and that `README.TXT` is hidden by
+the `.nds`/`.srl` filter. It also streams the whole multi-cluster `HELLO.NDS`
+back and compares the staged payloads against their ROM offsets. Built as
+`build/host_test_sd_image` with `-DLOADER_HOST_TEST`, which redirects the
+absolute-address staging writes into a scratch arena (the target build is
+unaffected).
+
+`make host-test` builds `build/sdcard.img` first, so this suite always runs
+against the real generated artefact.
+
 Run all of them with `make host-test`.
 
 ## 7. ROM packaging + static verification
 
 ```
 make              # link build/arm{9,7}.elf -> .bin -> build/dsi_bootloader.nds
-make verify       # validate the packaged ROM
+make sd-image     # build build/hello_payload.nds + build/sdcard.img
+make verify       # validate the packaged ROM, the payload and the SD image
 ```
 
-`make verify` runs `scripts/verify_rom.py`, which asserts:
+`make verify` runs `scripts/verify_rom.py` (on both `build/dsi_bootloader.nds`
+and `build/hello_payload.nds`), which asserts:
 
 * the Nintendo-logo CRC16 (`0x15C`) and header CRC16 (`0x15E`) recompute;
 * ARM9/ARM7 ROM offsets, sizes and RAM load addresses are consistent and match
@@ -97,6 +123,12 @@ make verify       # validate the packaged ROM
 * the `0x012` unit code is a valid value and, when DSi-capable, is the
   NDS+DSi hybrid `0x02` with a non-zero TWL region mask;
 * no eMMC/NAND write symbols (AGENTS.md §5) are present in the linker maps.
+
+It then runs `scripts/verify_sd_image.py`, which independently re-checks the
+generated `build/sdcard.img`: the MBR signature and FAT16 partition entry, the
+BPB geometry, the root-directory entries, the fragmented multi-cluster
+`HELLO.NDS` chain, and the two negative-test headers (`BADCRC.NDS` bad CRC16,
+`OVERLAP.NDS` ARM9 range inside the bootloader reservation).
 
 ## 8. melonDS smoke test
 
