@@ -58,8 +58,14 @@ SECTIONS
     } > MAIN_RAM
     __bss_end__ = .;
 
-    /* ---- IWRAM-resident code/data (LMA after .data) ------------------ */
-    .iwram : AT (LOADADDR(.data) + SIZEOF(.data))
+    /*
+     * ---- IWRAM-resident code/data (LMA after .data) ------------------
+     *
+     * The crt0 relocation loop copies 32-bit words, so the load address must
+     * be 4-byte aligned. ALIGN() guards against an unaligned .data end (which
+     * silently rotates every word on ARM7TDMI's unaligned LDR).
+     */
+    .iwram : AT (ALIGN(LOADADDR(.data) + SIZEOF(.data), 32))
     {
         __iwram_start__ = .;
         KEEP(*(.iwram))

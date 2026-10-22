@@ -408,6 +408,134 @@ static void ipc_handle_read_firmware(const u32 *args, u32 nargs)
     ipc_reply_read(IPC_CMD_READ_FIRMWARE, flags, done);
 }
 
+/* ------------------------------------------------------------------ */
+/* Dual-CPU chainload handoff                                          */
+/* ------------------------------------------------------------------ */
+
+/* ARM7 DMA channel register block (same layout as the ARM9's). */
+#define ARM7_DMA_BASE   0x040000B0u
+#define ARM7_DMA_STRIDE 0x0Cu
+
+typedef struct {
+    u32 entry;   /* final ARM7 entry point                     */
+    u32 src;     /* staged payload in shared Main RAM          */
+    u32 dst;     /* final ARM7 load address                    */
+    u32 size;    /* bytes to copy                              */
+} arm7_boot_req_t;
+
+static arm7_boot_req_t s_boot_req;
+static volatile bool s_boot_pending = false;
+
+/*
+ * Copy the staged ARM7 payload and take the handoff.
+ *
+ * The whole routine is placed in IWRAM because the destination may alias the
+ * ARM7's own Main-RAM image (the canonical ARM7 load address is 0x02380000,
+ * exactly where this bootloader runs). All state is snapshotted into local
+ * variables (the stack lives in IWRAM) before the copy, and every IRQ source,
+ * timer and DMA channel is stopped first.
+ */
+void arm7_boot_poll(void) __attribute__((section(".iwram"), noinline));
+
+void arm7_boot_poll(void)
+{
+    u32 entry;
+    u32 src;
+    u32 dst;
+    u32 size;
+
+    if (!s_boot_pending) {
+        return;
+    }
+    s_boot_pending = false;
+
+    entry = s_boot_req.entry;
+    src   = s_boot_req.src;
+    dst   = s_boot_req.dst;
+    size  = s_boot_req.size;
+
+#if defined(ENABLE_CHAINLOAD_BOOT) && \
+    (defined(__arm__) || defined(__thumb__))
+    {
+        u32 i;
+
+        (void)irq_disable_all();
+        REG32(IRQ_IE) = 0u;
+        REG32(IRQ_IF) = 0xFFFFFFFFu;
+        for (i = 0u; i < 4u; i++) {
+            REG16(TIMER0_CNT + i * 4u) = 0u;
+        }
+        for (i = 0u; i < 4u; i++) {
+            REG32(ARM7_DMA_BASE + i * ARM7_DMA_STRIDE + 0x0Cu) = 0u;
+        }
+
+        if (size != 0u && dst != 0u && src != dst) {
+            vu32 *d = (vu32 *)(uintptr_t)dst;
+            const vu32 *s = (const vu32 *)(uintptr_t)src;
+            u32 words = size >> 2;
+            u32 tail = size & 3u;
+            u32 off = words << 2;
+
+            for (i = 0u; i < words; i++) {
+                d[i] = s[i];
+            }
+            for (i = 0u; i < tail; i++) {
+                ((vu8 *)(uintptr_t)dst)[off + i] =
+                    ((const vu8 *)(uintptr_t)src)[off + i];
+            }
+        }
+
+        ((void (*)(void))(uintptr_t)entry)();
+    }
+
+    for (;;) {
+    }
+#else
+    /* Boot guard disarmed: record and acknowledge only (dry run). */
+    (void)entry;
+    (void)src;
+    (void)dst;
+    (void)size;
+#endif
+}
+
+/*
+ * IPC_CMD_BOOT_HANDOFF — record a staged ARM7 payload and, when the boot guard
+ * is armed, take the handoff from the ARM7 main loop (arm7_boot_poll()).
+ */
+static void ipc_handle_boot_handoff(const u32 *args, u32 nargs)
+{
+    u32 flags = 0u;
+
+    if (nargs < IPC_REQ_BOOT_HANDOFF_WORDS) {
+        flags = IPC_IO_FLAG_BAD_RANGE;
+    } else {
+        u32 entry = args[0];
+        u32 src   = args[1];
+        u32 dst   = args[2];
+        u32 size  = args[3];
+
+        if (size != 0u && !ipc_addr_is_shared_ram(src, size)) {
+            flags = IPC_BOOT_FLAG_BAD_ADDR;
+        } else {
+            s_boot_req.entry = entry;
+            s_boot_req.src   = src;
+            s_boot_req.dst   = dst;
+            s_boot_req.size  = size;
+            flags = IPC_BOOT_FLAG_ACCEPTED;
+#ifndef ENABLE_CHAINLOAD_BOOT
+            flags |= IPC_BOOT_FLAG_DRYRUN;
+#endif
+            s_boot_pending = true;
+        }
+    }
+
+    ipc_fifo_send(IPC_CH_SYSTEM,
+                  ipc_reply_header(IPC_CMD_BOOT_HANDOFF, IPC_REPLY_BOOT_WORDS,
+                                   0u));
+    ipc_fifo_send(IPC_CH_SYSTEM, flags);
+}
+
 /*
  * Route one fully-assembled command to its handler.
  *
@@ -439,6 +567,9 @@ static void ipc_dispatch_command(u32 opcode, const u32 *args, u32 nargs)
         break;
     case IPC_CMD_READ_FIRMWARE:
         ipc_handle_read_firmware(args, nargs);
+        break;
+    case IPC_CMD_BOOT_HANDOFF:
+        ipc_handle_boot_handoff(args, nargs);
         break;
     case IPC_CMD_SET_STATE:
     case IPC_CMD_QUERY_STATE:

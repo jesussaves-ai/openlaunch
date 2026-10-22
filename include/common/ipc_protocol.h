@@ -75,12 +75,38 @@
  */
 #define IPC_CMD_READ_FIRMWARE   0x1011u   /* -> flags, bytes transferred    */
 
+/*
+ * ---- Chainload handoff (dual-CPU) --------------------------------------
+ *
+ * The ARM9 stages the selected image and asks the ARM7 to take the handoff.
+ * The ARM7 copies the staged ARM7 payload from shared Main RAM to its final
+ * address (Main RAM or ARM7-private WRAM) and then, when the boot guard is
+ * armed, branches to it.
+ *
+ * IPC_CMD_BOOT_HANDOFF request payload (IPC_REQ_BOOT_HANDOFF_WORDS words):
+ *   arg0  arm7_entry  final ARM7 entry point
+ *   arg1  arm7_src    staged ARM7 payload address in shared Main RAM
+ *   arg2  arm7_dst    final ARM7 load address
+ *   arg3  arm7_size   number of bytes to copy
+ *
+ * Reply (IPC_REPLY_BOOT_WORDS words):
+ *   word 0  reply header
+ *   word 1  IPC_BOOT_FLAG_* result
+ */
+#define IPC_CMD_BOOT_HANDOFF    0x1012u
+
 /* Request payload word counts (excluding the request header). */
 #define IPC_REQ_READ_SECTOR_WORDS   4u
 #define IPC_REQ_READ_FIRMWARE_WORDS 3u
+#define IPC_REQ_BOOT_HANDOFF_WORDS  4u
 
 /* Largest request we will assemble (bounds the ARM7-side argument buffer). */
 #define IPC_REQUEST_MAX_WORDS       4u
+
+/* IPC_CMD_BOOT_HANDOFF result flags (reply payload word 0). */
+#define IPC_BOOT_FLAG_ACCEPTED  BIT(0)   /* handoff request recorded       */
+#define IPC_BOOT_FLAG_DRYRUN    BIT(1)   /* built without the boot guard   */
+#define IPC_BOOT_FLAG_BAD_ADDR  BIT(2)   /* staged payload not in shared RAM */
 
 /* Storage device selector for IPC_CMD_READ_SECTOR. */
 #define IPC_STORAGE_DEV_SD      0u
@@ -106,6 +132,7 @@
 #define IPC_REPLY_FW_WORDS      2u
 #define IPC_REPLY_EXTKEY_WORDS  1u
 #define IPC_REPLY_READ_WORDS    2u   /* flags, transferred (sectors/bytes) */
+#define IPC_REPLY_BOOT_WORDS    1u   /* handoff result flags               */
 
 /* IPC_CMD_GET_RTC status bits (reply header status field). */
 #define IPC_RTC_STATUS_VALID     BIT(0)

@@ -77,8 +77,9 @@ SECTIONS
     /*
      * Tightly-coupled memory. The VMA lives in ITCM/DTCM while the load image
      * is appended directly after .data so `objcopy -O binary` stays compact.
+     * The LMA is aligned because the crt0 relocation copies 32-bit words.
      */
-    .itcm : AT (LOADADDR(.data) + SIZEOF(.data))
+    .itcm : AT (ALIGN(LOADADDR(.data) + SIZEOF(.data), 32))
     {
         __itcm_start__ = .;
         KEEP(*(.itcm))
@@ -87,7 +88,7 @@ SECTIONS
     } > ITCM
     __itcm_lma__ = LOADADDR(.itcm);
 
-    .dtcm : AT (LOADADDR(.data) + SIZEOF(.data) + SIZEOF(.itcm))
+    .dtcm : AT (ALIGN(LOADADDR(.itcm) + SIZEOF(.itcm), 32))
     {
         __dtcm_start__ = .;
         KEEP(*(.dtcm))

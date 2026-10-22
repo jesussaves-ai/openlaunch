@@ -59,6 +59,25 @@ clock decode (67.03/134.06 MHz), the `SCFG_EXT` Main-RAM-window decode, the
 `mbk_slot_entry()` NWRAM slot packer, the MBK default slot maps and the `MBK9`
 write-protect field layout. Built as `build/host_test_scfg`.
 
+## 6c. Host unit tests — chainloader
+
+`tests/test_loader.c` covers the safe read-only `.nds`/`.srl` loader:
+
+* `nds_header_validate_loadable()` (`src/common/nds_header.c`) against valid
+  homebrew headers, bad CRC16, ARM9/ARM7 out-of-bounds and unaligned ranges,
+  bootloader-reservation overlap, ARM7-WRAM targets and truncated files, plus
+  the platform default bounds (`nds_load_bounds_default()`).
+* `fat_read_file_range()` (`src/common/fat_ro.c`) across fragmented FAT16 and
+  FAT32 cluster chains, byte offsets and EOF clamping, and the corrupt-chain
+  guards: self-loop / two-cluster ping-pong (`FAT_CHAIN_ERR_LOOP`), bad/free
+  clusters (`FAT_CHAIN_ERR_BAD_CLUSTER`), premature EOC
+  (`FAT_CHAIN_ERR_TRUNCATED`) and a failed sector read
+  (`FAT_CHAIN_ERR_IO`).
+* `loader_validate_file()` end to end over a synthetic volume.
+
+Built as `build/host_test_loader` (`src/arm9/loader.c` compiles on the host with
+the hardware CPU handoff compiled out).
+
 Run all of them with `make host-test`.
 
 ## 7. ROM packaging + static verification
@@ -101,11 +120,14 @@ loads `build/dsi_bootloader.nds`. The ROM now renders a text console:
   | `[3]`| Probe SD/TMIO read-only status                       |
   | `[4]`| Decompress the embedded LZ77 vector                  |
   | `[5]`| Halt the CPU safely                                  |
-  | `[6]`| Browse the SD card's FAT volume, load a `.nds` header|
+  | `[6]`| Browse the SD card's FAT volume, verify (`Y`/`SELECT`) and chainload (`A`) a `.nds` image |
   | `[7]`| Unlock and initialise SCFG / NWRAM (MBK1-9)          |
 
-  The top screen also shows the mounted FAT type and, after loading a file in
-  the browser, the NDS title, game code and header-CRC status (`BOOT :`).
+  Inside `[6]`, the top screen shows the mounted FAT type and, after a
+  verify/dry-run, the NDS title, game code, unit code, ARM9/ARM7
+  entry/load/size and `LOADABLE: YES` (or the specific rejection reason);
+  `A` stages the image and reports `STAGE: DRY-RUN OK` unless the ROM was built
+  with `ENABLE_CHAINLOAD_BOOT`.
 
 ### Recommended melonDS configuration
 

@@ -45,6 +45,14 @@ CFLAGS_COMMON := -std=c99 -Wall -Wextra -Werror -Os -g \
                  -ffunction-sections -fdata-sections \
                  $(INCLUDES)
 
+# Chainload boot guard. By default the staged image is verified, staged and the
+# IPC handoff prepared, but the CPU never branches into it (dry run). Build with
+# `make CHAINLOAD_BOOT=1` to compile in the real dual-CPU handoff; `make clean`
+# when toggling. See docs/hardware_notes.md §25.
+ifeq ($(CHAINLOAD_BOOT),1)
+CFLAGS_COMMON += -DENABLE_CHAINLOAD_BOOT
+endif
+
 # ---- Per-CPU flags -------------------------------------------------------
 CFLAGS_ARM7 := $(CFLAGS_COMMON) -mcpu=arm7tdmi -marm -mfloat-abi=soft
 CFLAGS_ARM9 := $(CFLAGS_COMMON) -mcpu=arm946e-s -marm -mfloat-abi=soft
@@ -160,7 +168,8 @@ HOST_SRCS_ARM9 := tests/test_arm9.c \
                   src/arm9/mpu.c src/arm9/irq.c src/arm9/ipc.c \
                   src/arm9/video.c src/arm9/dma.c src/arm9/scfg.c \
                   src/arm9/boot.c src/arm9/console.c src/arm9/font8x8.c \
-                  src/arm9/input.c src/arm9/menu.c src/arm9/storage.c
+                  src/arm9/input.c src/arm9/menu.c src/arm9/storage.c \
+                  src/arm9/loader.c
 # Console tile/glyph packer + bounded formatters.
 HOST_SRCS_CONSOLE := tests/test_console.c \
                      src/arm9/console.c src/arm9/font8x8.c src/common/mem.c
@@ -169,7 +178,7 @@ HOST_SRCS_MENU := tests/test_menu.c \
                   src/arm9/menu.c src/arm9/input.c \
                   src/arm9/console.c src/arm9/font8x8.c \
                   src/arm9/ipc.c src/arm9/scfg.c src/arm9/mpu.c \
-                  src/arm9/storage.c \
+                  src/arm9/storage.c src/arm9/loader.c \
                   src/common/mem.c src/common/lz77.c src/common/cache.c \
                   src/common/fat_ro.c src/common/nds_header.c
 # ARM7 TMIO SD/MMC engine, with the register accesses mocked out.
@@ -178,6 +187,11 @@ HOST_CFLAGS_SDMMC := $(HOST_CFLAGS) -DSDMMC_IO_HOOKS
 # Read-only FAT16/FAT32 parser + NDS header validator.
 HOST_SRCS_FAT := tests/test_fat_ro.c \
                  src/common/fat_ro.c src/common/nds_header.c src/common/mem.c
+# Chainloader safety gate + bounded cluster-chain reader.
+HOST_SRCS_LOADER := tests/test_loader.c \
+                    src/arm9/loader.c \
+                    src/common/fat_ro.c src/common/nds_header.c \
+                    src/common/mem.c src/common/cache.c src/arm9/ipc.c
 # SCFG/MBK pure decoders (mode, clock, RAM window, slot packer).
 HOST_SRCS_SCFG := tests/test_scfg.c src/arm9/scfg.c
 
@@ -189,6 +203,7 @@ host-test:
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_menu $(HOST_SRCS_MENU)
 	$(HOST_CC) $(HOST_CFLAGS_SDMMC) -o $(BUILD)/host_test_sdmmc $(HOST_SRCS_SDMMC)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_fat $(HOST_SRCS_FAT)
+	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_loader $(HOST_SRCS_LOADER)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_scfg $(HOST_SRCS_SCFG)
 	$(BUILD)/host_test_mem
 	$(BUILD)/host_test_arm9
@@ -196,4 +211,5 @@ host-test:
 	$(BUILD)/host_test_menu
 	$(BUILD)/host_test_sdmmc
 	$(BUILD)/host_test_fat
+	$(BUILD)/host_test_loader
 	$(BUILD)/host_test_scfg

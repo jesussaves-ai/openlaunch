@@ -83,6 +83,9 @@ Consequences:
 | FAT16/FAT32 parser   | clean-room (read-only, zero-allocation)             | `src/common/fat_ro.c`     | **new**       |
 | NDS header validator | clean-room (CRC16 + title/gamecode)                 | `src/common/nds_header.c` | **new**       |
 | SD browser (ARM9)    | clean-room (mount + list + header load)             | `src/arm9/menu.c`         | **new**       |
+| NDS load validator   | clean-room (CRC16 + ARM9/ARM7 range safety)         | `src/common/nds_header.c` | **new**       |
+| Chainload stager     | clean-room (bounded cluster stream + handoff)       | `src/arm9/loader.c`       | **new**       |
+| Dual-CPU handoff     | clean-room (`IPC_CMD_BOOT_HANDOFF`)                 | `src/arm7/ipc.c`          | **new**       |
 
 ## 2. Next steps
 
@@ -109,6 +112,14 @@ Consequences:
    mounts the volume over the delegated sector reader; menu item
    `[6] Browse SD Card (.nds)` lists `.nds`/`.srl` files and loads the selected
    header via `src/common/nds_header.c` — see docs/hardware_notes.md §21.)*
+7. Safe read-only `.nds`/`.srl` chainloader. *(done: header load-range
+   validation (`nds_header_validate_loadable()`), a bounded FAT cluster-chain
+   reader (`fat_read_file_range()`), the ARM9 staging pipeline
+   (`src/arm9/loader.c`) and the dual-CPU `IPC_CMD_BOOT_HANDOFF` handoff
+   (`src/arm7/ipc.c`). The actual CPU branch is gated behind
+   `ENABLE_CHAINLOAD_BOOT` (dry run by default) — see
+   docs/hardware_notes.md §25. Remaining polish: a hardware/emulator run of a
+   real multi-MiB image and the ARM7-WRAM self-copy edge case.)*
 
 ## 3. Recent work (C99 bootloader bring-up)
 
@@ -162,3 +173,14 @@ Consequences:
   render all of it or a specific failure reason. No write command exists outside
   `ENABLE_NAND_WRITE_DANGER` (docs §24, AGENTS.md §5). Covered by the extended
   `tests/test_sdmmc.c` and `tests/test_fat_ro.c`.
+* **Read-only chainloader + dual-CPU handoff** — `nds_header_validate_loadable()`
+  now enforces the CRC16 and the ARM9/ARM7 load-range safety window
+  (`src/common/nds_header.c`), and `fat_read_file_range()` streams a bounded byte
+  range with FAT-chain loop/bad-cluster/truncation guards (`src/common/fat_ro.c`).
+  Menu `[6]` gained a **Y** verify/dry-run inspect and an **A** stage+handoff
+  action; `src/arm9/loader.c` stages the ARM9 payload, bounces the ARM7 payload
+  through shared RAM, copies the header to `0x027FFE00`/`0x02FFFE00` and sends
+  `IPC_CMD_BOOT_HANDOFF` to `src/arm7/ipc.c`. The CPU branch is gated behind
+  `ENABLE_CHAINLOAD_BOOT` (dry run by default). `ld/arm7.ld`/`ld/arm9.ld` now
+  align the IWRAM/ITCM/DTCM load addresses for the word-copy crt0 relocation.
+  Covered by `tests/test_loader.c` (docs §25).

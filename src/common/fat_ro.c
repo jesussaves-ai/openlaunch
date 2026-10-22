@@ -524,70 +524,214 @@ bool fat_is_nds_entry(const fat_file_entry_t *entry)
 
 /* ---- File data --------------------------------------------------------- */
 
-bool fat_read_file(fat_volume_t *vol, const fat_file_entry_t *entry,
-                   u8 *dest_buf, u32 max_len, u32 *out_len)
+/*
+ * Read `len` bytes at byte `offset` within `entry`, following the FAT16/FAT32
+ * cluster chain. See include/common/fat_ro.h for the guard contract.
+ *
+ * The function never trusts the on-disk chain: it bounds every hop, rejects
+ * free/bad/out-of-range clusters, detects trivial cycles (self loop and
+ * two-cluster ping-pong) and treats an early EOC as truncation.
+ */
+bool fat_read_file_range(fat_volume_t *vol, const fat_file_entry_t *entry,
+                         u32 offset, u8 *dest_buf, u32 len,
+                         u32 *out_len, fat_chain_status_t *out_status)
 {
-    u32 cluster;
-    u32 remaining;
-    u32 expected;
-    u32 written = 0u;
     u32 cluster_bytes;
+    u32 cluster;
+    u32 prev_cluster;
+    u32 skip;
+    u32 pos;
+    u32 remaining;
+    u32 written = 0u;
+    u32 max_hops;
+    u32 hops = 0u;
+    fat_chain_status_t status = FAT_CHAIN_OK;
 
     if (out_len != NULL) {
         *out_len = 0u;
     }
-    if (vol == NULL || entry == NULL || dest_buf == NULL) {
+    if (out_status != NULL) {
+        *out_status = FAT_CHAIN_ERR_ARG;
+    }
+
+    if (vol == NULL || entry == NULL || dest_buf == NULL ||
+        vol->type == FAT_TYPE_NONE) {
         return false;
     }
     vol->io_error = false;
 
-    expected = (entry->file_size > max_len) ? max_len : entry->file_size;
-    remaining = expected;
-    cluster = entry->start_cluster;
-    cluster_bytes = (u32)vol->sectors_per_cluster * FAT_SECTOR_SIZE;
+    if (!cluster_in_use(vol, entry->start_cluster)) {
+        if (out_status != NULL) {
+            *out_status = FAT_CHAIN_ERR_BAD_CLUSTER;
+        }
+        return false;
+    }
 
-    while (remaining != 0u) {
+    /* A zero-byte request at EOF is a valid no-op. */
+    if (offset >= entry->file_size) {
+        status = (offset == entry->file_size) ? FAT_CHAIN_OK
+                                              : FAT_CHAIN_ERR_TRUNCATED;
+        if (out_status != NULL) {
+            *out_status = status;
+        }
+        return status == FAT_CHAIN_OK;
+    }
+    if (len == 0u) {
+        if (out_status != NULL) {
+            *out_status = FAT_CHAIN_OK;
+        }
+        return true;
+    }
+
+    cluster_bytes = (u32)vol->sectors_per_cluster * FAT_SECTOR_SIZE;
+    if (cluster_bytes == 0u) {
+        if (out_status != NULL) {
+            *out_status = FAT_CHAIN_ERR_BAD_CLUSTER;
+        }
+        return false;
+    }
+
+    /* Never walk more clusters than the file can possibly use, plus slack. */
+    max_hops = entry->file_size / cluster_bytes + 2u;
+
+    /* Clamp the request to what the file actually contains. */
+    if (len > entry->file_size - offset) {
+        len = entry->file_size - offset;
+    }
+
+    cluster = entry->start_cluster;
+    prev_cluster = 0u;
+    remaining = len;
+    pos = offset % cluster_bytes;
+    skip = offset / cluster_bytes;
+
+    /* 1. Skip whole clusters up to the requested offset. */
+    while (skip > 0u) {
+        u32 next;
+
+        if (cluster_is_bad(vol, cluster)) {
+            status = FAT_CHAIN_ERR_BAD_CLUSTER;
+            goto done;
+        }
+        next = fat_get_next_cluster(vol, cluster);
+        if (vol->io_error) {
+            status = FAT_CHAIN_ERR_IO;
+            goto done;
+        }
+        if (fat_is_eoc(vol, next)) {
+            status = FAT_CHAIN_ERR_TRUNCATED;
+            goto done;
+        }
+        if (next == 0u || cluster_is_bad(vol, next) ||
+            !cluster_in_use(vol, next)) {
+            status = FAT_CHAIN_ERR_BAD_CLUSTER;
+            goto done;
+        }
+        if (++hops > max_hops) {
+            status = FAT_CHAIN_ERR_LOOP;
+            goto done;
+        }
+        prev_cluster = cluster;
+        cluster = next;
+        skip--;
+    }
+
+    /* 2. Stream the requested bytes. */
+    while (remaining > 0u) {
         u32 base;
+        u32 avail;
         u32 chunk;
         u32 s;
 
-        if (!cluster_in_use(vol, cluster) || cluster_is_bad(vol, cluster)) {
-            break;   /* corrupt / truncated chain */
+        if (cluster_is_bad(vol, cluster)) {
+            status = FAT_CHAIN_ERR_BAD_CLUSTER;
+            goto done;
         }
 
+        avail = cluster_bytes - pos;
+        chunk = (remaining < avail) ? remaining : avail;
         base = cluster_lba(vol, cluster);
-        chunk = (remaining > cluster_bytes) ? cluster_bytes : remaining;
 
-        for (s = 0u; s < chunk; s += FAT_SECTOR_SIZE) {
-            u32 n = chunk - s;
+        for (s = 0u; s < chunk; ) {
+            u32 cluster_off = pos + s;
+            u32 in_sector = cluster_off % FAT_SECTOR_SIZE;
+            u32 n = FAT_SECTOR_SIZE - in_sector;
 
-            if (n > FAT_SECTOR_SIZE) {
-                n = FAT_SECTOR_SIZE;
+            if (n > chunk - s) {
+                n = chunk - s;
             }
-            if (!vol_read_sector(vol, base + s / FAT_SECTOR_SIZE,
+            if (!vol_read_sector(vol, base + cluster_off / FAT_SECTOR_SIZE,
                                  vol->sector_buf)) {
-                if (out_len != NULL) {
-                    *out_len = written;
-                }
-                return false;
+                status = FAT_CHAIN_ERR_IO;
+                goto done;
             }
-            dsi_memcpy(dest_buf + written, vol->sector_buf, n);
+            dsi_memcpy(dest_buf + written, vol->sector_buf + in_sector, n);
             written += n;
+            s += n;
         }
 
         remaining -= chunk;
+        pos = 0u;
         if (remaining == 0u) {
             break;
         }
 
-        cluster = fat_get_next_cluster(vol, cluster);
-        if (vol->io_error || fat_is_eoc(vol, cluster)) {
-            break;
+        {
+            u32 next = fat_get_next_cluster(vol, cluster);
+
+            if (vol->io_error) {
+                status = FAT_CHAIN_ERR_IO;
+                goto done;
+            }
+            if (fat_is_eoc(vol, next)) {
+                status = FAT_CHAIN_ERR_TRUNCATED;
+                goto done;
+            }
+            if (next == 0u || cluster_is_bad(vol, next) ||
+                !cluster_in_use(vol, next)) {
+                status = FAT_CHAIN_ERR_BAD_CLUSTER;
+                goto done;
+            }
+            /* Reject a corrupt self loop or a two-cluster ping-pong. */
+            if (next == cluster || next == prev_cluster) {
+                status = FAT_CHAIN_ERR_LOOP;
+                goto done;
+            }
+            if (++hops > max_hops) {
+                status = FAT_CHAIN_ERR_LOOP;
+                goto done;
+            }
+            prev_cluster = cluster;
+            cluster = next;
         }
     }
 
+done:
     if (out_len != NULL) {
         *out_len = written;
     }
-    return written == expected;
+    if (out_status != NULL) {
+        *out_status = status;
+    }
+    return status == FAT_CHAIN_OK;
+}
+
+bool fat_read_file(fat_volume_t *vol, const fat_file_entry_t *entry,
+                   u8 *dest_buf, u32 max_len, u32 *out_len)
+{
+    return fat_read_file_range(vol, entry, 0u, dest_buf, max_len, out_len,
+                               NULL);
+}
+
+const char *fat_chain_status_text(fat_chain_status_t status)
+{
+    switch (status) {
+    case FAT_CHAIN_OK:          return "OK";
+    case FAT_CHAIN_ERR_ARG:     return "BAD ARGUMENT";
+    case FAT_CHAIN_ERR_IO:      return "READ ERROR";
+    case FAT_CHAIN_ERR_BAD_CLUSTER: return "BAD CLUSTER";
+    case FAT_CHAIN_ERR_LOOP:    return "FAT CHAIN LOOP";
+    case FAT_CHAIN_ERR_TRUNCATED: return "CHAIN TRUNCATED";
+    default:                    return "UNKNOWN";
+    }
 }

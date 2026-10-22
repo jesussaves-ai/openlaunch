@@ -164,6 +164,19 @@ bool fat_is_nds_entry(const fat_file_entry_t *entry);
 /* ---- File data --------------------------------------------------------- */
 
 /*
+ * Bounded cluster-chain walk status (see fat_read_file_range()).
+ * FAT_CHAIN_OK == 0 so a truthy return value always means "not OK".
+ */
+typedef enum {
+    FAT_CHAIN_OK = 0,
+    FAT_CHAIN_ERR_ARG,         /* invalid argument / unmounted volume      */
+    FAT_CHAIN_ERR_IO,          /* a sector read failed                     */
+    FAT_CHAIN_ERR_BAD_CLUSTER, /* free / bad / out-of-range cluster        */
+    FAT_CHAIN_ERR_LOOP,        /* chain hop cap exceeded / self loop       */
+    FAT_CHAIN_ERR_TRUNCATED    /* chain ended (EOC) before `len` bytes     */
+} fat_chain_status_t;
+
+/*
  * Read up to `max_len` bytes of `entry` into `dest_buf`. Traverses the cluster
  * chain, respecting `file_size`. On return `*out_len` (if non-NULL) holds the
  * number of bytes written. Returns true only when the requested amount was
@@ -171,5 +184,28 @@ bool fat_is_nds_entry(const fat_file_entry_t *entry);
  */
 bool fat_read_file(fat_volume_t *vol, const fat_file_entry_t *entry,
                    u8 *dest_buf, u32 max_len, u32 *out_len);
+
+/*
+ * Read `len` bytes starting at byte `offset` within `entry` into `dest_buf`.
+ *
+ * Unlike fat_read_file() this supports a byte offset (so a loader can stream
+ * a file's ARM9/ARM7 payloads without buffering the whole image) and reports a
+ * specific chain-failure reason through `*out_status` (optional).
+ *
+ * Safety guards:
+ *   - the chain is capped at `file_size / bytes_per_cluster + 2` hops;
+ *   - free (0x0000/0x0001) and bad (0xFFF7 / 0x0FFFFFF7) clusters are rejected;
+ *   - a self-referential cluster or a two-cluster cycle is reported as LOOP;
+ *   - an end-of-chain marker before `len` bytes are produced is TRUNCATED.
+ *
+ * `*out_len` (optional) receives the number of bytes actually copied, which is
+ * valid even on failure. Returns true iff the whole request was satisfied.
+ */
+bool fat_read_file_range(fat_volume_t *vol, const fat_file_entry_t *entry,
+                         u32 offset, u8 *dest_buf, u32 len,
+                         u32 *out_len, fat_chain_status_t *out_status);
+
+/* Human-readable text for a chain status (never NULL). */
+const char *fat_chain_status_text(fat_chain_status_t status);
 
 #endif /* DSI_COMMON_FAT_RO_H */

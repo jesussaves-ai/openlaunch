@@ -72,6 +72,20 @@ typedef struct {
     char boot_title[13];  /* NDS title (12 chars + NUL)                  */
     char boot_code[5];    /* NDS game code (4 chars + NUL)               */
 
+    /* Chainloader dry-run / staging state (item [6]). */
+    bool loader_inspected;  /* Y/SELECT ran a verify/dry-run inspect     */
+    u8   loader_status;     /* nds_load_status_t of the last inspect     */
+    bool loader_loadable;   /* loader_status == NDS_LOAD_OK              */
+    u8   loader_unit_code;  /* raw 0x012 unit code of the inspected file */
+    u32  loader_arm9_entry;
+    u32  loader_arm9_load;
+    u32  loader_arm9_size;
+    u32  loader_arm7_entry;
+    u32  loader_arm7_load;
+    u32  loader_arm7_size;
+    bool boot_staged;       /* A staged the image (dry run or real)      */
+    bool boot_dry_run;      /* staging ran but no CPU handoff happened   */
+
     const char *last_action;
 } menu_diag_t;
 

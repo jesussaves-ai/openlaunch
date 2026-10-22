@@ -14,6 +14,7 @@
 #include "arm9/menu.h"
 #include "arm9/console.h"
 #include "arm9/ipc.h"
+#include "arm9/loader.h"
 #include "arm9/mpu.h"
 #include "arm9/scfg.h"
 #include "arm9/storage.h"
@@ -46,7 +47,7 @@ static const char *const s_menu_desc[MENU_ITEM_COUNT] = {
     "TMIO SD read-only status probe",
     "Expand embedded LZ77 vector",
     "Halt the CPU safely",
-    "Mount FAT, list .nds / .srl",
+    "Mount FAT, verify + chainload .nds",
     "Unlock + map DSi SCFG/NWRAM",
 };
 
@@ -71,7 +72,6 @@ static u8 s_fw_probe[8];
  */
 static fat_volume_t   s_fat_vol;
 static fat_file_entry_t s_fat_files[MENU_BROWSE_MAX];
-static u8             s_header_buf[FAT_SECTOR_SIZE];
 
 /* ---- Pure menu state machine ----------------------------------------- */
 
@@ -430,6 +430,33 @@ static void render_telemetry(const menu_diag_t *d)
     } else {
         console_puts(0, 15, CONSOLE_PAL_GREY, "BOOT : -");
     }
+
+    /* Chainloader verify / dry-run detail (item [6], Y key). */
+    if (d->loader_inspected) {
+        console_printf(0, 17, CONSOLE_PAL_CYAN, "TITLE: %s %s U%02X",
+                       d->boot_title, d->boot_code,
+                       (unsigned)d->loader_unit_code);
+        console_printf(0, 18, CONSOLE_PAL_WHITE, "A9 E:%08X",
+                       d->loader_arm9_entry);
+        console_printf(0, 19, CONSOLE_PAL_WHITE, "A9 L:%08X S:%06X",
+                       d->loader_arm9_load, (unsigned)d->loader_arm9_size);
+        console_printf(0, 20, CONSOLE_PAL_WHITE, "A7 E:%08X",
+                       d->loader_arm7_entry);
+        console_printf(0, 21, CONSOLE_PAL_WHITE, "A7 L:%08X S:%06X",
+                       d->loader_arm7_load, (unsigned)d->loader_arm7_size);
+        console_printf(0, 22,
+                       d->loader_loadable ? CONSOLE_PAL_GREEN : CONSOLE_PAL_RED,
+                       "LOADABLE: %s",
+                       d->loader_loadable ? "YES" : nds_load_status_text(
+                           (nds_load_status_t)d->loader_status));
+    }
+
+    if (d->boot_staged) {
+        console_printf(0, 23,
+                       d->boot_dry_run ? CONSOLE_PAL_YELLOW : CONSOLE_PAL_GREEN,
+                       "STAGE: %s",
+                       d->boot_dry_run ? "DRY-RUN OK" : "BOOTING...");
+    }
 }
 
 static void render_menu(const menu_state_t *state)
@@ -525,10 +552,85 @@ static void menu_inspect_view(const menu_diag_t *d)
 }
 
 /*
+ * Verify / dry-run inspect: read the selected file's 512-byte header through
+ * the delegated FAT reader, run the full loadability validation (CRC16 plus
+ * ARM9/ARM7 range safety) and decode the descriptors for the top screen.
+ */
+static void loader_inspect(menu_diag_t *d, fat_volume_t *vol,
+                           const fat_file_entry_t *entry)
+{
+    nds_header_t h;
+    nds_load_status_t st;
+
+    d->loader_inspected = false;
+    d->loader_loadable = false;
+    d->boot_loaded = false;
+    d->boot_staged = false;
+    d->boot_dry_run = false;
+
+    st = loader_validate_file(vol, entry, d->extended_ram, &h);
+
+    d->loader_status = (u8)st;
+    d->loader_loadable = (st == NDS_LOAD_OK);
+
+    /* loader_validate_file() zero-fills `h`, so this is always safe. */
+    dsi_memcpy(d->boot_title, h.title, sizeof(h.title));
+    dsi_memcpy(d->boot_code, h.gamecode, sizeof(h.gamecode));
+    d->boot_crc_ok = h.crc_ok;
+    d->boot_loaded = true;
+
+    d->loader_unit_code = h.unit_code;
+    d->loader_arm9_entry = h.arm9_entry;
+    d->loader_arm9_load  = h.arm9_ram_addr;
+    d->loader_arm9_size  = h.arm9_size;
+    d->loader_arm7_entry = h.arm7_entry;
+    d->loader_arm7_load  = h.arm7_ram_addr;
+    d->loader_arm7_size  = h.arm7_size;
+    d->loader_inspected  = true;
+}
+
+/*
+ * Stage the selected image and prepare the dual-CPU handoff. A verified image
+ * that has not been inspected yet is validated first. With the boot guard
+ * disarmed (the default) this performs the complete staging + IPC preparation
+ * and returns; with it armed the ARM9 jumps into the new image and never
+ * returns.
+ */
+static void loader_boot_selected(menu_diag_t *d, fat_volume_t *vol,
+                                 const fat_file_entry_t *entry)
+{
+    loader_result_t res;
+
+    d->boot_staged = false;
+    d->boot_dry_run = false;
+
+    if (!d->loader_inspected || !d->loader_loadable) {
+        loader_inspect(d, vol, entry);
+    }
+    if (!d->loader_loadable) {
+        return;
+    }
+
+    (void)loader_stage_and_boot(vol, entry, d->extended_ram, &res);
+
+    if (res.status != NDS_LOAD_OK) {
+        d->loader_status = (u8)res.status;
+        d->loader_loadable = false;
+        return;
+    }
+
+    d->boot_staged = res.staged;
+    d->boot_dry_run = res.dry_run;
+}
+
+/*
  * Mount the SD card's FAT volume and browse the .nds / .srl files in its root
- * directory. A loads the selected file's NDS header (via the delegated FAT
- * reader), validates its CRC16 and publishes the title/game code to the top
- * screen; B returns to the main menu.
+ * directory.
+ *
+ *   UP/DOWN  move the selection
+ *   Y or SELECT  verify / dry-run inspect the highlighted image
+ *   A        stage the image and trigger the dual-CPU handoff
+ *   B        return to the main menu
  */
 static void menu_browse_view(menu_diag_t *d)
 {
@@ -540,6 +642,10 @@ static void menu_browse_view(menu_diag_t *d)
 
     d->fat_ok = false;
     d->boot_loaded = false;
+    d->loader_inspected = false;
+    d->loader_loadable = false;
+    d->boot_staged = false;
+    d->boot_dry_run = false;
     d->sd_fs_type = FAT_TYPE_NONE;
     d->sd_total_sectors = 0u;
 
@@ -602,7 +708,8 @@ static void menu_browse_view(menu_diag_t *d)
             }
         }
 
-        console_puts(0, 20, CONSOLE_PAL_GREY, "UP/DOWN SELECT  A LOAD  B BACK");
+        console_puts(0, 20, CONSOLE_PAL_GREY,
+                     "U/D SEL Y CHECK A BOOT B BACK");
 
         wait_vblank();
 
@@ -621,20 +728,17 @@ static void menu_browse_view(menu_diag_t *d)
         if (input_pressed(&keys, INPUT_UP)) {
             cursor = (cursor + count - 1u) % count;
         }
+        if (input_pressed(&keys, INPUT_Y) ||
+            input_pressed(&keys, INPUT_SELECT)) {
+            loader_inspect(d, &s_fat_vol, &s_fat_files[cursor]);
+            d->last_action = "Verify .nds";
+        }
         if (input_pressed(&keys, INPUT_A)) {
-            u32 got = 0u;
-
-            if (fat_read_file(&s_fat_vol, &s_fat_files[cursor],
-                              s_header_buf, (u32)sizeof(s_header_buf), &got)) {
-                nds_header_t h;
-
-                if (nds_header_parse(s_header_buf, got, &h)) {
-                    dsi_memcpy(d->boot_title, h.title, sizeof(h.title));
-                    dsi_memcpy(d->boot_code, h.gamecode, sizeof(h.gamecode));
-                    d->boot_crc_ok = h.crc_ok;
-                    d->boot_loaded = true;
-                }
-            }
+            loader_boot_selected(d, &s_fat_vol, &s_fat_files[cursor]);
+            d->last_action = d->boot_staged ? (d->boot_dry_run
+                                                   ? "Boot dry-run OK"
+                                                   : "Boot handoff")
+                                            : "Boot rejected";
         }
     }
 

@@ -861,4 +861,104 @@ full identification sequence (SDHC and SDSC), `tests/test_fat_ro.c` covers the
 MBR partition scan, FAT16/FAT32 BPB parsing, `.nds`/`.srl` filtering and the
 NDS header unit code + CRC16, and `make verify` validates the packaged header.
 
+## 25. Chainloader: header validation, RAM staging and dual-CPU handoff
+
+The SD browser (`[6] Browse SD Card (.nds)`) is now an interactive chainloader.
+It never writes NAND/eMMC and only stages an image after the full safety gate
+below succeeds.
+
+### 25.1 NDS header validation (`src/common/nds_header.c`)
+
+`nds_header_validate_loadable()` runs over the 512-byte sector-0 header and
+returns one of six specific codes (rendered verbatim by the UI):
+
+| Code | Meaning |
+| :--- | :--- |
+| `NDS_LOAD_OK` | CRC16 matches and every load range is safe |
+| `NDS_ERR_BAD_CRC` | stored `0x15E` CRC16 != recomputed Modbus CRC16 |
+| `NDS_ERR_ARM9_BOUNDS` | ARM9 offset/entry/load/size zero, unaligned, entry outside the loaded range, or outside Main RAM |
+| `NDS_ERR_ARM7_BOUNDS` | the same checks for ARM7 (Main RAM or ARM7 WRAM) |
+| `NDS_ERR_OVERLAP_BOOTLOADER` | a range intersects the loader reservation |
+| `NDS_ERR_FILE_TRUNCATED` | header shorter than 512 bytes, or a payload offset+size past EOF |
+
+The safety window (GBATEK Main-RAM limits) defaults, via
+`nds_load_bounds_default()`, to:
+
+* Main RAM `0x02000000..0x023BFE00` (legacy DS) or
+  `0x02000000..0x02FE0000` (16 MiB TWL);
+* ARM7-private WRAM `0x037F8000..0x0380FFC0` (excludes the ARM7 stacks);
+* bootloader reservation `0x02100000..0x02280000` — the ARM9 image is linked at
+  `0x02200000` and the ARM7 bounce buffer sits at `0x02100000`.
+
+The reservation is deliberately chosen so the canonical homebrew load addresses
+(ARM9 `0x02000000`, ARM7 `0x02380000`) stay valid while a malicious header
+cannot make the loader overwrite its own running code, `.bss`, stack or the
+ARM7 loader before the handoff.
+
+### 25.2 Bounded cluster-chain reader (`src/common/fat_ro.c`)
+
+`fat_read_file_range(vol, entry, offset, dest, len, &got, &status)` streams a
+byte range of a file without buffering the whole image. It is hardened against
+corrupt FAT chains:
+
+* the walk is capped at `file_size / bytes_per_cluster + 2` hops;
+* `0x0000`/`0x0001` (free), `0xFFF7`/`0x0FFFFFF7` (bad) and out-of-range
+  clusters are rejected (`FAT_CHAIN_ERR_BAD_CLUSTER`);
+* a self-referential cluster or a two-cluster ping-pong is `FAT_CHAIN_ERR_LOOP`;
+* an end-of-chain marker before `len` bytes are produced is
+  `FAT_CHAIN_ERR_TRUNCATED`.
+
+`fat_read_file()` is now a thin wrapper over it.
+
+### 25.3 Staging + handoff (`src/arm9/loader.c`, `src/arm7/ipc.c`)
+
+1. `loader_validate_file()` reads the header and runs the safety gate.
+2. `loader_stage_and_boot()` streams the ARM9 payload straight into its
+   validated load address and streams the ARM7 payload into the shared bounce
+   buffer at `0x02100000`.
+3. The 512-byte header is copied to the canonical firmware address
+   (`0x027FFE00` on DS, `0x02FFFE00` on a 16 MiB DSi); the ARM9 D/I caches are
+   flushed.
+4. `IPC_CMD_BOOT_HANDOFF` (system channel, 4 argument words:
+   `arm7_entry, arm7_src, arm7_dst, arm7_size`) asks the ARM7 to finish.
+   `arm7_boot_poll()` runs from IWRAM (so it survives a copy that overwrites the
+   ARM7's own Main-RAM image at `0x02380000`): it stops all IRQ sources, timers
+   and DMA channels, copies the payload to its final address and branches.
+
+The actual CPU handoff is compiled in only when `ENABLE_CHAINLOAD_BOOT` is
+defined (AGENTS.md §5 sandbox-first policy). By default `loader_stage_and_boot()`
+performs the entire staging + IPC preparation and returns with
+`result.dry_run` set, so melonDS/host diagnostics can exercise the pipeline
+without jumping into arbitrary RAM.
+
+### 25.4 UI
+
+In `[6]`:
+
+* **UP/DOWN** move the selection;
+* **Y** or **SELECT** run a *Verify / dry-run inspect*: the top screen shows the
+  title/game code, unit code, ARM9 `entry/load/size`, ARM7 `entry/load/size` and
+  `LOADABLE: YES` or the specific rejection reason;
+* **A** stages a verified image and triggers the handoff (`STAGE: DRY-RUN OK`
+  without the boot guard, `BOOTING...` with it);
+* **B** returns to the menu.
+
+### 25.5 Verification
+
+`tests/test_loader.c` covers valid/bad-CRC headers, ARM9/ARM7 out-of-bounds and
+bootloader-overlap ranges, ARM7 WRAM targets, truncated files, the default
+bounds, `fat_read_file_range()` across fragmented FAT16 and FAT32 chains
+(including non-sector-aligned offsets, multi-sector clusters and EOF clamping)
+and the corrupt-chain guards (self-loop/ping-pong/bad/free/premature-EOC/IO).
+The 4-byte alignment of the IWRAM load address (required by the crt0 relocation
+loop) is enforced by `ld/arm7.ld`/`ld/arm9.ld` with `ALIGN(...)`.
+
+### 25.6 Known limitation
+
+An ARM7 target in ARM7-private WRAM `0x03800000..0x0380FFC0` overlaps the IWRAM
+boot stub and stacks that perform the handoff; only Main-RAM ARM7 targets
+(e.g. `0x02380000`) are exercised end to end. The boot guard is off by default,
+so this path is inert unless explicitly enabled.
+
+
 

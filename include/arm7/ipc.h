@@ -78,4 +78,17 @@ u32 ipc_sync_get(void);
  */
 void ipc_dispatch_pending(void);
 
+/*
+ * Service a pending chainload handoff.
+ *
+ * Called from the ARM7 main loop. When a validated IPC_CMD_BOOT_HANDOFF
+ * request is pending it copies the staged ARM7 payload into its final RAM
+ * location and, when the boot guard (ENABLE_CHAINLOAD_BOOT) is armed, performs
+ * the final shutdown and branches to the new entry point.
+ *
+ * The function body lives in IWRAM so it survives a copy that overwrites the
+ * ARM7's own Main-RAM image (e.g. a new image linked at 0x02380000).
+ */
+void arm7_boot_poll(void);
+
 #endif /* DSI_ARM7_IPC_H */

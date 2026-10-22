@@ -34,5 +34,9 @@ void arm7_main(void)
         /* Poll rather than halt: the boot handshake must not depend on
          * interrupt delivery in the melonDS smoke test. */
         ipc_dispatch_pending();
+
+        /* Service a pending chainload handoff (copies + branches when the
+         * boot guard is armed). */
+        arm7_boot_poll();
     }
 }
