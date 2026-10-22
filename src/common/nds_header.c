@@ -64,6 +64,9 @@ bool nds_header_parse(const u8 *buf, u32 len, nds_header_t *out)
     }
     out->gamecode[NDS_GAMECODE_LEN] = '\0';
 
+    out->unit_code = buf[NDS_UNIT_CODE_OFF];
+    out->twl_capable = (out->unit_code & NDS_UNIT_CODE_TWL_MASK) != 0u;
+
     out->stored_crc = dsi_read_le16(buf + NDS_HEADER_CRC_OFF);
     out->computed_crc = nds_crc16(buf, NDS_HEADER_CRC_LEN);
     out->crc_ok = (out->stored_crc == out->computed_crc);

@@ -49,8 +49,18 @@ HEADER_CRC_LEN = HEADER_CRC_OFF
 MIN_ROM_SIZE = 0x8000          # 32 KiB
 CAPACITY_UNIT = 0x20000        # 128 KiB
 
+# Cartridge unit code (header offset 0x012).
+#
+#   0x00  NDS only
+#   0x02  NDS + DSi (hybrid): runs on both; a DSi launcher/emulator keeps
+#         native TWL mode active (SCFG_A9ROM == 0x01)
+#   0x03  DSi-exclusive
+#
+# The hybrid code is what lets the same image boot in DSi mode on a DSi and
+# still fall back to DS mode on a legacy DS.
 UNIT_CODE_NDS = 0x00
-UNIT_CODE_TWL = 0x03
+UNIT_CODE_NDS_DSI = 0x02
+UNIT_CODE_DSI = 0x03
 
 # TWL extended-header field offsets (melonDS NDSHeader layout).
 OFF_MBK_SLOTS = 0x180          # u32[5]  global MBK1..MBK5
@@ -166,7 +176,7 @@ def build_header(arm9, arm7, twl: bool, logo: bytes, rom_size: int,
     h[0x00:0x00 + len(TITLE)] = TITLE
     h[0x0C:0x10] = GAME_CODE
     h[0x10:0x12] = MAKER_CODE
-    h[0x12] = UNIT_CODE_TWL if twl else UNIT_CODE_NDS
+    h[0x12] = UNIT_CODE_NDS_DSI if twl else UNIT_CODE_NDS
     h[0x13] = 0x00                    # encryption seed select (unencrypted)
     h[0x14] = capacity & 0xFF         # device capacity (128 KiB << capacity)
     h[0x1C] = 0x00                    # DSiCryptoFlags
@@ -291,8 +301,8 @@ def main(argv) -> int:
     print("    device capacity 0x%02X (%d KiB)   total-used 0x%X"
           % (capacity, (CAPACITY_UNIT << capacity) // 1024, padded_size))
     print("    unit code 0x%02X%s   logo CRC 0x%04X   header CRC 0x%04X"
-          % (UNIT_CODE_TWL if args.twl else UNIT_CODE_NDS,
-             " (TWL)" if args.twl else " (NDS)",
+          % (UNIT_CODE_NDS_DSI if args.twl else UNIT_CODE_NDS,
+             " (NDS+DSi hybrid)" if args.twl else " (NDS)",
              crc16(logo), crc16(bytes(header[:HEADER_CRC_LEN]))))
     print("    ndstool: %s" % (ndstool if ndstool else "not found (not required)"))
     return 0

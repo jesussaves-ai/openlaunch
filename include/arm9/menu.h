@@ -54,8 +54,11 @@ typedef struct {
     u8   year, month, day, hour, minute, second;
     u8   sd_flags;
     u32  sd_raw;
+    u8   sd_card_type;    /* 0=SDSC/unknown, 1=SDHC/SDXC (block-addressed) */
     bool sd_read_ok;      /* delegated LBA-0 read via ARM7 succeeded     */
     bool sd_mbr_ok;       /* the read sector carries the 0x55AA MBR sig  */
+    u8   sd_fs_type;      /* fat_type_t of the card volume (0 = none)    */
+    u32  sd_total_sectors;/* card volume size in 512-byte sectors        */
     bool fw_ok;
     u32  fw_id;
     bool fw_read_ok;      /* delegated SPI read via ARM7 (IPC) succeeded */

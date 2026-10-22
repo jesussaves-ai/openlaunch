@@ -39,9 +39,13 @@ bool arm9_firmware_read(u32 address, void *dst, u32 len);
 
 /* Result of the LBA-0 round-trip smoke test. */
 typedef struct {
-    bool ok;             /* the delegated transfer completed           */
-    bool mbr_signature;  /* bytes 510/511 read back as 55 AA            */
-    u16  signature;      /* raw little-endian word at offset 510        */
+    bool ok;             /* the delegated transfer completed            */
+    bool mbr_signature;  /* bytes 510/511 read back as 55 AA             */
+    u16  signature;      /* raw little-endian word at offset 510         */
+    u8   fs_type;        /* fat_type_t of the volume (FAT_TYPE_*)        */
+    u8   partition_type; /* MBR partition type byte (0 if superfloppy)   */
+    u32  partition_lba;  /* first sector of the FAT volume               */
+    u32  total_sectors;  /* volume size in 512-byte sectors              */
 } arm9_storage_probe_t;
 
 /*

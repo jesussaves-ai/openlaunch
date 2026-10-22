@@ -424,6 +424,22 @@ Every step is gated on `scfg_is_twl_mode()`, so on a legacy DS `scfg_init()`,
 `mbk_init()` and `arm9_dma_aux_reset()` (the NDMA block at `0x04004100`) are all
 skipped. This lets the same ROM boot cleanly in both DS and DSi modes.
 
+The **ARM7** has its own SCFG view and a separate SD/MMC power gate (GBATEK
+"DSi Control Registers (SCFG)"):
+
+| Register | Bit | Meaning |
+| :--- | :--- | :--- |
+| `SCFG_CLK7` (`0x04004004`) | 0 | SD/MMC block clock (0 = stop, 1 = run) |
+| `SCFG_EXT7` (`0x04004008`) | 18 | Access to the SD/MMC window (`0x04004800`–`0x040049FF`) |
+| `SCFG_EXT7` (`0x04004008`) | 19 | Access to the SDIO/Wi-Fi window (`0x04004A00`–`0x04004BFF`) |
+
+`sdmmc_enable_clock()` (`src/arm7/sdmmc.c`) sets `SCFG_EXT7.bit18` and
+`SCFG_CLK7.bit0` before the first TMIO access. It self-gates on
+`SCFG_A9ROM & 3 == 1` (DSi mode) exactly like the ARM9 probe, so it is a no-op
+on a legacy DS and on a DSi running an NDS title. `SCFG_EXT7.bit18` is
+documented as "should be the same as `SCFG_CLK7.bit0`"; the function writes both
+so the register window and the block clock can never disagree.
+
 The pure decoders (`scfg_mode_from_a9rom`, `scfg_arm9_clock_hz`,
 `scfg_ext_ram_bytes`, `mbk_slot_entry`) are host-tested in
 `tests/test_scfg.c`. The clock decode reports 67.03 MHz when `SCFG_CLK.bit0`
@@ -630,10 +646,13 @@ returns `false` and the IPC layer replies `IPC_IO_FLAG_ERROR`.
 ### Card identification
 
 `sdmmc_card_init()` implements the standard SD/MMC sequence (CMD0, CMD8,
-ACMD41/CMD1, CMD2, CMD3, CMD9, CMD7, CMD16) and sets `block_addressed` from the
-OCR CCS bit. Like the reference read path, it is **not** called automatically:
-`sdmmc_read()` assumes the card is already selected. Callers needing a cold
-start run `sdmmc_card_init()` first.
+ACMD41/CMD1, CMD2, CMD3, CMD9, CMD7, CMD16), sets `block_addressed` from the OCR
+CCS bit and records success in `card_ready`. `sdmmc_read()` still assumes the
+card is already selected; the ARM7 IPC layer (`src/arm7/ipc.c::ipc_sd_open()`)
+runs `sdmmc_card_init()` exactly once per slot before the first read, and only
+after the read-only presence gate has confirmed a card is inserted. Every
+command is bounded by `sdmmc_t.timeout`, so a missing or unresponsive card
+cannot wedge the ARM7.
 
 ### DMA
 
@@ -774,11 +793,12 @@ the (correctly bounded) `tmio_wait_bits()` poll runs to its full budget before
 the ARM7 replies `IPC_IO_FLAG_ERROR`. Issuing a data command into an empty slot
 is pointless and delays the reply, so the ARM9 self-test/UI waits needlessly.
 
-**Fix.** `ipc_handle_read_sector()` (`src/arm7/ipc.c`) now performs a read-only
-presence probe (`sdmmc_get_status()` → `TMIO_ST_SIGSTATE`, bit 5) before the
-transfer. If the requested device is the SD card and no card is inserted, it
-replies `IPC_IO_FLAG_UNAVAILABLE` with zero sectors transferred and never writes
-`SD_CMD`. The onboard eMMC is always populated and skips the gate.
+**Fix.** `ipc_sd_open()` (`src/arm7/ipc.c`) performs a read-only presence probe
+(`sdmmc_get_status()` → `TMIO_ST_SIGSTATE`, bit 5) before any transfer *and*
+before the card-identification sequence. If the requested device is the SD card
+and no card is inserted, the IPC layer replies `IPC_IO_FLAG_UNAVAILABLE` with
+zero sectors transferred and never writes `SD_CMD` (nor issues CMD0/CMD8/etc.).
+The onboard eMMC is always populated and skips the gate.
 
 **Verification.** With `[DSi.SD] Enable = false`, `make all` + `make verify` +
 `make host-test` stay green and the melonDS run reaches the interactive menu:
@@ -787,5 +807,58 @@ the GDB stub shows the ARM9 looping in `render_telemetry` (`console_clear_engine
 ARM7 in its `ipc_dispatch_pending` poll (`0x02380500`) rather than in
 `sdmmc_read`. The self-test now reports `SD RD: unavailable` without the
 `NULL DEVICE` command.
+
+## 24. TWL header unit code + the TMIO0 read-only probe/browse pipeline
+
+### Cartridge unit code (`0x012`)
+
+`scripts/pack_nds.py` writes the hybrid unit code **`0x02`** (NDS + DSi) for a
+`--twl` build (plain `--no-twl` keeps `0x00`):
+
+| Value | Meaning | Launcher behaviour |
+| :--- | :--- | :--- |
+| `0x00` | NDS only | runs in DS mode only |
+| `0x02` | NDS + DSi (hybrid) | a DSi launcher/emulator boots it with native TWL mode active (`SCFG_A9ROM == 0x01`); a legacy DS still runs it |
+| `0x03` | DSi-exclusive | DSi only; a legacy DS refuses it |
+
+The hybrid code is what keeps `SCFG_A9ROM` at `0x01` on a DSi (so the SCFG/MBK
+and SD/MMC blocks stay accessible) without locking the image to DSi hardware.
+The header CRC16 (`0x15E`) is recomputed over `0x000..0x15D` after the field is
+written, and `scripts/verify_rom.py` re-checks both CRCs and asserts that a
+DSi-capable unit code is exactly the hybrid `0x02` with a non-zero TWL region
+mask. `src/common/nds_header.c` also decodes the field (`unit_code`,
+`twl_capable`) when the SD browser loads a `.nds` header.
+
+### Read-only probe / browse pipeline
+
+1. **ARM9** `[3] Probe SD / TMIO RO` and `[6] Browse SD Card (.nds)` issue
+   `IPC_CMD_GET_SDMMC_STATUS`. The reply is now three payload words:
+   `flags` (`IPC_SD_FLAG_*`), `raw` TMIO status and `info`
+   (`IPC_SD_INFO_BLOCK_ADDRESSED` = SDHC/SDXC, `IPC_SD_INFO_CARD_READY`).
+2. **ARM7** `ipc_reply_sdmmc()` calls `ipc_sd_open()`, which programs the
+   controller (`sdmmc_init_controller()` → `sdmmc_enable_clock()` sets
+   `SCFG_EXT7.bit18`/`SCFG_CLK7.bit0`), runs the presence gate and then the
+   read-only identification sequence (CMD0/CMD8/ACMD41/CMD2/CMD3/CMD9/CMD7/
+   CMD16) at most once per slot. The OCR CCS bit selects SDSC (byte) vs
+   SDHC/SDXC (block) addressing for `CMD17`.
+3. **ARM9** `arm9_storage_probe()` reads LBA 0 through the delegated
+   `IPC_CMD_READ_SECTOR`, checks the `0xAA55` boot signature, locates the FAT
+   partition with the pure `fat_mbr_find_fat_partition()` helper and mounts the
+   volume to classify it FAT16/FAT32 and read its size.
+4. The top screen shows presence + `SDSC`/`SDHC`, `MBR:YES/NO`, `FS:FAT16/32`
+   and the capacity in MiB; `[6]` reports a specific reason when it cannot
+   browse (`SD UNAVAILABLE (DS MODE)`, `NO SD CARD MOUNTED`,
+   `MOUNT FAILED (NOT FAT16/32)`).
+
+No write command (`CMD24`/`CMD25`) exists outside the
+`ENABLE_NAND_WRITE_DANGER` build, and `IPC_CMD_WRITE_SECTOR` remains
+unimplemented, so the whole pipeline is read-only (AGENTS.md §5).
+
+### Verification
+
+`tests/test_sdmmc.c` exercises the pure command/status/OCR decoders and the
+full identification sequence (SDHC and SDSC), `tests/test_fat_ro.c` covers the
+MBR partition scan, FAT16/FAT32 BPB parsing, `.nds`/`.srl` filtering and the
+NDS header unit code + CRC16, and `make verify` validates the packaged header.
 
 

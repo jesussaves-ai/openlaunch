@@ -109,11 +109,18 @@ bool arm9_storage_mount(fat_volume_t *vol, u32 device)
 }
 
 /*
- * LBA-0 smoke-test buffer. Lives in the ARM9 image's .bss, i.e. shared Main
- * RAM (0x0220xxxx), which the ARM7 can write directly. Must NOT be in DTCM.
+ * LBA-0 smoke-test buffer and probe volume. Both live in the ARM9 image's
+ * .bss, i.e. shared Main RAM (0x0220xxxx), which the ARM7 can write directly.
+ * Must NOT be in DTCM.
  */
 static u8 s_sector0[IPC_STORAGE_SECTOR_SIZE];
+static fat_volume_t s_probe_vol;
 
+/*
+ * Read LBA 0 (the MBR / VBR), check the 0xAA55 boot signature, locate the FAT
+ * partition (if the sector is an MBR) and classify the volume as FAT16/FAT32
+ * with its total size. Everything is read-only and delegated to the ARM7.
+ */
 void arm9_storage_probe(arm9_storage_probe_t *out)
 {
     if (out == NULL) {
@@ -123,11 +130,36 @@ void arm9_storage_probe(arm9_storage_probe_t *out)
     out->ok = false;
     out->mbr_signature = false;
     out->signature = 0u;
+    out->fs_type = FAT_TYPE_NONE;
+    out->partition_type = 0u;
+    out->partition_lba = 0u;
+    out->total_sectors = 0u;
 
-    if (arm9_storage_read_sectors(IPC_STORAGE_DEV_SD, 0u, s_sector0, 1u)) {
-        out->ok = true;
-        out->signature = (u16)((u16)s_sector0[510] |
-                               ((u16)s_sector0[511] << 8));
-        out->mbr_signature = (out->signature == 0xAA55u);
+    if (!arm9_storage_read_sectors(IPC_STORAGE_DEV_SD, 0u, s_sector0, 1u)) {
+        return;
+    }
+
+    out->ok = true;
+    out->signature = (u16)((u16)s_sector0[510] |
+                           ((u16)s_sector0[511] << 8));
+    out->mbr_signature = (out->signature == 0xAA55u);
+
+    {
+        fat_mbr_partition_t part;
+
+        if (fat_mbr_find_fat_partition(s_sector0, &part)) {
+            out->partition_type = part.type;
+            out->partition_lba = part.lba;
+        }
+    }
+
+    /* Classify the volume (FAT16/FAT32) and read its size. */
+    if (fat_mount(&s_probe_vol, sd_read_sector,
+                  (void *)(uintptr_t)IPC_STORAGE_DEV_SD)) {
+        out->fs_type = (u8)s_probe_vol.type;
+        out->total_sectors = s_probe_vol.total_sectors;
+        if (out->partition_lba == 0u) {
+            out->partition_lba = s_probe_vol.partition_lba;
+        }
     }
 }

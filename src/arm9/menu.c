@@ -168,15 +168,17 @@ static void diag_query_rtc(menu_diag_t *d)
 
 static void diag_query_sd(menu_diag_t *d)
 {
-    u32 r[3];
+    u32 r[4];
 
     d->sd_flags = IPC_SD_FLAG_UNAVAILABLE;
     d->sd_raw = 0u;
+    d->sd_card_type = 0u;
 
-    if (arm9_ipc_query(IPC_CH_SYSTEM, IPC_CMD_GET_SDMMC_STATUS, r, 3u,
-                       MENU_IPC_TIMEOUT) >= 3u) {
+    if (arm9_ipc_query(IPC_CH_SYSTEM, IPC_CMD_GET_SDMMC_STATUS, r, 4u,
+                       MENU_IPC_TIMEOUT) >= 4u) {
         d->sd_flags = (u8)r[1];
         d->sd_raw = r[2];
+        d->sd_card_type = (r[3] & IPC_SD_INFO_BLOCK_ADDRESSED) ? 1u : 0u;
     }
 }
 
@@ -191,6 +193,8 @@ static void diag_sd_read(menu_diag_t *d)
     arm9_storage_probe(&probe);
     d->sd_read_ok = probe.ok;
     d->sd_mbr_ok = probe.mbr_signature;
+    d->sd_fs_type = probe.fs_type;
+    d->sd_total_sectors = probe.total_sectors;
 }
 
 static void diag_query_fw(menu_diag_t *d)
@@ -351,10 +355,19 @@ static void render_telemetry(const menu_diag_t *d)
                    "ARM7 : %s (%u)", d->ipc_ok ? "OK" : "TIMEOUT",
                    (unsigned)d->ipc_ping_count);
 
-    console_printf(0, 7,
-                   ((d->sd_flags & (IPC_SD_FLAG_ERROR | IPC_SD_FLAG_UNAVAILABLE)) != 0u)
-                       ? CONSOLE_PAL_YELLOW : CONSOLE_PAL_GREEN,
-                   "SD   : %s", sd_status_text(d->sd_flags));
+    {
+        u8 sd_pal = ((d->sd_flags & (IPC_SD_FLAG_ERROR | IPC_SD_FLAG_UNAVAILABLE)) != 0u)
+                        ? CONSOLE_PAL_YELLOW : CONSOLE_PAL_GREEN;
+
+        if ((d->sd_flags & IPC_SD_FLAG_PRESENT) != 0u) {
+            console_printf(0, 7, sd_pal, "SD   : %s %s",
+                           sd_status_text(d->sd_flags),
+                           (d->sd_card_type != 0u) ? "SDHC" : "SDSC");
+        } else {
+            console_printf(0, 7, sd_pal, "SD   : %s",
+                           sd_status_text(d->sd_flags));
+        }
+    }
 
     if (d->rtc_valid) {
         console_printf(0, 8, CONSOLE_PAL_GREEN, "RTC  : %02u-%02u-%02u %02u:%02u:%02u",
@@ -391,10 +404,22 @@ static void render_telemetry(const menu_diag_t *d)
                    (d->last_action != NULL) ? d->last_action : "-");
 
     if (d->sd_read_ok) {
-        console_printf(0, 14, CONSOLE_PAL_GREEN, "SD RD: OK  MBR:%s",
-                       d->sd_mbr_ok ? "YES" : "NO");
+        const char *fs = "none";
+
+        if (d->sd_fs_type == FAT_TYPE_FAT16) {
+            fs = "FAT16";
+        } else if (d->sd_fs_type == FAT_TYPE_FAT32) {
+            fs = "FAT32";
+        }
+        console_printf(0, 14, CONSOLE_PAL_GREEN, "SD RD: OK MBR:%s FS:%s",
+                       d->sd_mbr_ok ? "YES" : "NO", fs);
     } else {
         console_puts(0, 14, CONSOLE_PAL_YELLOW, "SD RD: unavailable");
+    }
+
+    if (d->sd_total_sectors != 0u) {
+        console_printf(0, 16, CONSOLE_PAL_GREY, "SDCAP: %u MiB",
+                       (unsigned)((d->sd_total_sectors + 2047u) / 2048u));
     }
 
     if (d->boot_loaded) {
@@ -510,12 +535,28 @@ static void menu_browse_view(menu_diag_t *d)
     input_state_t keys = { 0u, 0u, 0u };
     u32 count = 0u;
     u32 cursor = 0u;
-    bool mounted;
+    bool mounted = false;
+    const char *fail_reason = NULL;
 
     d->fat_ok = false;
     d->boot_loaded = false;
+    d->sd_fs_type = FAT_TYPE_NONE;
+    d->sd_total_sectors = 0u;
 
-    mounted = arm9_storage_mount(&s_fat_vol, IPC_STORAGE_DEV_SD);
+    /* Refresh the SD/TMIO status so the diagnostic is specific. */
+    diag_query_sd(d);
+
+    if ((d->sd_flags & IPC_SD_FLAG_UNAVAILABLE) != 0u) {
+        fail_reason = "SD UNAVAILABLE (DS MODE)";
+    } else if ((d->sd_flags & IPC_SD_FLAG_PRESENT) == 0u) {
+        fail_reason = "NO SD CARD MOUNTED";
+    } else {
+        mounted = arm9_storage_mount(&s_fat_vol, IPC_STORAGE_DEV_SD);
+        if (!mounted) {
+            fail_reason = "MOUNT FAILED (NOT FAT16/32)";
+        }
+    }
+
     if (mounted) {
         fat_dir_iter_t it;
 
@@ -525,6 +566,8 @@ static void menu_browse_view(menu_diag_t *d)
             count++;
         }
         d->fat_ok = true;
+        d->sd_fs_type = (u8)s_fat_vol.type;
+        d->sd_total_sectors = s_fat_vol.total_sectors;
     }
 
     /*
@@ -542,8 +585,8 @@ static void menu_browse_view(menu_diag_t *d)
         console_clear();
         console_puts(0, 0, CONSOLE_PAL_CYAN, "SD CARD / BOOT FILES");
 
-        if (!mounted) {
-            console_puts(0, 2, CONSOLE_PAL_RED, "MOUNT FAILED");
+        if (fail_reason != NULL) {
+            console_puts(0, 2, CONSOLE_PAL_RED, fail_reason);
         } else if (count == 0u) {
             console_puts(0, 2, CONSOLE_PAL_YELLOW, "NO .NDS/.SRL FILES");
         } else {

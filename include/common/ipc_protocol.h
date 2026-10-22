@@ -49,7 +49,7 @@
  * switch table so they cannot collide with FUN_0001f21c cases.
  */
 #define IPC_CMD_GET_RTC         0x100Bu   /* -> status, date, time          */
-#define IPC_CMD_GET_SDMMC_STATUS 0x100Cu  /* -> flags, raw TMIO status      */
+#define IPC_CMD_GET_SDMMC_STATUS 0x100Cu  /* -> flags, raw status, card info */
 #define IPC_CMD_GET_FW_INFO     0x100Eu   /* -> flags, JEDEC id             */
 #define IPC_CMD_GET_EXTKEY      0x100Fu   /* -> (flags<<16)|extkey bits     */
 
@@ -102,7 +102,7 @@
 
 /* Payload word counts (excluding the reply header). */
 #define IPC_REPLY_RTC_WORDS     3u
-#define IPC_REPLY_SD_WORDS      2u
+#define IPC_REPLY_SD_WORDS      3u   /* flags, raw status, card info       */
 #define IPC_REPLY_FW_WORDS      2u
 #define IPC_REPLY_EXTKEY_WORDS  1u
 #define IPC_REPLY_READ_WORDS    2u   /* flags, transferred (sectors/bytes) */
@@ -118,6 +118,15 @@
 #define IPC_SD_FLAG_READONLY     BIT(2)
 #define IPC_SD_FLAG_ERROR        BIT(3)
 #define IPC_SD_FLAG_UNAVAILABLE  BIT(4)   /* legacy DS: no TMIO controller */
+
+/*
+ * IPC_CMD_GET_SDMMC_STATUS card-info bits (payload word 2). Populated from the
+ * OCR CCS bit once the read-only identification sequence has run; 0 while the
+ * card is absent or has not been identified yet.
+ */
+#define IPC_SD_INFO_BLOCK_ADDRESSED BIT(0) /* SDHC/SDXC (block-addressed)  */
+#define IPC_SD_INFO_SDHC            IPC_SD_INFO_BLOCK_ADDRESSED
+#define IPC_SD_INFO_CARD_READY      BIT(1) /* reached the transfer state    */
 
 /* IPC_CMD_GET_FW_INFO flag bits (payload word 0). */
 #define IPC_FW_FLAG_OK           BIT(0)

@@ -455,9 +455,13 @@ static void test_nds_header(void)
     nds_header_t h;
     u16 crc;
 
+    /* CRC-16/MODBUS known-answer vector. */
+    assert(nds_crc16((const u8 *)"123456789", 9u) == 0x4B37u);
+
     memset(hdr, 0, sizeof(hdr));
     memcpy(hdr + NDS_TITLE_OFF, "TEST GAME", 9);
     memcpy(hdr + NDS_GAMECODE_OFF, "TEST", 4);
+    hdr[NDS_UNIT_CODE_OFF] = NDS_UNIT_CODE_NDS_DSI;
     crc = nds_crc16(hdr, NDS_HEADER_CRC_LEN);
     put16(hdr, NDS_HEADER_CRC_OFF, crc);
 
@@ -467,6 +471,21 @@ static void test_nds_header(void)
     assert(h.crc_ok);
     assert(h.stored_crc == h.computed_crc);
 
+    /* Unit code: the hybrid advertises DSi support, NDS does not. */
+    assert(h.unit_code == NDS_UNIT_CODE_NDS_DSI);
+    assert(h.twl_capable);
+
+    hdr[NDS_UNIT_CODE_OFF] = NDS_UNIT_CODE_NDS;
+    put16(hdr, NDS_HEADER_CRC_OFF, nds_crc16(hdr, NDS_HEADER_CRC_LEN));
+    assert(nds_header_parse(hdr, sizeof(hdr), &h));
+    assert(h.unit_code == NDS_UNIT_CODE_NDS);
+    assert(!h.twl_capable);
+
+    hdr[NDS_UNIT_CODE_OFF] = NDS_UNIT_CODE_DSI;
+    put16(hdr, NDS_HEADER_CRC_OFF, nds_crc16(hdr, NDS_HEADER_CRC_LEN));
+    assert(nds_header_parse(hdr, sizeof(hdr), &h));
+    assert(h.twl_capable);
+
     /* A single flipped byte invalidates the header CRC. */
     hdr[0x100] ^= 0xFFu;
     assert(nds_header_parse(hdr, sizeof(hdr), &h));
@@ -475,6 +494,87 @@ static void test_nds_header(void)
     /* Too short. */
     assert(!nds_header_parse(hdr, 16u, &h));
     assert(!nds_header_parse(NULL, sizeof(hdr), &h));
+}
+
+/* ------------------------------------------------------------------ */
+/* MBR partition scanning + BPB validation                             */
+/* ------------------------------------------------------------------ */
+
+static void test_mbr_partition_scan(void)
+{
+    u8 sec[FAT_SECTOR_SIZE];
+    fat_mbr_partition_t p;
+
+    /* No 0x55AA signature => not an MBR. */
+    memset(sec, 0, sizeof(sec));
+    assert(!fat_mbr_find_fat_partition(sec, &p));
+
+    /* Signature + a FAT32-LBA partition in slot 2. */
+    memset(sec, 0, sizeof(sec));
+    sec[510] = 0x55; sec[511] = 0xAA;
+    sec[446 + 2 * 16 + 4] = FAT_PART_TYPE_FAT32_LBA;
+    put32(sec, 446 + 2 * 16 + 8, 2048);
+    put32(sec, 446 + 2 * 16 + 12, 1000);
+    assert(fat_mbr_find_fat_partition(sec, &p));
+    assert(p.present);
+    assert(p.type == FAT_PART_TYPE_FAT32_LBA);
+    assert(p.lba == 2048u);
+    assert(p.sector_count == 1000u);
+
+    /* Signature but the only entry is a non-FAT type (NTFS 0x07). */
+    memset(sec, 0, sizeof(sec));
+    sec[510] = 0x55; sec[511] = 0xAA;
+    sec[446 + 4] = 0x07;
+    put32(sec, 446 + 8, 63);
+    put32(sec, 446 + 12, 100);
+    assert(!fat_mbr_find_fat_partition(sec, &p));
+
+    /* FAT type but a zero start LBA is ignored. */
+    memset(sec, 0, sizeof(sec));
+    sec[510] = 0x55; sec[511] = 0xAA;
+    sec[446 + 4] = FAT_PART_TYPE_FAT16;
+    put32(sec, 446 + 8, 0);
+    put32(sec, 446 + 12, 100);
+    assert(!fat_mbr_find_fat_partition(sec, &p));
+
+    assert(!fat_mbr_find_fat_partition(NULL, &p));
+}
+
+static void test_fat12_rejected(void)
+{
+    fat_volume_t vol;
+
+    memset(g_img, 0, sizeof(g_img));
+    build_fat16(g_img, 0u);
+    g_img_sectors = F16_TOTAL;
+    memcpy(g_img + 54, "FAT12   ", 8);
+    assert(!fat_mount(&vol, test_read, NULL));
+}
+
+static void test_bad_bpb(void)
+{
+    fat_volume_t vol;
+
+    /* Bytes per sector must be 512. */
+    memset(g_img, 0, sizeof(g_img));
+    build_fat16(g_img, 0u);
+    g_img_sectors = F16_TOTAL;
+    put16(g_img, 11, 1024);
+    assert(!fat_mount(&vol, test_read, NULL));
+
+    /* Sectors per cluster must be a power of two. */
+    memset(g_img, 0, sizeof(g_img));
+    build_fat16(g_img, 0u);
+    g_img_sectors = F16_TOTAL;
+    g_img[13] = 3;
+    assert(!fat_mount(&vol, test_read, NULL));
+
+    /* At least one FAT is required. */
+    memset(g_img, 0, sizeof(g_img));
+    build_fat16(g_img, 0u);
+    g_img_sectors = F16_TOTAL;
+    g_img[16] = 0;
+    assert(!fat_mount(&vol, test_read, NULL));
 }
 
 int main(void)
@@ -487,6 +587,9 @@ int main(void)
     test_mount_failures();
     test_nds_filter();
     test_nds_header();
+    test_mbr_partition_scan();
+    test_fat12_rejected();
+    test_bad_bpb();
 
     puts("test_fat_ro: all assertions passed");
     return 0;

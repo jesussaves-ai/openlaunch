@@ -144,3 +144,21 @@ Consequences:
   `MBK9` write-protect). The register-inspection screen and top-screen
   telemetry now show the live mode, ARM9 clock, RAM window and all nine MBK
   registers. Covered by `tests/test_scfg.c` (docs §14).
+* **TWL hybrid header** — `scripts/pack_nds.py` now writes unit code `0x02`
+  (NDS + DSi) instead of the DSi-exclusive `0x03`, so a DSi launcher/emulator
+  (and melonDS in DSi console mode) keeps native TWL mode active
+  (`SCFG_A9ROM == 0x01`) while the image stays DS-bootable. `verify_rom.py`
+  re-checks the logo/header CRC16s and asserts the hybrid unit code with a
+  non-zero TWL region mask. `src/common/nds_header.c` decodes the field for the
+  SD browser (docs §24).
+* **TMIO0 read-only SD probe/browse** — the ARM7 now brings the DSi SD/MMC
+  block up (`sdmmc_enable_clock()` sets `SCFG_EXT7.bit18` + `SCFG_CLK7.bit0`,
+  self-gated on DSi mode) and runs the full read-only identification sequence
+  (CMD0/CMD8/ACMD41/CMD2/CMD3/CMD9/CMD7/CMD16) once per slot, after the
+  presence gate. The OCR CCS bit selects SDSC byte vs SDHC/SDXC block
+  addressing for CMD17. `IPC_CMD_GET_SDMMC_STATUS` gained a card-info word, and
+  `arm9_storage_probe()` now reports the LBA-0 `0xAA55` signature, the MBR
+  partition type, the FAT16/FAT32 volume type and capacity. `[3]` and `[6]`
+  render all of it or a specific failure reason. No write command exists outside
+  `ENABLE_NAND_WRITE_DANGER` (docs §24, AGENTS.md §5). Covered by the extended
+  `tests/test_sdmmc.c` and `tests/test_fat_ro.c`.

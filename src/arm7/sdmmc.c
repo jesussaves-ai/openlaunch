@@ -24,6 +24,7 @@
  * compiled out unless ENABLE_NAND_WRITE_DANGER is defined.
  */
 #include "arm7/sdmmc.h"
+#include "common/dsi_hw.h"
 
 /* ------------------------------------------------------------------ */
 /* Register access                                                     */
@@ -61,12 +62,12 @@ u32 sdmmc_status(const sdmmc_t *c)
 
 bool sdmmc_has_error(const sdmmc_t *c)
 {
-    return (sdmmc_status(c) & TMIO_ST_ERR_MASK) != 0u;
+    return tmio_status_error(sdmmc_status(c));
 }
 
 /* Build an SD_CMD register word (see the field layout in sdmmc.h). */
-static u16 tmio_cmd_word(u32 index, u32 type, u32 resp,
-                         bool data, bool read, bool multi)
+u16 tmio_cmd_word(u32 index, u32 type, u32 resp,
+                  bool data, bool read, bool multi)
 {
     u16 v = (u16)(index & TMIO_CMD_INDEX_MASK);
 
@@ -268,9 +269,43 @@ void sdmmc_init_instance(sdmmc_t *c, uintptr_t base, bool is_emmc)
     c->base = base;
     c->is_emmc = is_emmc;
     c->initialized = false;
+    c->card_ready = false;
     c->block_addressed = false;
     c->rca = 0u;
     c->timeout = TMIO_DEFAULT_TIMEOUT;
+}
+
+/*
+ * Bring the DSi SD/MMC block out of reset: SCFG_EXT7.bit18 grants the ARM7
+ * access to 0x04004800-0x040049FF and SCFG_CLK7.bit0 runs the block clock.
+ * Both are required before any TMIO register is read or written. A no-op on a
+ * legacy DS and on a DSi running an NDS title (see docs/hardware_notes.md §24).
+ */
+void sdmmc_enable_clock(void)
+{
+#ifdef SDMMC_IO_HOOKS
+    /* Host mock: there is no SCFG page, nothing to enable. */
+#else
+    u16 a9rom = (u16)(REG16(SCFG_A9ROM) & SCFG_A9ROM_MODE_MASK);
+    u32 ext;
+
+    /*
+     * Only a DSi in DSi mode (A9ROM == 0x01) owns the TMIO block. 0x03 is a
+     * DSi running an NDS title (DS compatibility) and 0x00 a legacy DS / hidden
+     * page; in both cases the SCFG page must not be reprogrammed.
+     */
+    if (a9rom != SCFG_A9ROM_DSI_MODE) {
+        return;
+    }
+
+    /* Grant access to the SD/MMC register window (keep SCFG/MBK unlocked). */
+    ext = REG32(SCFG_EXT);
+    ext |= SCFG_EXT7_SDMMC_ACCESS | SCFG_EXT_SCFG_ACCESS;
+    REG32(SCFG_EXT) = ext;
+
+    /* Run the SD/MMC block clock (mirrors SCFG_EXT7.bit18). */
+    REG16(SCFG_CLK) = (u16)(REG16(SCFG_CLK) | SCFG_CLK7_SDMMC);
+#endif
 }
 
 void sdmmc_init_controller(sdmmc_t *c)
@@ -278,6 +313,9 @@ void sdmmc_init_controller(sdmmc_t *c)
     if (c == NULL) {
         return;
     }
+
+    /* Enable the DSi block clock/power before touching any TMIO register. */
+    sdmmc_enable_clock();
 
     /* Slot select: bit0 chooses the SD card (0) or the onboard eMMC (1). */
     SD_W16(c->base, TMIO_REG_PORTSEL,
@@ -315,6 +353,7 @@ bool sdmmc_card_init(sdmmc_t *c)
         return false;
     }
 
+    c->card_ready = false;
     c->initialized = true;
     c->timeout = TMIO_INIT_TIMEOUT;
 
@@ -344,7 +383,7 @@ bool sdmmc_card_init(sdmmc_t *c)
 
         if (ok) {
             ocr = resp[0];
-            if ((ocr & 0x80000000u) != 0u) {
+            if (tmio_ocr_ready(ocr)) {
                 ready = true;
                 break;
             }
@@ -353,7 +392,7 @@ bool sdmmc_card_init(sdmmc_t *c)
     }
 
     /* OCR bit30 (CCS) selects block vs byte addressing for data commands. */
-    c->block_addressed = (ocr & (1u << 30)) != 0u;
+    c->block_addressed = tmio_ocr_block_addressed(ocr);
 
     /* CMD2: ALL_SEND_CID (R2). */
     (void)sdmmc_send_command(c, 2u, 0u, 4u, resp);
@@ -376,6 +415,7 @@ bool sdmmc_card_init(sdmmc_t *c)
     SD_W16(c->base, TMIO_REG_CLK, (u16)(TMIO_CLK_ENABLE | TMIO_CLK_DIV_FAST));
 
     c->timeout = TMIO_DEFAULT_TIMEOUT;
+    c->card_ready = ready;
     return ready;
 }
 
@@ -402,9 +442,8 @@ void sdmmc_get_status(const sdmmc_t *c, sdmmc_status_t *out)
     wp = SD_R16(c->base, TMIO_REG_WRPROTECT);
 
     out->raw_status = status;
-    out->error = (status & TMIO_ST_ERR_MASK) != 0u;
-    out->present = (status != 0xFFFFFFFFu) &&
-                   ((status & TMIO_ST_SIGSTATE) != 0u);
+    out->error = tmio_status_error(status);
+    out->present = tmio_status_card_present(status);
     out->initialized = c->initialized;
     out->write_protected = (wp & 0x0001u) != 0u;
 }

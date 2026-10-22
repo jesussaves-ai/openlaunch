@@ -106,7 +106,8 @@
 typedef struct {
     uintptr_t base;          /* TMIO_SD_BASE (mock pointer on host)         */
     bool  is_emmc;           /* onboard eMMC => read-only policy applies    */
-    bool  initialized;       /* card identification has been attempted      */
+    bool  initialized;       /* controller programmed / card init attempted */
+    bool  card_ready;        /* card reached the transfer state (CMD7 ok)   */
     bool  block_addressed;   /* true => command argument is a block (LBA)   */
     u32   rca;               /* relative card address from CMD3             */
     u32   timeout;           /* poll iterations per wait                    */
@@ -124,6 +125,56 @@ typedef struct {
     u32  raw_status;       /* raw TMIO_REG_STATUS                         */
 } sdmmc_status_t;
 
+/* ------------------------------------------------------------------ */
+/* Pure decoders (host-testable; no register access)                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Build an SD_CMD register word from its fields (see the field layout above).
+ * Exposed so the command serializer can be unit-tested without hardware.
+ */
+u16 tmio_cmd_word(u32 index, u32 type, u32 resp,
+                  bool data, bool read, bool multi);
+
+/* True when any hard-error bit is set in a raw SD_IRQ_STATUS word. */
+static inline bool tmio_status_error(u32 status)
+{
+    return (status & TMIO_ST_ERR_MASK) != 0u;
+}
+
+/*
+ * True when the slot reports a card. 0xFFFFFFFF is the "controller absent /
+ * open bus" value a legacy DS returns, so it is explicitly not "present".
+ */
+static inline bool tmio_status_card_present(u32 status)
+{
+    return (status != 0xFFFFFFFFu) && ((status & TMIO_ST_SIGSTATE) != 0u);
+}
+
+/* True when CMDRESPEND (command response end) is set. */
+static inline bool tmio_status_cmd_done(u32 status)
+{
+    return (status & TMIO_ST_CMD_DONE) != 0u;
+}
+
+/* True when DATAEND (last data block end) is set. */
+static inline bool tmio_status_xfer_done(u32 status)
+{
+    return (status & TMIO_ST_XFER_DONE) != 0u;
+}
+
+/* OCR bit 31: card power-up / ACMD41 busy-complete. */
+static inline bool tmio_ocr_ready(u32 ocr)
+{
+    return (ocr & 0x80000000u) != 0u;
+}
+
+/* OCR bit 30 (CCS): 1 => SDHC/SDXC (block addressing), 0 => SDSC (byte). */
+static inline bool tmio_ocr_block_addressed(u32 ocr)
+{
+    return (ocr & (1u << 30)) != 0u;
+}
+
 /* Read the raw 32-bit IRQ status word. */
 u32 sdmmc_status(const sdmmc_t *c);
 
@@ -134,7 +185,18 @@ bool sdmmc_has_error(const sdmmc_t *c);
 void sdmmc_init_instance(sdmmc_t *c, uintptr_t base, bool is_emmc);
 
 /*
- * Program the controller: soft reset, card option, clock, slot select.
+ * Enable the DSi SD/MMC controller block on the ARM7: set
+ * SCFG_EXT7.bit18 (register-window access) and SCFG_CLK7.bit0 (block clock).
+ * Self-gating: a no-op on a legacy DS (no SCFG page) or when the DSi is
+ * running an NDS title. Read-only with respect to the card (AGENTS.md §5).
+ *
+ * Compiles to an empty stub under the host mock (SDMMC_IO_HOOKS).
+ */
+void sdmmc_enable_clock(void);
+
+/*
+ * Program the controller: enable the block clock/power, soft reset, card
+ * option, clock, slot select.
  *
  * @ref FUN_0001d154  (address 0x01D154) — the reference reset/clock sequence
  * (against the SDIO controller; identical layout).
@@ -144,11 +206,13 @@ void sdmmc_init_controller(sdmmc_t *c);
 /*
  * Best-effort SD/MMC card identification: CMD0, CMD8, ACMD41/CMD1, CMD2,
  * CMD3, CMD9, CMD7, CMD16. Returns true if the card reached the transfer
- * state. As a side effect it sets `block_addressed` from the OCR CCS bit, so
- * it should be run before a read on a high-capacity card.
+ * state. As a side effect it sets `block_addressed` from the OCR CCS bit and
+ * `card_ready` on success, so it should be run before a read on a
+ * high-capacity card. Every command is bounded by `c->timeout`, so an absent
+ * or unresponsive card can never wedge the ARM7.
  *
- * It is NOT called automatically by the read path: like the reference
- * (FUN_0001d6e4), sdmmc_read() assumes the card is already selected.
+ * It is NOT called automatically by sdmmc_read(); the ARM7 IPC layer
+ * (src/arm7/ipc.c) runs it once per slot before the first read.
  */
 bool sdmmc_card_init(sdmmc_t *c);
 

@@ -35,7 +35,9 @@ degenerate inputs) and the keypad edge detector (`input_normalize_*`,
 `tests/test_sdmmc.c` compiles the ARM7 driver with `-DSDMMC_IO_HOOKS`, routing
 every register access to a mock controller. It covers the command serializer,
 the FIFO block reader, byte vs block addressing, the bounded timeout path, the
-controller-error path and partial-block rejection. Built as
+controller-error path, partial-block rejection, the pure command/status/OCR
+decoders (`tmio_cmd_word`, `tmio_status_*`, `tmio_ocr_*`) and the full
+identification sequence for both SDHC (block) and SDSC (byte) cards. Built as
 `build/host_test_sdmmc`.
 
 ## 6. Host unit tests — FAT16/FAT32 + NDS header
@@ -44,8 +46,10 @@ controller-error path and partial-block rejection. Built as
 FAT tables, root directory, data clusters) and exercises `fat_mount()`, the
 volume geometry, `fat_get_next_cluster()`, root-directory listing and the
 `.nds`/`.srl` filter, single- and multi-cluster reads, truncated chains, mount
-failures, and the NDS header CRC16 (`src/common/nds_header.c`). Built as
-`build/host_test_fat`.
+failures, the pure MBR partition scan (`fat_mbr_find_fat_partition()`), FAT12
+and malformed-BPB rejection, and the NDS header unit code + CRC16
+(`src/common/nds_header.c`, including the CRC-16/MODBUS known-answer vector
+`0x4B37`). Built as `build/host_test_fat`.
 
 ## 6b. Host unit tests — SCFG / MBK decoders
 
@@ -71,6 +75,8 @@ make verify       # validate the packaged ROM
   the ELF symbol tables (`_start`, `__rom_start__` via `arm-none-eabi-nm`);
 * the ROM is a power of two of at least 32 KiB, the `0x014` device capacity
   covers it, the `0x080` total-used size is consistent and the padding is `0xFF`;
+* the `0x012` unit code is a valid value and, when DSi-capable, is the
+  NDS+DSi hybrid `0x02` with a non-zero TWL region mask;
 * no eMMC/NAND write symbols (AGENTS.md §5) are present in the linker maps.
 
 ## 8. melonDS smoke test
@@ -103,8 +109,9 @@ loads `build/dsi_bootloader.nds`. The ROM now renders a text console:
 
 ### Recommended melonDS configuration
 
-The image is an **unsigned homebrew TWL/DSi-hybrid** ROM (unit code `0x03`).
-Two configurations work; the second unlocks `SCFG`/extended TWL hardware.
+The image is an **unsigned homebrew TWL/DSi-hybrid** ROM (unit code `0x02`:
+NDS + DSi). Two configurations work; the second unlocks `SCFG`/extended TWL
+hardware.
 
 **A. DS mode / direct boot (simplest; enough for the IPC smoke test)**
 

@@ -105,6 +105,25 @@ typedef struct fat_dir_iter {
     u32  entry_index;          /* next entry within the buffered sector    */
 } fat_dir_iter_t;
 
+/* ---- MBR parsing ------------------------------------------------------- */
+
+/* One MBR partition entry. */
+typedef struct {
+    bool present;       /* signature valid + a recognised FAT partition found */
+    u8   type;          /* MBR partition type byte                            */
+    u32  lba;           /* first sector of the partition                      */
+    u32  sector_count;  /* number of sectors in the partition                 */
+} fat_mbr_partition_t;
+
+/*
+ * Scan a 512-byte MBR sector for the first recognised FAT partition entry.
+ * Returns true and fills `out` when the 0x55AA signature is present and an
+ * entry carries a FAT16/FAT32 type with a non-zero start LBA. Pure, so it can
+ * be exercised against a synthetic sector buffer on the host.
+ */
+bool fat_mbr_find_fat_partition(const u8 sector[FAT_SECTOR_SIZE],
+                                fat_mbr_partition_t *out);
+
 /* ---- Mount / geometry -------------------------------------------------- */
 
 /*

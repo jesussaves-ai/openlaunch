@@ -292,6 +292,101 @@ static void test_get_status(void)
     assert(st.error);
 }
 
+/* ------------------------------------------------------------------ */
+/* Pure decoders (no mock, no register access)                         */
+/* ------------------------------------------------------------------ */
+
+static void test_cmd_word_builder(void)
+{
+    u16 w = tmio_cmd_word(17u, TMIO_CMD_TYPE_CMD, TMIO_CMD_RESP_AUTO,
+                          true, true, false);
+
+    assert((w & TMIO_CMD_INDEX_MASK) == 17u);
+    assert(((w >> TMIO_CMD_TYPE_SHIFT) & 0x3u) == TMIO_CMD_TYPE_CMD);
+    assert(((w >> TMIO_CMD_RESP_SHIFT) & 0x7u) == TMIO_CMD_RESP_AUTO);
+    assert((w & TMIO_CMD_DATA) != 0u);
+    assert((w & TMIO_CMD_READ) != 0u);
+    assert((w & TMIO_CMD_MULTI) == 0u);
+
+    /* The exact word the reference/melonDS log for a CMD17 data read. */
+    assert(w == 0x1811u);
+
+    /* ACMD (CMD55-prefixed) with no response. */
+    w = tmio_cmd_word(41u, TMIO_CMD_TYPE_ACMD, TMIO_CMD_RESP_NONE,
+                      false, false, false);
+    assert((w & TMIO_CMD_INDEX_MASK) == 41u);
+    assert(((w >> TMIO_CMD_TYPE_SHIFT) & 0x3u) == TMIO_CMD_TYPE_ACMD);
+    assert(((w >> TMIO_CMD_RESP_SHIFT) & 0x7u) == TMIO_CMD_RESP_NONE);
+    assert((w & (TMIO_CMD_DATA | TMIO_CMD_READ | TMIO_CMD_MULTI)) == 0u);
+}
+
+static void test_status_decoders(void)
+{
+    assert(!tmio_status_error(0u));
+    assert(tmio_status_error(TMIO_ST_ERR_MASK));
+    assert(tmio_status_error(0x00010000u));   /* command-timeout bit */
+
+    assert(tmio_status_card_present(TMIO_ST_SIGSTATE));
+    assert(!tmio_status_card_present(0u));
+    assert(!tmio_status_card_present(0xFFFFFFFFu));   /* controller absent */
+
+    assert(tmio_status_cmd_done(TMIO_ST_CMD_DONE));
+    assert(!tmio_status_cmd_done(TMIO_ST_XFER_DONE));
+    assert(tmio_status_xfer_done(TMIO_ST_XFER_DONE));
+    assert(!tmio_status_xfer_done(TMIO_ST_CMD_DONE));
+}
+
+static void test_ocr_decoders(void)
+{
+    assert(!tmio_ocr_ready(0u));
+    assert(tmio_ocr_ready(0x80000000u));
+
+    assert(!tmio_ocr_block_addressed(0x80000000u));
+    assert(tmio_ocr_block_addressed(0xC0000000u));
+    assert(!tmio_ocr_block_addressed(0x80FF8000u));
+}
+
+/* ------------------------------------------------------------------ */
+/* Card identification sequence                                        */
+/* ------------------------------------------------------------------ */
+
+static void test_card_init_high_capacity(void)
+{
+    sdmmc_t c;
+
+    mock_reset();
+    sdmmc_init_instance(&c, 0u, false);
+
+    /* ACMD41 reports ready (bit31) with CCS (bit30) => SDHC/SDXC. */
+    g_resp[0] = 0xC1FF8000u;
+    assert(sdmmc_card_init(&c));
+    assert(c.card_ready);
+    assert(c.block_addressed);
+    /* The last command in the sequence is CMD16 (SET_BLOCKLEN). */
+    assert((g_last_cmd & TMIO_CMD_INDEX_MASK) == 16u);
+}
+
+static void test_card_init_standard_capacity(void)
+{
+    sdmmc_t c;
+
+    mock_reset();
+    sdmmc_init_instance(&c, 0u, false);
+
+    /* ACMD41 ready but no CCS bit => SDSC (byte addressing). */
+    g_resp[0] = 0x80FF8000u;
+    assert(sdmmc_card_init(&c));
+    assert(c.card_ready);
+    assert(!c.block_addressed);
+}
+
+static void test_enable_clock_host_stub(void)
+{
+    /* Under SDMMC_IO_HOOKS the SCFG page is absent; the call must be safe. */
+    mock_reset();
+    sdmmc_enable_clock();
+}
+
 int main(void)
 {
     test_command_serializer();
@@ -302,6 +397,12 @@ int main(void)
     test_error();
     test_read_rejects_partial_block();
     test_get_status();
+    test_cmd_word_builder();
+    test_status_decoders();
+    test_ocr_decoders();
+    test_card_init_high_capacity();
+    test_card_init_standard_capacity();
+    test_enable_clock_host_stub();
 
     puts("test_sdmmc: all assertions passed");
     return 0;

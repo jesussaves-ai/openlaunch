@@ -133,24 +133,86 @@ static void ipc_reply_rtc(void)
 }
 
 /*
- * IPC_CMD_GET_SDMMC_STATUS — reply: flags, raw TMIO status.
- * Reads only; never issues a command or writes to the card (AGENTS.md §5).
+ * Persistent TMIO instances. The SD card and the onboard eMMC share the TMIO
+ * controller at 0x04004800 and are selected by port; each instance is
+ * programmed once, on first use, and the read-only identification sequence
+ * runs at most once per slot.
+ */
+static sdmmc_t s_sd;
+static sdmmc_t s_emmc;
+static bool s_sd_opened;
+static bool s_emmc_opened;
+static bool s_sd_ready;
+static bool s_emmc_ready;
+
+/*
+ * Program the requested slot and, when a card is present, run the read-only
+ * card-identification sequence once. `*present` reports the slot state; the
+ * controller instance is always returned so the caller can read its status.
+ * Every command issued here is bounded by the driver timeout, so a missing or
+ * unresponsive card cannot wedge the ARM7.
+ */
+static sdmmc_t *ipc_sd_open(bool emmc, bool *present)
+{
+    sdmmc_t *sc = emmc ? &s_emmc : &s_sd;
+    bool *opened = emmc ? &s_emmc_opened : &s_sd_opened;
+    bool *ready = emmc ? &s_emmc_ready : &s_sd_ready;
+    sdmmc_status_t st;
+
+    if (!*opened) {
+        sdmmc_init_instance(sc, TMIO_SD_BASE, emmc);
+        (void)sdmmc_open(sc);
+        *opened = true;
+    }
+
+    /*
+     * Card-presence gate (read-only probe). The onboard eMMC is always
+     * populated; the SD slot may be empty.
+     */
+    sdmmc_get_status(sc, &st);
+    if (!emmc && !st.present) {
+        if (present != NULL) {
+            *present = false;
+        }
+        return sc;
+    }
+    if (present != NULL) {
+        *present = true;
+    }
+
+    /*
+     * Attempt identification once per slot. The result is cached in
+     * sc->card_ready; a failure is not retried on every subsequent read.
+     */
+    if (!*ready) {
+        (void)sdmmc_card_init(sc);
+        *ready = true;
+    }
+    return sc;
+}
+
+/*
+ * IPC_CMD_GET_SDMMC_STATUS — reply: flags, raw TMIO status, card info.
+ *
+ * The controller is programmed and the card identified (read-only) so the
+ * reply can report SDSC vs SDHC/SDXC via the OCR CCS bit. No write command is
+ * ever issued (AGENTS.md §5).
  */
 static void ipc_reply_sdmmc(void)
 {
     u32 flags = 0u;
     u32 raw = 0u;
+    u32 info = 0u;
 
     if (!ipc_twl_mode()) {
         /* The TMIO controller only exists on a DSi. */
         flags = IPC_SD_FLAG_UNAVAILABLE;
     } else {
-        sdmmc_t c;
+        bool present = false;
+        sdmmc_t *sc = ipc_sd_open(false, &present);
         sdmmc_status_t st;
 
-        sdmmc_init_instance(&c, TMIO_SD_BASE, false);
-        sdmmc_get_status(&c, &st);
-
+        sdmmc_get_status(sc, &st);
         if (st.present) {
             flags |= IPC_SD_FLAG_PRESENT;
         }
@@ -163,6 +225,12 @@ static void ipc_reply_sdmmc(void)
         if (st.error) {
             flags |= IPC_SD_FLAG_ERROR;
         }
+        if (present && sc->block_addressed) {
+            info |= IPC_SD_INFO_BLOCK_ADDRESSED;
+        }
+        if (present && sc->card_ready) {
+            info |= IPC_SD_INFO_CARD_READY;
+        }
         raw = st.raw_status;
     }
 
@@ -170,6 +238,7 @@ static void ipc_reply_sdmmc(void)
                   ipc_reply_header(IPC_CMD_GET_SDMMC_STATUS, IPC_REPLY_SD_WORDS, 0u));
     ipc_fifo_send(IPC_CH_SYSTEM, flags);
     ipc_fifo_send(IPC_CH_SYSTEM, raw);
+    ipc_fifo_send(IPC_CH_SYSTEM, info);
 }
 
 /*
@@ -253,16 +322,6 @@ static void ipc_reply_read(u32 cmd, u32 flags, u32 transferred)
  */
 static void ipc_handle_read_sector(const u32 *args, u32 nargs)
 {
-    /*
-     * Persistent controller state: the SD card and the onboard eMMC share the
-     * same TMIO controller (0x04004800) but are selected by port. Each instance
-     * is opened (controller programmed) once, on first use.
-     */
-    static sdmmc_t s_sd;
-    static sdmmc_t s_emmc;
-    static bool s_sd_opened;
-    static bool s_emmc_opened;
-
     u32 flags = 0u;
     u32 done = 0u;
 
@@ -286,14 +345,8 @@ static void ipc_handle_read_sector(const u32 *args, u32 nargs)
             flags = IPC_IO_FLAG_BAD_ADDR;
         } else {
             bool emmc = (dev == IPC_STORAGE_DEV_EMMC);
-            sdmmc_t *sc = emmc ? &s_emmc : &s_sd;
-            bool *opened = emmc ? &s_emmc_opened : &s_sd_opened;
-
-            if (!*opened) {
-                sdmmc_init_instance(sc, TMIO_SD_BASE, emmc);
-                (void)sdmmc_open(sc);
-                *opened = true;
-            }
+            bool present = false;
+            sdmmc_t *sc = ipc_sd_open(emmc, &present);
 
             /*
              * Card-presence gate (read-only probe). Never issue a data command
@@ -304,20 +357,8 @@ static void ipc_handle_read_sector(const u32 *args, u32 nargs)
              * unavailable so the ARM9 can fall back immediately. The onboard
              * eMMC is always populated, so it skips this gate.
              */
-            if (!emmc) {
-                sdmmc_status_t st;
-
-                sdmmc_get_status(sc, &st);
-                if (!st.present) {
-                    flags = IPC_IO_FLAG_UNAVAILABLE;
-                } else if (sdmmc_read(sc, lba * IPC_STORAGE_SECTOR_SIZE,
-                                      (void *)(uintptr_t)dst,
-                                      count * IPC_STORAGE_SECTOR_SIZE)) {
-                    flags = IPC_IO_FLAG_OK;
-                    done = count;
-                } else {
-                    flags = IPC_IO_FLAG_ERROR;
-                }
+            if (!present) {
+                flags = IPC_IO_FLAG_UNAVAILABLE;
             } else if (sdmmc_read(sc, lba * IPC_STORAGE_SECTOR_SIZE,
                                   (void *)(uintptr_t)dst,
                                   count * IPC_STORAGE_SECTOR_SIZE)) {

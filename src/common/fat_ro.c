@@ -50,6 +50,41 @@ static bool part_type_is_fat(u8 type)
            type == FAT_PART_TYPE_FAT16_LBA;
 }
 
+bool fat_mbr_find_fat_partition(const u8 sector[FAT_SECTOR_SIZE],
+                                fat_mbr_partition_t *out)
+{
+    u32 i;
+
+    if (sector == NULL) {
+        return false;
+    }
+    if (dsi_read_le16(sector + MBR_SIG_OFF) != MBR_SIG_VALUE) {
+        return false;
+    }
+
+    for (i = 0u; i < MBR_PART_COUNT; i++) {
+        const u8 *pe = sector + MBR_PART_OFF + i * MBR_PART_STRIDE;
+        u32 lba = dsi_read_le32(pe + MBR_PART_LBA_OFF);
+        u32 cnt = dsi_read_le32(pe + MBR_PART_CNT_OFF);
+        u8 type = pe[MBR_PART_TYPE_OFF];
+
+        if (lba != 0u && cnt != 0u && part_type_is_fat(type)) {
+            if (out != NULL) {
+                out->present = true;
+                out->type = type;
+                out->lba = lba;
+                out->sector_count = cnt;
+            }
+            return true;
+        }
+    }
+
+    if (out != NULL) {
+        dsi_memset(out, 0, sizeof(*out));
+    }
+    return false;
+}
+
 static bool cluster_in_use(const fat_volume_t *vol, u32 cluster)
 {
     return cluster >= 2u && cluster <= vol->max_cluster;
@@ -242,7 +277,6 @@ bool fat_mount(fat_volume_t *vol, fat_read_sector_fn read_fn, void *ctx)
 {
     u32 part_lba = 0u;
     bool have_partition = false;
-    u32 i;
 
     if (vol == NULL || read_fn == NULL) {
         return false;
@@ -256,18 +290,12 @@ bool fat_mount(fat_volume_t *vol, fat_read_sector_fn read_fn, void *ctx)
     if (!vol_read_sector(vol, 0u, vol->sector_buf)) {
         return false;
     }
-    if (dsi_read_le16(vol->sector_buf + MBR_SIG_OFF) == MBR_SIG_VALUE) {
-        for (i = 0u; i < MBR_PART_COUNT; i++) {
-            const u8 *pe = vol->sector_buf + MBR_PART_OFF +
-                           i * MBR_PART_STRIDE;
-            u32 lba = dsi_read_le32(pe + MBR_PART_LBA_OFF);
-            u32 cnt = dsi_read_le32(pe + MBR_PART_CNT_OFF);
+    {
+        fat_mbr_partition_t part;
 
-            if (lba != 0u && cnt != 0u && part_type_is_fat(pe[MBR_PART_TYPE_OFF])) {
-                part_lba = lba;
-                have_partition = true;
-                break;
-            }
+        if (fat_mbr_find_fat_partition(vol->sector_buf, &part)) {
+            part_lba = part.lba;
+            have_partition = true;
         }
     }
 

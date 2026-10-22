@@ -73,6 +73,24 @@
 #define SCFG_CLK_NWRAM          BIT(7)  /* new shared RAM clock (via ARM7)  */
 #define SCFG_CLK_CAMERA_EXT     BIT(8)  /* camera external clock (16.76 MHz)*/
 
+/*
+ * SCFG_CLK7 (0x04004004) as seen from the ARM7 — a different layout from the
+ * ARM9 SCFG_CLK above (GBATEK "DSi Control Registers (SCFG)"):
+ *
+ *   bit 0  SD/MMC block clock        (0=stop, 1=run)
+ *   bit 1  unknown, backlight-related
+ *   bit 2  unknown
+ *   bit 7  new shared RAM clock
+ *   bit 8  touchscreen clock         (needed for touchscreen input)
+ *
+ * The SD/MMC clock must run before the TMIO block at 0x04004800 is touched.
+ */
+#define SCFG_CLK7_SDMMC         BIT(0)  /* SD/MMC block clock (ARM7 view)    */
+#define SCFG_CLK7_UNKNOWN1      BIT(1)  /* backlight-related                 */
+#define SCFG_CLK7_UNKNOWN2      BIT(2)
+#define SCFG_CLK7_NWRAM         BIT(7)  /* new shared RAM clock (ARM7 view)  */
+#define SCFG_CLK7_TOUCH         BIT(8)  /* touchscreen clock (ARM7 view)     */
+
 /* Nominal ARM9 core clocks selected by SCFG_CLK.bit0. */
 #define SCFG_ARM9_CLK_NITRO_HZ  67028000u   /* 67.03 MHz (NITRO/DS)         */
 #define SCFG_ARM9_CLK_TWL_HZ    134056000u  /* 134.06 MHz (TWL/DSi)         */
@@ -90,10 +108,21 @@
 #define SCFG_EXT_NDMA_ARM9      BIT(16)    /* access to NDMA (0x04004100)    */
 #define SCFG_EXT_CAMERA_ARM9    BIT(17)    /* ARM9: camera interface         */
 #define SCFG_EXT_DSP_ARM9       BIT(18)    /* ARM9: Teak DSP block           */
-#define SCFG_EXT_SDIO_ENABLE    BIT(18)    /* ARM7: access to SD/MMC regs    */
-#define SCFG_EXT_SDIO_WIFI      BIT(19)    /* ARM7: access to SDIO (wifi)    */
+
+/*
+ * SCFG_EXT7 (0x04004008) ARM7-specific access gates (GBATEK "DSi Control
+ * Registers (SCFG)"). Bits 7/12-15 are read-only mirrors of the ARM9 settings;
+ * bits 18/19 are the SD/MMC and SDIO/Wi-Fi register-window enables and are the
+ * ones the ARM7 must set before touching 0x04004800 / 0x04004A00.
+ */
+#define SCFG_EXT7_SDMMC_ACCESS  BIT(18)    /* access to 0x04004800 (SD/MMC)  */
+#define SCFG_EXT7_SDIO_WIFI     BIT(19)    /* access to 0x04004A00 (SDIO)    */
 #define SCFG_EXT_NWRAM_ACCESS   BIT(25)    /* R: new shared RAM enabled      */
 #define SCFG_EXT_SCFG_ACCESS    BIT(31)    /* access to SCFG/MBK registers   */
+
+/* Historical aliases (bit 18 is the SD/MMC window, not SDIO). */
+#define SCFG_EXT_SDIO_ENABLE    SCFG_EXT7_SDMMC_ACCESS
+#define SCFG_EXT_SDIO_WIFI      SCFG_EXT7_SDIO_WIFI
 
 /*
  * Exact SCFG_EXT value programmed by the reference ARM9 crt0

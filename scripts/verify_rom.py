@@ -4,10 +4,12 @@
 Checks performed:
 
   1. Nintendo-logo CRC16 (0x15C) and header CRC16 (0x15E) recompute correctly.
-  2. ARM9/ARM7 ROM offsets, byte sizes and RAM load addresses are consistent,
+  2. The 0x012 unit code is valid and, when DSi-capable, is the NDS+DSi hybrid
+     0x02 with a non-zero TWL region mask.
+  3. ARM9/ARM7 ROM offsets, byte sizes and RAM load addresses are consistent,
      and the entry points match the ``_start`` symbols in the ELF images
      (read with ``arm-none-eabi-nm``); the load addresses match ``__rom_start__``.
-  3. No dangerous eMMC/NAND write symbols (``sdmmc_write`` etc.) are linked into
+  4. No dangerous eMMC/NAND write symbols (``sdmmc_write`` etc.) are linked into
      the ARM7 image (AGENTS.md §5); checked against the linker map files.
 
 Exit status is non-zero if any check fails.
@@ -173,10 +175,16 @@ def main(argv) -> int:
             "computed 0x%04X, stored 0x%04X" % (crc16(rom[:HEADER_CRC_LEN]), header_crc))
 
     # ---- unit code / TWL -------------------------------------------------
+    # 0x00 = NDS, 0x02 = NDS+DSi hybrid, 0x03 = DSi-exclusive. The hybrid is
+    # what keeps native TWL mode active on a DSi while remaining DS-bootable.
     unit = rom[0x12]
-    c.check(unit in (0x00, 0x03), "unit code is 0x00 (NDS) or 0x03 (TWL)",
+    c.check(unit in (0x00, 0x02, 0x03),
+            "unit code is 0x00 (NDS), 0x02 (NDS+DSi) or 0x03 (DSi)",
             "got 0x%02X" % unit)
     if unit & 0x02:
+        c.check(unit == 0x02,
+                "DSi-capable unit code is the NDS+DSi hybrid (0x02)",
+                "got 0x%02X" % unit)
         region_mask = u32(rom, 0x1B0)
         c.check(region_mask != 0,
                 "TWL region mask is non-zero (not a 'bad dump')",
