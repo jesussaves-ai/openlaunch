@@ -12,11 +12,24 @@
  */
 #include "arm9/boot_cfg.h"
 #include "arm9/input.h"
+#include "arm9/theme.h"
 #include "common/mem.h"
 
 /* The key labels, indexed by boot_cfg_key_t. */
 static const char *const s_key_names[BOOT_CFG_KEY_COUNT] = {
     "DEFAULT", "A", "X", "Y", "L", "R", "START"
+};
+
+/* Optional boot-theme directives, indexed by boot_cfg_theme_key_t. */
+typedef enum {
+    BOOT_CFG_THEME_ACCENT = 0,
+    BOOT_CFG_THEME_TEXT,
+    BOOT_CFG_THEME_BG,
+    BOOT_CFG_THEME_SPLASH
+} boot_cfg_theme_key_t;
+
+static const char *const s_theme_key_names[] = {
+    "THEME_ACCENT", "THEME_TEXT", "THEME_BG", "SPLASH_IMAGE"
 };
 
 /* Built-in defaults, used when BOOT.CFG is absent or a key is unspecified. */
@@ -28,6 +41,13 @@ static const boot_cfg_t s_default_cfg = {
         "",
         "",
         "",
+        ""
+    },
+    {
+        THEME_ACCENT_BGR555_DEFAULT,
+        THEME_TEXT_BGR555_DEFAULT,
+        THEME_BG_BGR555_DEFAULT,
+        false,
         ""
     }
 };
@@ -52,6 +72,7 @@ void boot_cfg_defaults(boot_cfg_t *out)
     copy_cstr(out->target[BOOT_CFG_KEY_DEFAULT], BOOT_CFG_DEFAULT_TARGET);
     copy_cstr(out->target[BOOT_CFG_KEY_A], BOOT_CFG_A_TARGET);
     copy_cstr(out->target[BOOT_CFG_KEY_X], BOOT_CFG_X_TARGET);
+    theme_defaults(&out->theme);
 }
 
 const char *boot_cfg_key_name(boot_cfg_key_t key)
@@ -99,6 +120,22 @@ static int key_from_token(const u8 *p, u32 n)
     return -1;   /* includes B and SELECT, which can never be overridden */
 }
 
+/* Map a token to a theme directive, or -1 for an unknown key. */
+static int theme_key_from_token(const u8 *p, u32 n)
+{
+    u32 k;
+
+    if (n == 0u) {
+        return -1;
+    }
+    for (k = 0u; k < ARRAY_SIZE(s_theme_key_names); k++) {
+        if (token_equals_ci(p, n, s_theme_key_names[k])) {
+            return (int)k;
+        }
+    }
+    return -1;
+}
+
 /* Characters permitted in a target path (a conservative ASCII subset). */
 static bool path_char_ok(u8 c)
 {
@@ -110,8 +147,9 @@ static bool path_char_ok(u8 c)
 }
 
 /*
- * Parse one logical line (already stripped of its terminator). A NUL byte or a
- * '#' starts a comment and ends the meaningful content.
+ * Parse one logical line (already stripped of its terminator). A NUL byte ends
+ * the content; a '#' at the start of a line or after whitespace starts a
+ * comment (so a `#RRGGBB` colour is preserved).
  */
 static void boot_cfg_line(const u8 *line, u32 n, boot_cfg_t *out)
 {
@@ -121,9 +159,20 @@ static void boot_cfg_line(const u8 *line, u32 n, boot_cfg_t *out)
     u32 eq = 0u;
     bool has_eq = false;
     int keyidx;
+    int themekey;
 
+    /*
+     * A NUL byte always ends the meaningful content. `#` starts a comment only
+     * at the start of a line or after whitespace, so a `#RRGGBB` colour value is
+     * not swallowed as a comment.
+     */
     for (i = 0u; i < n; i++) {
-        if (line[i] == 0x00u || line[i] == '#') {
+        if (line[i] == 0x00u) {
+            n = i;
+            break;
+        }
+        if (line[i] == '#' &&
+            (i == 0u || line[i - 1u] == ' ' || line[i - 1u] == '\t')) {
             n = i;
             break;
         }
@@ -177,20 +226,60 @@ static void boot_cfg_line(const u8 *line, u32 n, boot_cfg_t *out)
         }
 
         keyidx = key_from_token(line + key_start, key_end - key_start);
-        if (keyidx < 0) {
-            return;   /* unknown key (or B / SELECT) */
-        }
-        if (ve - vs >= BOOT_CFG_PATH_MAX) {
-            return;   /* target too long: drop the line, keep the default */
-        }
-        for (i = vs; i < ve; i++) {
-            if (!path_char_ok(line[i])) {
-                return;   /* invalid character */
+        if (keyidx >= 0) {
+            if (ve - vs >= BOOT_CFG_PATH_MAX) {
+                return;   /* target too long: drop the line, keep the default */
             }
+            for (i = vs; i < ve; i++) {
+                if (!path_char_ok(line[i])) {
+                    return;   /* invalid character */
+                }
+            }
+            dsi_memcpy(out->target[keyidx], line + vs, ve - vs);
+            out->target[keyidx][ve - vs] = '\0';
+            return;
         }
 
-        dsi_memcpy(out->target[keyidx], line + vs, ve - vs);
-        out->target[keyidx][ve - vs] = '\0';
+        /* Optional theme directives; unknown keys stay ignored. */
+        themekey = theme_key_from_token(line + key_start, key_end - key_start);
+        if (themekey < 0) {
+            return;
+        }
+
+        switch ((boot_cfg_theme_key_t)themekey) {
+        case BOOT_CFG_THEME_ACCENT:
+        case BOOT_CFG_THEME_TEXT:
+        case BOOT_CFG_THEME_BG: {
+            u16 color;
+
+            if (!theme_parse_color(line + vs, ve - vs, &color)) {
+                return;   /* malformed colour: keep the default */
+            }
+            if (themekey == BOOT_CFG_THEME_ACCENT) {
+                out->theme.accent = color;
+            } else if (themekey == BOOT_CFG_THEME_TEXT) {
+                out->theme.text = color;
+            } else {
+                out->theme.bg = color;
+            }
+            break;
+        }
+        case BOOT_CFG_THEME_SPLASH:
+            if (ve - vs >= THEME_PATH_MAX) {
+                return;   /* splash path too long */
+            }
+            for (i = vs; i < ve; i++) {
+                if (!path_char_ok(line[i])) {
+                    return;   /* invalid character */
+                }
+            }
+            dsi_memcpy(out->theme.splash_path, line + vs, ve - vs);
+            out->theme.splash_path[ve - vs] = '\0';
+            out->theme.has_splash = true;
+            break;
+        default:
+            break;
+        }
     }
 }
 

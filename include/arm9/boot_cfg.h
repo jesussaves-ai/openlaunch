@@ -19,12 +19,22 @@
  * supplied buffer. B and SELECT are deliberately *not* recognised keys: they
  * can never be overridden and always force the interactive diagnostic menu
  * (BOOT_POLICY_MENU).
+ *
+ * The same buffer may also carry the optional boot-theme directives parsed into
+ * `boot_cfg_t.theme` (see include/arm9/theme.h):
+ *
+ *     THEME_ACCENT=#00FFCC      THEME_TEXT=0xFFFFFF      THEME_BG=#000000
+ *     SPLASH_IMAGE=SPLASH.RAW
+ *
+ * A `#` begins a comment only at the start of a line or after whitespace, so a
+ * `#RRGGBB` colour value is never mistaken for a comment.
  */
 #ifndef DSI_ARM9_BOOT_CFG_H
 #define DSI_ARM9_BOOT_CFG_H
 
 #include "../common/types.h"
 #include "boot.h"
+#include "theme.h"
 
 /* Maximum bytes read from BOOT.CFG (one sector). */
 #define BOOT_CFG_READ_LEN 512u
@@ -48,9 +58,11 @@ typedef enum {
     BOOT_CFG_KEY_COUNT
 } boot_cfg_key_t;
 
-/* The parsed hotkey table. Every target is NUL-terminated. */
+/* The parsed hotkey table plus the optional theme. Every target is
+ * NUL-terminated. */
 typedef struct {
     char target[BOOT_CFG_KEY_COUNT][BOOT_CFG_PATH_MAX];
+    theme_config_t theme;
 } boot_cfg_t;
 
 /* Built-in defaults (used when BOOT.CFG is absent or a key is unspecified). */
@@ -60,7 +72,8 @@ typedef struct {
 
 /*
  * Reset `out` to the built-in defaults (DEFAULT = BOOT.NDS, A = HELLO.NDS,
- * X = NDS/HELLO.NDS; Y/L/R/START unbound). Pure.
+ * X = NDS/HELLO.NDS; Y/L/R/START unbound) and the AMOLED theme defaults
+ * (accent 0x00FF88, text 0xFFFFFF, bg 0x000000, no splash). Pure.
  */
 void boot_cfg_defaults(boot_cfg_t *out);
 

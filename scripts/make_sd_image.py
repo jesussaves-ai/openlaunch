@@ -15,6 +15,9 @@ with real, loadable and negative-test ``.nds`` payloads for the chainloader:
                 reservation (``NDS_ERR_OVERLAP_BOOTLOADER``)
   README.TXT    a non-executable file, ignored by the ``.nds``/``.srl`` browser
                 filter
+  BOOT.CFG      the autoboot hotkey map plus the optional boot-theme directives
+                (THEME_ACCENT / THEME_TEXT / THEME_BG / SPLASH_IMAGE)
+  SPLASH.RAW    a deterministic 256x192 15-bit BGR555 theme backdrop
 
 All three loadable payloads (HELLO.NDS, BOOT.NDS and NDS/SUBAPP.NDS) carry a
 canonical, unpatched ``"NONE"`` DLDI stub in their ARM9 segment (1 KiB
@@ -84,6 +87,11 @@ NDS_BANNER_TITLE_BYTES = 256
 BOOTLOADER_RESERVE_BASE = 0x02100000
 BOOTLOADER_RESERVE_END = 0x02280000
 OVERLAP_ARM9_ADDR = 0x02200000    # inside [RESERVE_BASE, RESERVE_END)
+
+# Boot theme splash (mirror include/arm9/theme.h): raw 256x192 15-bit BGR555.
+THEME_SPLASH_WIDTH = 256
+THEME_SPLASH_HEIGHT = 192
+THEME_SPLASH_BYTES = THEME_SPLASH_WIDTH * THEME_SPLASH_HEIGHT * 2
 
 
 def crc16(data: bytes) -> int:
@@ -159,13 +167,38 @@ BOOT_NDS_TITLE = b"AUTOBOOT OK"
 # make_boot_variant); the full string documents the intended identity.
 SUBDIR_PAYLOAD_TITLE = b"SUBDIR PAYLOAD"
 
-# Root BOOT.CFG contents (CRLF endings, a leading comment and the hotkey map).
+# Root BOOT.CFG contents (CRLF endings, a leading comment, the hotkey map and
+# the optional theme / splash directives parsed by src/arm9/boot_cfg.c).
 BOOT_CFG_CONTENT = (
     b"# OpenLaunch autoboot configuration\r\n"
     b"DEFAULT=BOOT.NDS\r\n"
     b"A=HELLO.NDS\r\n"
     b"X=NDS/SUBAPP.NDS\r\n"
+    b"THEME_ACCENT=#00FFCC\r\n"
+    b"THEME_TEXT=#FFFFFF\r\n"
+    b"THEME_BG=#000000\r\n"
+    b"SPLASH_IMAGE=SPLASH.RAW\r\n"
 )
+
+
+def build_splash_raw() -> bytes:
+    """Return a deterministic 256x192 15-bit BGR555 splash bitmap.
+
+    The gradient is chosen so the first pixel (top-left) is pure blue (0x7C00)
+    and the last pixel (bottom-right) is ``31 | (31 << 5) = 0x03FF``; both are
+    asserted by tests/test_theme.c and scripts/verify_sd_image.py.
+    """
+    out = bytearray(THEME_SPLASH_BYTES)
+    for y in range(THEME_SPLASH_HEIGHT):
+        for x in range(THEME_SPLASH_WIDTH):
+            r5 = (x * 31) // (THEME_SPLASH_WIDTH - 1)
+            g5 = (y * 31) // (THEME_SPLASH_HEIGHT - 1)
+            b5 = 31 - r5
+            color = r5 | (g5 << 5) | (b5 << 10)
+            off = (y * THEME_SPLASH_WIDTH + x) * 2
+            out[off] = color & 0xFF
+            out[off + 1] = (color >> 8) & 0xFF
+    return bytes(out)
 
 
 def make_boot_variant(hello: bytes, title: bytes = BOOT_NDS_TITLE) -> bytes:
@@ -393,6 +426,10 @@ def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
     subapp_bytes = make_boot_variant(hello_bytes, title=SUBDIR_PAYLOAD_TITLE)
     subapp_clusters = max(1, (len(subapp_bytes) + cluster_bytes - 1) // cluster_bytes)
 
+    # SPLASH.RAW: the deterministic 256x192 15-bit BGR555 theme backdrop.
+    splash_bytes = build_splash_raw()
+    splash_clusters = (len(splash_bytes) + cluster_bytes - 1) // cluster_bytes
+
     badcrc_bytes = build_nds_stub(
         arm9_off=0x200, arm9_entry=0x02000000, arm9_ram=0x02000000,
         arm9_size=0x400,
@@ -413,7 +450,8 @@ def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
         b"HELLO.NDS    valid, loadable chainload payload (CHAINLOAD OK)\r\n"
         b"BOOT.NDS     default autoboot target (AUTOBOOT OK)\r\n"
         b"NDS/SUBAPP.NDS  one-level subdirectory payload (SUBDIR PAYLOAD)\r\n"
-        b"BOOT.CFG     hotkey map: DEFAULT/A/X\r\n"
+        b"BOOT.CFG     hotkey map: DEFAULT/A/X + theme/splash directives\r\n"
+        b"SPLASH.RAW   256x192 15-bit BGR555 boot theme backdrop\r\n"
         b"DLDI         ARM9 carries a NONE stub patched in RAM at boot\r\n"
         b"BADCRC.NDS   rejected: bad header CRC16\r\n"
         b"OVERLAP.NDS  rejected: ARM9 range hits the bootloader\r\n"
@@ -428,6 +466,8 @@ def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
     nds_dir_cluster = cursor + 10
     subapp_chain = [cursor + 12 + 2 * i for i in range(subapp_clusters)]
     bootcfg_chain = [cursor + 12 + 2 * subapp_clusters]
+    splash_chain = [cursor + 14 + 2 * subapp_clusters + 2 * i
+                    for i in range(splash_clusters)]
 
     w.add_file(b"HELLO", b"NDS", hello_chain[0], len(hello_bytes),
                hello_bytes, hello_chain)
@@ -445,6 +485,8 @@ def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
                       subapp_chain)
     w.add_file(b"BOOT", b"CFG", bootcfg_chain[0], len(BOOT_CFG_CONTENT),
                BOOT_CFG_CONTENT, bootcfg_chain)
+    w.add_file(b"SPLASH", b"RAW", splash_chain[0], len(splash_bytes),
+               splash_bytes, splash_chain)
     return w.finish()
 
 
@@ -475,6 +517,8 @@ def main(argv) -> int:
         fh.write(image)
 
     cluster_bytes = SECTORS_PER_CLUSTER * SECTOR
+    splash_bytes = build_splash_raw()
+    splash_clusters = (len(splash_bytes) + cluster_bytes - 1) // cluster_bytes
     print("[*] wrote %s (%d bytes, %d sectors)"
           % (args.out, len(image), len(image) // SECTOR))
     print("    MBR: partition 1 type 0x%02X at LBA %d, %d sectors"
@@ -490,8 +534,10 @@ def main(argv) -> int:
     print("    NDS/SUBAPP.NDS %6d bytes (title SUBDIR PAYLOAD)"
           % (len(hello_bytes)))
     print("    DLDI stub   1 KiB NONE section in each ARM9 (patched at boot)")
-    print("    BOOT.CFG    %6d bytes (DEFAULT/A/X hotkey map)"
+    print("    BOOT.CFG    %6d bytes (DEFAULT/A/X + theme/splash)"
           % len(BOOT_CFG_CONTENT))
+    print("    SPLASH.RAW  %6d bytes over %d clusters (256x192 15-bit BGR555)"
+          % (len(splash_bytes), splash_clusters))
     print("    BADCRC.NDS  0x1000 bytes (header CRC16 corrupted)")
     print("    OVERLAP.NDS 0x1000 bytes (ARM9 load 0x%08X)"
           % OVERLAP_ARM9_ADDR)

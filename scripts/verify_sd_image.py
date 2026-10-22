@@ -20,6 +20,9 @@ the chainloader safety gate perform, so a regression in either side is caught:
   4d. HELLO.NDS / BOOT.NDS / NDS/SUBAPP.NDS carry a valid banner: a supported
       version, a correct CRC16 over 0x020..0x83F and a decodable UTF-16LE title
       (CHAINLOAD OK / AUTOBOOT OK / SUBDIR PAYLOAD).
+  4e. SPLASH.RAW is present as a raw 256x192 15-bit BGR555 bitmap of the exact
+      size, and BOOT.CFG carries the THEME_ACCENT / THEME_TEXT / THEME_BG /
+      SPLASH_IMAGE directives.
   5. BADCRC.NDS has a corrupted header CRC16 (``NDS_ERR_BAD_CRC``).
   6. OVERLAP.NDS has a valid header CRC16 but an ARM9 load range inside the
      bootloader reservation (``NDS_ERR_OVERLAP_BOOTLOADER``).
@@ -62,6 +65,11 @@ DLDI_OFF_DRIVER_SIZE = 0x0D
 DLDI_OFF_IO_TYPE = 0x60
 DLDI_OFF_NAME = 0x10
 DLDI_NAME_LEN = 48
+
+# Boot theme splash (mirror include/arm9/theme.h).
+THEME_SPLASH_WIDTH = 256
+THEME_SPLASH_HEIGHT = 192
+THEME_SPLASH_BYTES = THEME_SPLASH_WIDTH * THEME_SPLASH_HEIGHT * 2
 
 
 def find_dldi(data: bytes) -> int:
@@ -342,7 +350,7 @@ def main(argv) -> int:
         return d
 
     for name in ("HELLO.NDS", "BOOT.NDS", "BADCRC.NDS", "OVERLAP.NDS",
-                 "README.TXT", "BOOT.CFG"):
+                 "README.TXT", "BOOT.CFG", "SPLASH.RAW"):
         c.check(name in entries, "root entry present: %s" % name)
     c.check("NDS" in dirs, "root directory entry present: NDS (subdirectory)")
     c.check(is_nds_name("HELLO.NDS") and is_nds_name("BOOT.NDS")
@@ -352,6 +360,8 @@ def main(argv) -> int:
             "README.TXT is filtered out by the .nds/.srl browser filter")
     c.check(not is_nds_name("BOOT.CFG"),
             "BOOT.CFG is filtered out by the .nds/.srl browser filter")
+    c.check(not is_nds_name("SPLASH.RAW"),
+            "SPLASH.RAW is filtered out by the .nds/.srl browser filter")
 
     # ---- /NDS subdirectory + BOOT.CFG -----------------------------------
     if "NDS" in dirs:
@@ -383,6 +393,34 @@ def main(argv) -> int:
         c.check("DEFAULT=BOOT.NDS" in cfg, "BOOT.CFG maps DEFAULT=BOOT.NDS")
         c.check("A=HELLO.NDS" in cfg, "BOOT.CFG maps A=HELLO.NDS")
         c.check("X=NDS/SUBAPP.NDS" in cfg, "BOOT.CFG maps X=NDS/SUBAPP.NDS")
+        c.check("THEME_ACCENT=#00FFCC" in cfg,
+                "BOOT.CFG sets THEME_ACCENT=#00FFCC")
+        c.check("THEME_TEXT=#FFFFFF" in cfg,
+                "BOOT.CFG sets THEME_TEXT=#FFFFFF")
+        c.check("THEME_BG=#000000" in cfg,
+                "BOOT.CFG sets THEME_BG=#000000")
+        c.check("SPLASH_IMAGE=SPLASH.RAW" in cfg,
+                "BOOT.CFG points SPLASH_IMAGE at SPLASH.RAW")
+
+    # ---- SPLASH.RAW: the raw 256x192 15-bit BGR555 theme backdrop --------
+    if "SPLASH.RAW" in entries:
+        splash = entries["SPLASH.RAW"]
+        c.check(splash["size"] == THEME_SPLASH_BYTES,
+                "SPLASH.RAW is exactly 256x192x2 bytes",
+                "got %d" % splash["size"])
+        _, splash_data = read_chain(splash["cluster"])
+        splash_data = splash_data[:splash["size"]]
+        c.check(len(splash_data) == THEME_SPLASH_BYTES,
+                "SPLASH.RAW chain holds the declared size")
+        if len(splash_data) >= 4:
+            first = u16(splash_data, 0)
+            last = u16(splash_data, (THEME_SPLASH_WIDTH * THEME_SPLASH_HEIGHT - 1) * 2)
+            c.check(first == 0x7C00,
+                    "SPLASH.RAW top-left pixel is pure blue (0x7C00)",
+                    "got 0x%04X" % first)
+            c.check(last == 0x03FF,
+                    "SPLASH.RAW bottom-right pixel is 0x03FF",
+                    "got 0x%04X" % last)
 
 
     if "HELLO.NDS" not in entries:

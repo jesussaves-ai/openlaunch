@@ -21,6 +21,7 @@
 #include "arm9/nand_boot.h"
 #include "arm9/scfg.h"
 #include "arm9/storage.h"
+#include "arm9/theme.h"
 #include "arm9/ui_font.h"
 #include "arm9/video.h"
 #include "common/dsi_hw.h"
@@ -92,6 +93,9 @@ static bool s_autoboot_entry_valid;
 static boot_cfg_t   s_boot_cfg;
 static bool         s_boot_cfg_present;
 static boot_target_t s_boot_target;
+
+/* Short theme-status line shown on both screens (set by menu_load_theme). */
+static char s_theme_footer[24];
 
 /* The optional one-level subdirectory scanned by the browser (see §28). */
 #define MENU_SUBDIR_NAME "NDS"
@@ -440,6 +444,54 @@ static void menu_load_boot_cfg(menu_diag_t *d)
 }
 
 /*
+ * Apply the parsed BOOT.CFG theme (or the AMOLED defaults) to both consoles and
+ * attempt to stage + present the optional SPLASH.RAW backdrop. The splash is
+ * streamed through the delegated FAT reader into a static staging buffer and
+ * blitted to Engine A BG2; a missing or invalid image falls back cleanly to the
+ * accent-coloured UI over the pure THEME_BG backdrop.
+ */
+static void menu_load_theme(menu_diag_t *d)
+{
+    theme_splash_status_t st = THEME_SPLASH_NONE;
+    u32 got = 0u;
+
+    d->theme_applied = true;
+    d->splash_loaded = false;
+    d->splash_status = (u8)THEME_SPLASH_NONE;
+
+    theme_apply(&s_boot_cfg.theme);
+
+    if (!s_boot_cfg.theme.has_splash) {
+        menu_copy_str(s_theme_footer, sizeof(s_theme_footer),
+                      s_boot_cfg_present ? "THEME: BOOT.CFG" : "THEME: DEFAULT");
+        return;
+    }
+
+    diag_query_sd(d);
+    if ((d->sd_flags & IPC_SD_FLAG_UNAVAILABLE) == 0u &&
+        (d->sd_flags & IPC_SD_FLAG_PRESENT) != 0u) {
+        if (arm9_storage_mount(&s_fat_vol, IPC_STORAGE_DEV_SD)) {
+            st = theme_load_splash(&s_fat_vol, &s_boot_cfg.theme, &got);
+        } else {
+            st = THEME_SPLASH_ERR_IO;
+        }
+    }
+
+    d->splash_status = (u8)st;
+    if (st == THEME_SPLASH_OK && theme_present_splash()) {
+        d->splash_loaded = true;
+    }
+
+    if (d->splash_loaded) {
+        menu_copy_str(s_theme_footer, sizeof(s_theme_footer), "THEME: SPLASH OK");
+    } else if (st == THEME_SPLASH_OK) {
+        menu_copy_str(s_theme_footer, sizeof(s_theme_footer), "THEME: SPLASH RAM");
+    } else {
+        menu_copy_str(s_theme_footer, sizeof(s_theme_footer), "THEME: DEFAULT");
+    }
+}
+
+/*
  * Resolve the startup target and, when autobooting, locate it on the mounted SD
  * volume. The pure policy decision is `boot_resolve_target()`; only the file
  * discovery touches the card.
@@ -538,7 +590,11 @@ static void render_telemetry(const menu_diag_t *d)
     console_clear();
 
     console_puts(0, 0, CONSOLE_PAL_CYAN, "OPENLAUNCH TWL BOOTLOADER");
-    console_puts(0, 1, CONSOLE_PAL_GREY, "CLEAN-ROOM TWL DIAGNOSTICS");
+    if (s_theme_footer[0] != '\0') {
+        console_puts(0, 1, CONSOLE_PAL_CYAN, s_theme_footer);
+    } else {
+        console_puts(0, 1, CONSOLE_PAL_GREY, "CLEAN-ROOM TWL DIAGNOSTICS");
+    }
 
     if (d->scfg_accessible) {
         console_printf(0, 2, CONSOLE_PAL_GREEN, "SCFG : %s %uMB%s",
@@ -725,6 +781,9 @@ static void render_menu(const menu_state_t *state)
     console_puts(0, 12, CONSOLE_PAL_GREY, "B: RE-RUN SELF-TEST");
     console_puts(0, 14, CONSOLE_PAL_CYAN, "INFO:");
     console_puts(0, 15, CONSOLE_PAL_WHITE, s_menu_desc[state->cursor]);
+    if (s_theme_footer[0] != '\0') {
+        console_puts(0, 17, CONSOLE_PAL_CYAN, s_theme_footer);
+    }
 }
 
 /* ---- Actions ---------------------------------------------------------- */
@@ -1370,6 +1429,9 @@ void menu_run(void)
      * result is acted on immediately.
      */
     menu_load_boot_cfg(&diag);
+
+    /* Apply the BOOT.CFG theme (or the AMOLED defaults) and stage any splash. */
+    menu_load_theme(&diag);
 
     /*
      * Capture the startup hotkeys: the ARM7-forwarded EXTKEYIN bits (X/Y) are

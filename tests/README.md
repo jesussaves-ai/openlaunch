@@ -124,8 +124,8 @@ validated (title `AUTOBOOT OK`) and staged with `"sd:/BOOT.NDS"`, that
 `NDS/SUBAPP.NDS` resolves inside the one-level `/NDS` subdirectory (title
 `SUBDIR PAYLOAD`), validates, stages with `"sd:/NDS/SUBAPP.NDS"` and that the
 root `BOOT.CFG` parses to the `DEFAULT=BOOT.NDS` / `A=HELLO.NDS` /
-`X=NDS/SUBAPP.NDS` map, that `BADCRC.NDS` is rejected with `NDS_ERR_BAD_CRC`,
-that `OVERLAP.NDS` is rejected with `NDS_ERR_OVERLAP_BOOTLOADER`, and that
+`X=NDS/SUBAPP.NDS` map plus the theme directives, that `BADCRC.NDS` is rejected
+with `NDS_ERR_BAD_CRC`, that `OVERLAP.NDS` is rejected with `NDS_ERR_OVERLAP_BOOTLOADER`, and that
 `README.TXT` is hidden by the `.nds`/`.srl` filter. It also streams the whole
 multi-cluster `HELLO.NDS` back and compares the staged payloads against their
 ROM offsets. Built as `build/host_test_sd_image` with `-DLOADER_HOST_TEST`,
@@ -200,6 +200,28 @@ Built as `build/host_test_ui_font`.
 
 Built as `build/host_test_nand`.
 
+## 6h. Host unit tests — boot theme engine (suite 13)
+
+`tests/test_theme.c` covers the BOOT.CFG boot theme engine
+(`src/arm9/theme.c` + the extended `src/arm9/boot_cfg.c` parser):
+
+* the RGB888 → BGR555 conversion and every colour-token form (`#RRGGBB`,
+  `0xRRGGBB`, bare `RRGGBB`, the `#RGB` shorthand, NUL termination) plus the
+  malformed/short/over-long rejects;
+* the AMOLED default theme (`ACCENT = 0x00FF88`, `TEXT = 0xFFFFFF`,
+  `BG = 0x000000`) and that the parsed-config defaults agree;
+* `BOOT.CFG` theme-directive extraction (`THEME_ACCENT` / `THEME_TEXT` /
+  `THEME_BG` / `SPLASH_IMAGE`) alongside the hotkey map, the
+  `#RRGGBB`-is-not-a-comment rule, malformed-directive fallbacks and the
+  over-long splash path reject;
+* the splash validator (`SPLASH.RAW` / `.BIN` exact-size rule, `.BMP`/size/NULL
+  rejects), the status-text helper and the alpha-forcing BGR555 blit;
+* the staged splash reader against the generated `build/sdcard.img`
+  (`theme_splash_read()` / `theme_load_splash()`: argument/missing-file guards,
+  the exact 98304-byte payload and its deterministic first/last pixels).
+
+Built as `build/host_test_theme` (passes `build/sdcard.img` as `argv[1]`).
+
 Run all of them with `make host-test`.
 
 ## 7. ROM packaging + static verification
@@ -234,9 +256,13 @@ and `build/hello_payload.nds`), which asserts:
 It then runs `scripts/verify_sd_image.py`, which independently re-checks the
 generated `build/sdcard.img`: the MBR signature and FAT16 partition entry, the
 BPB geometry, the root-directory entries (`HELLO.NDS`, `BOOT.NDS`,
-`BADCRC.NDS`, `OVERLAP.NDS`, `README.TXT`, `BOOT.CFG`) and the `NDS`
+`BADCRC.NDS`, `OVERLAP.NDS`, `README.TXT`, `BOOT.CFG`, `SPLASH.RAW`) and the
+`NDS`
 subdirectory, the one-level `NDS/SUBAPP.NDS` payload (title `SUBDIR PAYLOAD`,
-valid CRC16), the `BOOT.CFG` `DEFAULT`/`A`/`X` mappings, the fragmented
+valid CRC16), the `BOOT.CFG` `DEFAULT`/`A`/`X` mappings plus the
+`THEME_ACCENT`/`THEME_TEXT`/`THEME_BG`/`SPLASH_IMAGE` directives, the raw
+256x192 15-bit `SPLASH.RAW` backdrop (exact size and two gradient pixels), the
+fragmented
 multi-cluster `HELLO.NDS` chain, the `BOOT.NDS` autoboot variant (title
 `AUTOBOOT OK`, valid CRC16), the canonical unpatched `"NONE"` DLDI stub in the
 `HELLO.NDS` / `BOOT.NDS` / `NDS/SUBAPP.NDS` ARM9 segments (1 KiB reserved), and
@@ -272,7 +298,9 @@ non-zero emulator exit is reported as `[FAIL]`.
 
 The ROM now renders a text console:
 
-* **Top screen** — the header `OPENLAUNCH TWL BOOTLOADER` and a live telemetry
+* **Top screen** — the header `OPENLAUNCH TWL BOOTLOADER`, a theme/splash status
+  line (`THEME: SPLASH OK` / `THEME: BOOT.CFG` / `THEME: DEFAULT`) and a live
+  telemetry
   table (CPU mode, DTCM base, MPU control, ARM7 IPC link, SD/MMC status, RTC
   readout, firmware ID, NAND write-protection guard, LZ77 self-test).
 * **Bottom screen** — a D-Pad navigable menu (`A` runs, `B` re-runs the

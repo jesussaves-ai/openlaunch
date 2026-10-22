@@ -255,7 +255,7 @@ HOST_SRCS_ARM9 := tests/test_arm9.c \
                   src/common/dldi.c src/common/nand.c \
                   src/arm9/mpu.c src/arm9/irq.c src/arm9/ipc.c \
                   src/arm9/video.c src/arm9/dma.c src/arm9/scfg.c \
-                  src/arm9/boot.c src/arm9/boot_cfg.c \
+                  src/arm9/boot.c src/arm9/boot_cfg.c src/arm9/theme.c \
                   src/arm9/console.c src/arm9/font8x8.c src/arm9/ui_font.c \
                   src/arm9/input.c src/arm9/menu.c src/arm9/storage.c \
                   src/arm9/nand_boot.c src/arm9/loader.c
@@ -265,6 +265,7 @@ HOST_SRCS_CONSOLE := tests/test_console.c \
 # Menu state machine + keypad edge detector + BOOT.CFG/hotkey resolver.
 HOST_SRCS_MENU := tests/test_menu.c \
                   src/arm9/menu.c src/arm9/boot.c src/arm9/boot_cfg.c \
+                  src/arm9/theme.c \
                   src/arm9/input.c \
                   src/arm9/console.c src/arm9/font8x8.c src/arm9/ui_font.c \
                   src/arm9/ipc.c src/arm9/scfg.c src/arm9/mpu.c \
@@ -290,7 +291,7 @@ HOST_SRCS_SCFG := tests/test_scfg.c src/arm9/scfg.c
 # End-to-end chainload pipeline over the generated build/sdcard.img. loader.c is
 # compiled with -DLOADER_HOST_TEST so it stages into the test's scratch arena.
 HOST_SRCS_SDIMG := tests/test_sd_image.c \
-                   src/arm9/loader.c src/arm9/boot_cfg.c \
+                   src/arm9/loader.c src/arm9/boot_cfg.c src/arm9/theme.c \
                    src/common/fat_ro.c src/common/nds_header.c \
                    src/common/mem.c src/common/cache.c src/arm9/ipc.c \
                    src/common/dldi.c
@@ -306,6 +307,11 @@ HOST_SRCS_UI_FONT := tests/test_ui_font.c \
 HOST_SRCS_NAND := tests/test_nand.c \
                   src/common/nand.c src/common/fat_ro.c \
                   src/common/nds_header.c src/common/mem.c
+# Boot theme engine: hex-colour parsing, defaults, BOOT.CFG directives and the
+# raw splash validator / FAT reader (suite 13).
+HOST_SRCS_THEME := tests/test_theme.c \
+                   src/arm9/theme.c src/arm9/boot_cfg.c \
+                   src/common/fat_ro.c src/common/mem.c
 
 host-test: $(SD_IMAGE)
 	@mkdir -p $(BUILD)
@@ -321,6 +327,7 @@ host-test: $(SD_IMAGE)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_dldi $(HOST_SRCS_DLDI)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_ui_font $(HOST_SRCS_UI_FONT)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_nand $(HOST_SRCS_NAND)
+	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_theme $(HOST_SRCS_THEME)
 	$(BUILD)/host_test_mem
 	$(BUILD)/host_test_arm9
 	$(BUILD)/host_test_console
@@ -333,3 +340,4 @@ host-test: $(SD_IMAGE)
 	$(BUILD)/host_test_dldi
 	$(BUILD)/host_test_ui_font
 	$(BUILD)/host_test_nand $(SD_IMAGE)
+	$(BUILD)/host_test_theme $(SD_IMAGE)

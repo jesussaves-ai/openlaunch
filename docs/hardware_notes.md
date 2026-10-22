@@ -1608,4 +1608,89 @@ size, auto-detection and signature/NULL rejection), the boot-redirect policy for
 every input combination, and the deep FAT resolver against
 `build/sdcard.img`.
 
+---
+
+## 33. Boot theme engine, accent colours & SD splash (`src/arm9/theme.c`)
+
+The bootloader keeps its AMOLED-friendly black background but the palette is now
+driven from `BOOT.CFG` by a small, zero-allocation theme engine
+(`include/arm9/theme.h`, `src/arm9/theme.c`). The engine attributes are parsed
+by the same single-sector `boot_cfg_parse()` pass as the hotkey map, so no
+second read is required.
+
+### 33.1 `BOOT.CFG` theme directives
+
+| Directive | Value | Meaning |
+| :--- | :--- | :--- |
+| `THEME_ACCENT` | RGB888 | selected borders, active tabs, telemetry headers |
+| `THEME_TEXT` | RGB888 | standard console text |
+| `THEME_BG` | RGB888 | backdrop and window frames |
+| `SPLASH_IMAGE` | path | raw 256x192 15-bit BGR555 bitmap on the SD root |
+
+Colours accept `#RRGGBB`, `0xRRGGBB`, a bare `RRGGBB` or the `#RGB` shorthand.
+A `#` starts a comment only at the start of a line or after whitespace, so a
+`#RRGGBB` colour value is never mistaken for a comment. Omitted or malformed
+directives keep the defaults:
+
+```
+ACCENT = 0x00FF88   TEXT = 0xFFFFFF   BG = 0x000000
+```
+
+### 33.2 Colour model
+
+`theme_parse_color()` decodes the RGB888 token and `theme_rgb_to_bgr555()`
+converts it to the hardware BGR555 palette word
+(`((r>>3)<<0) | ((g>>3)<<5) | ((b>>3)<<10)`). `theme_apply()` recolours the
+Engine A/B console palettes: BANK 0 (white) becomes the text colour, BANK 1
+(cyan, used by every telemetry/menu header) and BANK 3 (yellow, used by the
+selected row) become the accent, and palette entry 0 (the backdrop) becomes the
+background colour. The banner-icon palettes (bank 7) are left untouched.
+
+### 33.3 Splash image format
+
+A valid splash is a raw `SPLASH.RAW` (or `.BIN`) file of exactly
+`256 * 192 * 2 = 98304` bytes: little-endian 15-bit BGR555 pixels, row-major,
+no header. `theme_splash_check()` fails closed on any other size or extension
+(indexed `.BMP` is intentionally rejected). On the DS the upper bit of a direct
+colour bitmap pixel is the alpha flag (`0 = transparent, 1 = opaque`), so
+`theme_splash_blit()` ORs `0x8000` into every pixel as it reaches VRAM; the
+on-disk format stays a plain 15-bit bitmap.
+
+### 33.4 Engine A BG2 presentation
+
+`theme_load_splash()` streams the validated file through the delegated FAT
+reader into a static 96 KiB staging buffer and `theme_present_splash()` blits it
+to Engine A BG2 VRAM:
+
+| Item | Value |
+| :--- | :--- |
+| VRAM bank | B, mapped as Engine A BG at offset 1 (`VRAMCNT_B = 0x89`) |
+| framebuffer | `0x06020000` (exactly 65536 x 16-bit pixels) |
+| BG2CNT | `0x4887` = 16bpp extended affine, 256x256, bitmap base 8, priority 3 |
+| DISPCNT | Engine A **mode 5** (`BG0/BG1` text + `BG2/BG3` extended bitmap) |
+
+BG0 keeps priority 0, so the text console and the banner overlay draw on top of
+the bitmap: the splash becomes the backdrop of the whole menu. When no valid
+splash is configured (or the card/file is unavailable) the engine falls back
+cleanly to the pure `THEME_BG` backdrop with accent-coloured UI borders.
+
+### 33.5 Zero-allocation staging
+
+`theme_load_splash()` uses one fixed `static u8 s_splash_stage[98304]` in
+`.bss` (shared Main RAM, never DTCM) and `fat_read_file_range()` for the bounded,
+loop-guarded cluster walk. `theme_splash_read()` is the MMIO-free core and is
+exercised directly by the host tests.
+
+### 33.6 Verification
+
+`tests/test_theme.c` (suite 13) covers the RGB888 -> BGR555 conversion and every
+colour token form (`#`/`0x`/bare/`#RGB`, malformed and over-long input), the
+AMOLED defaults, the `BOOT.CFG` directive extraction alongside the hotkey map
+(including `#RRGGBB`-is-not-a-comment and the malformed-directive fallbacks), the
+splash validator (extension + exact size), the alpha-forcing blit, and the
+staged splash read against the generated `build/sdcard.img`. `make sd-image`
+now installs a deterministic gradient `SPLASH.RAW` and a themed `BOOT.CFG`, and
+`scripts/verify_sd_image.py` independently re-checks both.
+
+
 

@@ -96,6 +96,8 @@ Consequences:
 | Graphical UI font    | clean-room (runtime 16x16 font + banner icon)       | `src/arm9/ui_font.c`      | **new**       |
 | NAND partition table | clean-room (PC MBR + TWL {offset,size} parser)      | `src/common/nand.c`       | **new**       |
 | NAND boot redirect   | clean-room (HiyaCFW / System Menu policy)           | `src/arm9/nand_boot.c`    | **new**       |
+| BOOT.CFG theme / color parser | clean-room (`THEME_ACCENT`/`TEXT`/`BG`, `SPLASH_IMAGE`) | `src/arm9/theme.c` + `boot_cfg.c` | **new** |
+| Theme splash renderer | clean-room (SD 256x192 15-bit BGR555 -> Engine A BG2) | `src/arm9/theme.c`     | **new**       |
 | Release packager     | clean-room (variants + SD template + SHA256SUMS)    | `scripts/make_release.py` | **new**       |
 
 ## 2. Next steps
@@ -271,3 +273,16 @@ Consequences:
   SD-absent fallback to the DSi System Menu (`00030004`/`484e4c41`), and the top
   screen reports `NAND : DETECTED`/`NAND : ABSENT`. Covered by
   `tests/test_ui_font.c` and `tests/test_nand.c` (docs §31–§32).
+* **Boot theme engine + SD splash** — `BOOT.CFG` now also carries the optional
+  `THEME_ACCENT` / `THEME_TEXT` / `THEME_BG` colours (RGB888, converted to
+  BGR555; AMOLED defaults `0x00FF88` / `0xFFFFFF` / `0x000000`) and a
+  `SPLASH_IMAGE` path, parsed by the same `boot_cfg_parse()` pass. `src/arm9/
+  theme.c` applies the accent to the console palette banks (headers, selection,
+  text, backdrop) and streams a raw 256x192 15-bit BGR555 `SPLASH.RAW`
+  (98304 bytes) through the delegated FAT reader into a fixed 96 KiB staging
+  buffer, blitting it to Engine A BG2 (bank B, `0x06020000`) as a 16bpp
+  extended-affine bitmap behind the BG0 text console (Engine A mode 5); a
+  missing image falls back to the pure `THEME_BG` backdrop. `make sd-image`
+  installs a deterministic gradient `SPLASH.RAW` + themed `BOOT.CFG`. Covered by
+  `tests/test_theme.c` (suite 13), `tests/test_sd_image.c` and
+  `scripts/verify_sd_image.py` (docs §33).

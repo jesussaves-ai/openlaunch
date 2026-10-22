@@ -110,6 +110,11 @@ typedef struct {
     char autoboot_name[BOOT_CFG_PATH_MAX]; /* the resolved target path     */
     char autoboot_sel[8];   /* "[...]" tag: "CFG", "A", "X", ... or ""     */
 
+    /* Boot theme / splash state (see include/arm9/theme.h). */
+    bool theme_applied;     /* the BOOT.CFG theme (or defaults) was applied */
+    bool splash_loaded;     /* a valid SPLASH.RAW was read + presented      */
+    u8   splash_status;     /* theme_splash_status_t of the last attempt    */
+
     /* NAND / HiyaCFW redirect state (read-only eMMC probe). */
     bool nand_ok;            /* the NAND MBR was read and parsed           */
     bool nand_fat;           /* a FAT partition was located                */
