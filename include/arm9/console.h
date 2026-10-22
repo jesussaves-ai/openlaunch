@@ -65,6 +65,20 @@ void console_clear_all(void);
 /* Draw a NUL-terminated string at cell (x, y) using palette bank `pal`. */
 void console_puts(int x, int y, u8 pal, const char *str);
 
+/*
+ * Pure text-map renderer backing console_puts(). Writes `str` into a
+ * caller-provided BG map (`map_cols` entries per row) starting at cell
+ * (x, y). Each character advances exactly one cell -- the console is
+ * fixed-width, so cell (col, row) is `map[row * map_cols + col]` and no
+ * two characters can ever share a tile. The string is clipped to `cols`
+ * visible columns and rows outside [0, rows) are ignored.
+ *
+ * `map` is `vu16` so the hardware path keeps the volatile MMIO store
+ * semantics required by AGENTS.md while tests can pass a plain buffer.
+ */
+void console_render_line(vu16 *map, u32 map_cols, int x, int y, u8 pal,
+                         const char *str, u32 cols, u32 rows);
+
 /* ---- Bounded formatters (pure / host-testable) ------------------------ */
 
 /*

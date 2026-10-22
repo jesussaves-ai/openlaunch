@@ -40,12 +40,14 @@ void arm9_vram_configure_boot(void)
 /* @ref entry (0x0602572C). */
 void arm9_video_reset(void)
 {
-    /* Force blank on the main engine, then clear DISPSTAT..eff regs. */
-    REG32(DISPCNT) = DISPCNT_FORCED_BLANK;
+    /* Force blank on the main engine, then clear DISPSTAT..eff regs. Keep the
+     * display-source field at "normal 2D" so the mode is valid once the blank
+     * is released (bits 16-17 = 0 would be the "screen off" white mode). */
+    REG32(DISPCNT) = DISPCNT_DISPLAY_2D | DISPCNT_FORCED_BLANK;
     dsi_memset((void *)(uintptr_t)(DISPCNT + 4u), 0, 0x4Au);
 
     /* Same for the sub engine. */
-    REG32(DISPCNT_SUB) = DISPCNT_FORCED_BLANK;
+    REG32(DISPCNT_SUB) = DISPCNT_DISPLAY_2D | DISPCNT_FORCED_BLANK;
     dsi_memset((void *)(uintptr_t)(DISPCNT_SUB + 4u), 0, 0x4Au);
 
     /* Reset the text BG2 control/scroll used by the menu background. */
@@ -110,6 +112,7 @@ void arm9_video_boot_heartbeat(void)
     /* 3. Ensure the 2D engine / LCD are powered (16-bit POWCNT1). */
     REG16(POWCNT1) = (u16)POWCNT1_BOOT_VALUE;
 
-    /* 4. Display on, mode 0, no BG layers, forced-blank clear: backdrop shows. */
-    REG32(DISPCNT) = 0u;
+    /* 4. Normal 2D display, mode 0, no BG layers, not blanked: backdrop shows.
+     * The display-source bits (16-17) must be 1 or the engine outputs white. */
+    REG32(DISPCNT) = DISPCNT_DISPLAY_2D;
 }

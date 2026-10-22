@@ -84,8 +84,20 @@
 #define ARM9_COLOR_STATUS_OK   0x03E0u   /* green: ARM7 answered            */
 #define ARM9_COLOR_STATUS_FAIL 0x001Fu   /* red: handshake timed out        */
 
-/* DISPCNT forced-blank bit used while reprogramming the engine. */
-#define DISPCNT_FORCED_BLANK  BIT(16)
+/*
+ * DISPCNT display mode / blanking (GBATEK "DISPCNT", libnds MODE_* constants).
+ *
+ * Bits 16-17 select the display source and are NOT optional: 0 = "screen off"
+ * (the panel/lcd shows solid white), 1 = normal 2D/3D composition, 2 = VRAM
+ * display, 3 = main-memory FIFO. libnds always sets bits 16-17 = 1 via
+ * MODE_0_2D (0x10000); leaving them 0 makes the engine output white no matter
+ * how the BG/OBJ layers are programmed.
+ *
+ * Forced blank is a separate, independent control at bit 7 (like the GBA);
+ * it overrides the display mode and also outputs white.
+ */
+#define DISPCNT_DISPLAY_2D   (1u << 16)  /* bits16-17=1: normal 2D/3D display */
+#define DISPCNT_FORCED_BLANK BIT(7)      /* real forced-blank bit             */
 
 /*
  * Pure packer matching the reference's single-store VRAM configuration:

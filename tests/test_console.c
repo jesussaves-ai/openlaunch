@@ -75,6 +75,18 @@ static void test_font_pixels(void)
     for (g = 0u; g < FONT8X8_GLYPH_COUNT; g++) {
         assert(font8x8_basic[g][7] == 0u);
     }
+
+    /* Glyphs occupy columns 1..5 only (bits 6..2), so their ink can never
+     * reach the 8-pixel cell edge and visually merge with a neighbour: bits
+     * 7 (col 0), 1 (col 6) and 0 (col 7) must stay clear. */
+    for (g = 0u; g < FONT8X8_GLYPH_COUNT; g++) {
+        u32 row;
+        for (row = 0u; row < FONT8X8_GLYPH_BYTES; row++) {
+            u8 bits = font8x8_basic[g][row];
+            assert((bits & 0x81u) == 0u);   /* columns 0 and 7 blank */
+            assert((bits & 0x02u) == 0u);   /* column 6 blank       */
+        }
+    }
 }
 
 static void test_font_bounds(void)
@@ -95,6 +107,87 @@ static void test_map_entry(void)
     assert(console_map_entry(0u, 0u) == 0x0000u);
     assert(console_map_entry(5u, 3u) == (u16)(5u | (3u << 12)));
     assert(console_map_entry(0x3FFu, 0xFu) == 0xF3FFu);
+}
+
+/* ------------------------------------------------------------------ */
+/* Menu-line spacing / character-overlap regression                    */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Render `line` at row `row` into a zeroed BG map using the same path as
+ * console_puts(). This is the fixed-width contract the menu relies on.
+ */
+static void render_row(u16 *map, const char *line, int row)
+{
+    u32 i;
+
+    for (i = 0u; i < (u32)(CONSOLE_MAP_COLS * CONSOLE_ROWS); i++) {
+        map[i] = 0u;
+    }
+    console_render_line((vu16 *)map, CONSOLE_MAP_COLS, 0, row,
+                        CONSOLE_PAL_WHITE, line, CONSOLE_COLS, CONSOLE_ROWS);
+}
+
+/*
+ * Every menu string must occupy one tile per character with no shared /
+ * skipped cells, and a redraw must fully replace the previous line (so a
+ * moving cursor cannot leave stale characters behind).
+ */
+static void test_menu_line_spacing(void)
+{
+    static const char *const labels[6] = {
+        "[1] Re-run IPC & HW Test",
+        "[2] Inspect SCFG / MBK",
+        "[3] Probe SD / TMIO RO",
+        "[4] LZ77 Decompress Verify",
+        "[5] Reboot / Halt System",
+        "[6] Browse SD Card (.nds)",
+    };
+    u16 map[CONSOLE_MAP_COLS * CONSOLE_ROWS];
+    u32 i;
+
+    for (i = 0u; i < 6u; i++) {
+        char line[CONSOLE_COLS + 1];
+        u32 n;
+        u32 col;
+
+        n = (u32)console_format(line, sizeof(line), "%c%s",
+                                (i == 1u) ? '>' : ' ', labels[i]);
+        assert(n < CONSOLE_COLS);
+
+        render_row(map, line, 2);
+
+        for (col = 0u; col < n; col++) {
+            u16 e = map[2u * CONSOLE_MAP_COLS + col];
+            u8 c = (u8)line[col];
+            u8 tile = (c >= FONT8X8_FIRST_CHAR && c <= FONT8X8_LAST_CHAR)
+                          ? (u8)(c - FONT8X8_FIRST_CHAR)
+                          : (u8)('?' - FONT8X8_FIRST_CHAR);
+
+            assert((e & 0x03FFu) == tile);
+            assert((e & 0xF000u) == (u16)(CONSOLE_PAL_WHITE << 12));
+        }
+        /* Nothing is written past the end of the string. */
+        assert(map[2u * CONSOLE_MAP_COLS + n] == 0u);
+    }
+
+    /* Redrawing a shorter line must clear the tail of the longer one. */
+    render_row(map, ">[2] Inspect SCFG / MBK", 2);
+    render_row(map, " [3] Probe SD", 2);
+    assert(map[2u * CONSOLE_MAP_COLS + 12u] != 0u);
+    assert(map[2u * CONSOLE_MAP_COLS + 13u] == 0u);
+    assert(map[2u * CONSOLE_MAP_COLS + 22u] == 0u);
+
+    /* Out-of-range rows are dropped, never wrapped to the next row. */
+    render_row(map, "SHOULD NOT WRAP", (int)CONSOLE_ROWS);
+    for (i = 0u; i < (u32)(CONSOLE_MAP_COLS * CONSOLE_ROWS); i++) {
+        assert(map[i] == 0u);
+    }
+
+    /* Overlong strings clip at the visible width instead of wrapping. */
+    render_row(map, "1234567890123456789012345678901234567890", 3);
+    assert(map[3u * CONSOLE_MAP_COLS + (CONSOLE_COLS - 1u)] != 0u);
+    assert(map[4u * CONSOLE_MAP_COLS + 0u] == 0u);
 }
 
 /* ------------------------------------------------------------------ */
@@ -168,6 +261,7 @@ int main(void)
     test_font_pixels();
     test_font_bounds();
     test_map_entry();
+    test_menu_line_spacing();
     test_format_hex();
     test_format();
     test_format_truncation();

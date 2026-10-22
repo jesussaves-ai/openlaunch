@@ -301,17 +301,20 @@ void console_select(console_id_t id)
     }
 }
 
-void console_puts(int x, int y, u8 pal, const char *str)
+void console_render_line(vu16 *map, u32 map_cols, int x, int y, u8 pal,
+                         const char *str, u32 cols, u32 rows)
 {
-    const console_engine_t *eng = active_engine();
     u32 cx = (u32)x;
     u32 cy = (u32)y;
 
-    if (x < 0 || y < 0 || cy >= CONSOLE_ROWS) {
+    if (map == NULL || map_cols == 0u || str == NULL) {
+        return;
+    }
+    if (x < 0 || y < 0 || cy >= rows) {
         return;
     }
 
-    while (*str != '\0' && cx < CONSOLE_COLS) {
+    while (*str != '\0' && cx < cols) {
         u8 c = (u8)*str++;
         u8 tile;
 
@@ -320,10 +323,19 @@ void console_puts(int x, int y, u8 pal, const char *str)
         } else {
             tile = (u8)('?' - FONT8X8_FIRST_CHAR);
         }
-        REG16(eng->map_base + (cy * CONSOLE_MAP_COLS + cx) * 2u) =
-            console_map_entry(tile, pal);
+        /* Fixed-width cells: exactly one map entry per character, advanced
+         * by one column, so adjacent glyphs can never share a tile. */
+        map[cy * map_cols + cx] = console_map_entry(tile, pal);
         cx++;
     }
+}
+
+void console_puts(int x, int y, u8 pal, const char *str)
+{
+    const console_engine_t *eng = active_engine();
+
+    console_render_line((vu16 *)(uintptr_t)eng->map_base, CONSOLE_MAP_COLS,
+                        x, y, pal, str, CONSOLE_COLS, CONSOLE_ROWS);
 }
 
 void console_printf(int x, int y, u8 pal, const char *fmt, ...)
@@ -404,8 +416,9 @@ static void console_engine_init(const console_engine_t *eng)
     REG16(eng->scroll + 0u) = 0u;
     REG16(eng->scroll + 2u) = 0u;
 
-    /* Mode 0, BG0 enabled, display on. */
-    REG32(eng->dispcnt) = 0x00000100u;
+    /* Mode 0, BG0 enabled, normal 2D display (bits 16-17 = 1), blank released.
+     * Without the display-source bits the engine renders solid white. */
+    REG32(eng->dispcnt) = DISPCNT_DISPLAY_2D | 0x00000100u;
 }
 
 void console_init(void)

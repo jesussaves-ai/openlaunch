@@ -684,26 +684,49 @@ BPB, FAT tables, root directory, data clusters) and exercises mounting,
 geometry, chain traversal, `.nds` filtering, multi-cluster reads, truncated
 chains, mount failures and the NDS header CRC.
 
-## 22. Blank white screens (fixed) — `MASTER_BRIGHT`
+## 22. Blank white screens (fixed) — `MASTER_BRIGHT` + DISPCNT display mode
 
 **Symptom (melonDS).** After the DTCM remap the ROM boots, but both screens show
 a uniform **white** frame; no header, telemetry or backdrop colour appears.
 
-**Diagnosis.** `arm9_video_reset()` clears the engine registers from `DISPCNT+4`
-through `DISPCNT+0x4D`, which does **not** include the master-brightness mixers
-at `0x0400006C` / `0x0400106C`. Direct boot and the DSi firmware can leave those
-16-bit fades at a full white value, so a perfectly configured BG mode 0 layer is
-washed out to white. (A forced-blank `DISPCNT` bit would look the same, but the
-console sets `DISPCNT = 0x00000100`, i.e. bit 16 clear.)
+**Diagnosis (two independent causes).**
 
-**Fix.** Added `arm9_video_set_master_brightness()` (`src/arm9/video.c`), which
-writes `0x0000` (`MASTER_BRIGHT_NORMAL`) with a 16-bit store to both engines.
-`arm9_main()` calls it right after `arm9_video_reset()`, before the VRAM banks
-and palette are programmed. Register definitions live in `include/arm9/video.h`.
+1. *Master brightness.* `arm9_video_reset()` clears the engine registers from
+   `DISPCNT+4` through `DISPCNT+0x4D`, which does **not** include the
+   master-brightness mixers at `0x0400006C` / `0x0400106C`. Direct boot and the
+   DSi firmware can leave those 16-bit fades at a full white value, washing out
+   an otherwise correct BG mode 0 layer.
+
+2. *DISPCNT display-source bits — the real cause of the persistent white frame.*
+   DISPCNT **bits 16-17** select the display source: `0` = "screen off" (the
+   panel outputs solid white), `1` = normal 2D/3D composition, `2` = VRAM
+   display, `3` = main-memory FIFO. libnds always sets bits 16-17 = 1 via
+   `MODE_0_2D` (`0x10000`), and melonDS (`src/GPU_Soft.cpp::DrawScanlineA`)
+   fills mode `0` with `0x3F3F3F` — its source even notes *"'screen disabled'
+   white is 63,63,63"*. The console/BG setup only wrote
+   `DISPCNT = 0x00000100` (bits 16-17 = 0) and the bring-up heartbeat wrote
+   `DISPCNT = 0`, so both engines ran in "screen off": the correctly-programmed
+   tiles, map and palette in `0x06000000`/`0x06001000`/`0x05000000` were simply
+   never composited. The earlier revision also mislabelled bit 16 as forced
+   blank; the real forced-blank bit is **bit 7** (melonDS computes
+   `ForcedBlank = (DispCnt >> 7) & 1`).
+
+**Fix.**
+
+* Added `arm9_video_set_master_brightness()` (`src/arm9/video.c`), which writes
+  `0x0000` (`MASTER_BRIGHT_NORMAL`) with a 16-bit store to both engines.
+  `arm9_main()` calls it right after `arm9_video_reset()`, before the VRAM banks
+  and palette are programmed.
+* `include/arm9/video.h` now defines `DISPCNT_DISPLAY_2D` (bits 16-17 = 1) and
+  `DISPCNT_FORCED_BLANK` as bit 7. `console_engine_init()` writes
+  `DISPCNT_DISPLAY_2D | 0x00000100` (BG0 on), `arm9_video_boot_heartbeat()`
+  writes `DISPCNT_DISPLAY_2D`, and `arm9_video_reset()` writes
+  `DISPCNT_DISPLAY_2D | DISPCNT_FORCED_BLANK`.
 
 **Verification.** `make all`, `make verify` and `make host-test` stay green; the
 BG map (`0x06001000`) now renders against a black backdrop instead of a white
-frame.
+frame, and the heartbeat backdrop colour is visible when `arm9_main()` is
+reached.
 
 ## 23. SD/MMC command sent to an empty slot (fixed)
 
