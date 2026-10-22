@@ -286,6 +286,111 @@ bool nand_resolve_path(fat_volume_t *vol, const char *path,
     }
 }
 
+/* ---- Geometry, pre-flight layout validation and write guards ---------- */
+
+const char *nand_layout_status_text(nand_layout_status_t status)
+{
+    switch (status) {
+    case NAND_LAYOUT_OK:              return "layout OK";
+    case NAND_LAYOUT_ERR_NULL:        return "null argument";
+    case NAND_LAYOUT_ERR_SIGNATURE:   return "missing 0x55AA signature";
+    case NAND_LAYOUT_ERR_EMPTY:       return "empty partition table";
+    case NAND_LAYOUT_ERR_NO_FAT:      return "no FAT16/FAT32 partition";
+    case NAND_LAYOUT_ERR_TOO_SMALL:   return "FAT partition too small";
+    case NAND_LAYOUT_ERR_BOUNDS:      return "partition outside NAND bounds";
+    default:                          return "unknown layout error";
+    }
+}
+
+nand_layout_status_t nand_validate_layout(const u8 sector[NAND_SECTOR_SIZE],
+                                          u32 max_sectors,
+                                          nand_layout_t *out)
+{
+    nand_table_t tbl;
+    s32 fat;
+    u32 plba;
+    u32 psize;
+
+    if (out == NULL) {
+        return NAND_LAYOUT_ERR_NULL;
+    }
+
+    /* Zero the result first so a failure never leaks stale geometry. */
+    dsi_memset(out, 0, sizeof(*out));
+    out->format = NAND_TABLE_NONE;
+
+    if (sector == NULL) {
+        return NAND_LAYOUT_ERR_NULL;
+    }
+    if (max_sectors == 0u || max_sectors > NAND_MAX_SECTORS) {
+        max_sectors = NAND_MAX_SECTORS;
+    }
+    if (dsi_read_le16(sector + NAND_MBR_SIG_OFF) != NAND_MBR_SIGNATURE) {
+        return NAND_LAYOUT_ERR_SIGNATURE;
+    }
+    if (!nand_parse_table(sector, &tbl)) {
+        return NAND_LAYOUT_ERR_EMPTY;
+    }
+
+    /*
+     * A PC MBR names the FAT type directly. The TWL {offset,size} form carries
+     * none, so its first (main) partition is taken as the candidate; the
+     * caller confirms it by attempting a FAT mount before any write.
+     */
+    fat = nand_find_fat_partition(&tbl);
+    if (fat >= 0) {
+        plba = tbl.partitions[(u32)fat].lba;
+        psize = tbl.partitions[(u32)fat].sector_count;
+    } else if (tbl.format == NAND_TABLE_TWL && tbl.partitions[0].present) {
+        plba = tbl.partitions[0].lba;
+        psize = tbl.partitions[0].sector_count;
+    } else {
+        return NAND_LAYOUT_ERR_NO_FAT;
+    }
+
+    if (psize < NAND_MIN_FAT_SECTORS) {
+        return NAND_LAYOUT_ERR_TOO_SMALL;
+    }
+    /* Bounds-check without risking unsigned overflow. */
+    if (plba >= max_sectors || psize > (max_sectors - plba)) {
+        return NAND_LAYOUT_ERR_BOUNDS;
+    }
+    if (tbl.total_sectors > max_sectors) {
+        return NAND_LAYOUT_ERR_BOUNDS;
+    }
+    /* The FAT volume must begin past the protected boot prefix. */
+    if (plba < NAND_BOOT_GUARD_SECTORS) {
+        return NAND_LAYOUT_ERR_BOUNDS;
+    }
+
+    out->format = tbl.format;
+    out->partition_lba = plba;
+    out->partition_sectors = psize;
+    out->total_sectors = (tbl.total_sectors > (plba + psize))
+                             ? tbl.total_sectors : (plba + psize);
+    out->protected_end = plba;
+    if (out->protected_end < NAND_BOOT_GUARD_SECTORS) {
+        out->protected_end = NAND_BOOT_GUARD_SECTORS;
+    }
+    out->total_backup_sectors = out->total_sectors;
+
+    return NAND_LAYOUT_OK;
+}
+
+bool nand_region_is_protected(const nand_layout_t *layout, u32 lba, u32 count)
+{
+    if (layout == NULL || count == 0u) {
+        return true;   /* fail closed */
+    }
+    /* Overflow-safe: any partial overflow can only move the range further
+     * into the protected prefix, which is still rejected. */
+    if (lba > 0xFFFFFFFFu - count) {
+        return true;
+    }
+    /* The protected prefix is [0, protected_end); overlap iff lba is inside. */
+    return (lba < layout->protected_end);
+}
+
 /* ---- Boot-redirect policy --------------------------------------------- */
 
 void boot_resolve_nand_target(const nand_boot_context_t *ctx,

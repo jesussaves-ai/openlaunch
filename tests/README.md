@@ -27,7 +27,7 @@ packer, the font table bounds, and the bounded `console_format` /
 ## 4. Host unit tests — menu + input
 
 `tests/test_menu.c` covers the menu state machine (wrapping, action mapping for
-all nine items, degenerate inputs), the keypad edge detector
+all ten items, degenerate inputs), the keypad edge detector
 (`input_normalize_*`, `input_edge_*`), the Unlaunch-style startup policy
 `boot_resolve_policy()` (`KEY_B`/`KEY_SELECT` force the menu, `KEY_A`/no key
 probes `BOOT.NDS`), the zero-allocation `BOOT.CFG` parser `boot_cfg_parse()`
@@ -222,6 +222,59 @@ Built as `build/host_test_nand`.
 
 Built as `build/host_test_theme` (passes `build/sdcard.img` as `argv[1]`).
 
+## 6i. Host unit tests — NAND installer (suite 14)
+
+`tests/test_installer.c` covers the safe NAND installer subsystem
+(docs §34):
+
+* SHA-256 / HMAC-SHA-256 known-answer vectors (FIPS 180-4, RFC 4231) plus the
+  incremental vs one-shot equivalence and the constant-time digest compare;
+* `nand_validate_layout()` + `nand_region_is_protected()` (`src/common/nand.c`):
+  a valid PC MBR, signature/empty/no-FAT/too-small/out-of-bounds rejection, the
+  protected boot prefix, and fail-closed overflow/NULL handling;
+* the signed installer token (`installer_token_parse()` /
+  `installer_token_verify()` / `installer_token_encode()`): round-trip,
+  tamper detection, and magic/version/size/reserved/range rejection;
+* the pre-flight cascade (`installer_preflight()`), the region planner
+  (`installer_plan_region()`, including the protected/target-range/payload-size
+  vetoes) and the state machine (`installer_advance()`);
+* the streaming engines with injected I/O: `installer_backup_stream()`
+  (hash + sink agree with the source, read failure aborts) and
+  `installer_flash_region()` (write + byte-for-byte read-back, digest check,
+  dropped-write divergence);
+* the FAT root-file writer (`src/common/fat_rw.c`) against the
+  generated `build/sdcard.img`: 8.3 name validation, a 13000-byte multi-cluster
+  write, duplicate-name rejection, read-back through the read-only parser, and
+  `installer_sd_source_read()` zero-padding past EOF;
+* the progress hook (`installer_set_progress_hook()` /
+  `installer_progress_state()` / `installer_progress_step()` and the pure
+  `installer_percent()`), asserting one report per streamed sector with the
+  right stage, monotonic counts and a saturated 0..100 percentage;
+* a simulated menu `[10]` pre-flight on `build/sdcard.img`: the absent
+  `INSTALL.KEY` is detected, `installer_preflight()` refuses and the abort is
+  `INSTALLER_ERR_BAD_TOKEN` — no write path is ever entered;
+* the locked-build report (`installer_run()` → `INSTALLER_ERR_DISABLED`,
+  `failed_state == PREFLIGHT`).
+
+Built as `build/host_test_installer` (passes `build/sdcard.img` as `argv[1]`).
+
+## 6j. Host unit tests — installer modal UI (suite 15)
+
+`tests/test_installer_ui.c` covers the hardware-independent half of the
+installer's modal UI (`src/arm9/installer_ui.c`):
+
+* the stage labels and the linear stage index
+  (`installer_ui_stage_label()` / `installer_ui_stage_index()`), including
+  `DONE` and the `IDLE`/`ABORTED`/out-of-range `-1` results;
+* the bounded `installer_ui_progress_bar()` formatter (0/50/100%,
+  round-toward-nearest, the never-empty / never-falsely-full clamps, the
+  over-range clamp, the zero-width and tight-buffer paths, NULL/zero-cap);
+* the failure-stage selector (`installer_ui_failure_stage()`) and the
+  `NANDBACK.BIN` recovery line (`installer_ui_recovery_text()`).
+
+Only the pure helpers run on the host; the drawing entry points (which write to
+VRAM) are linked but never invoked. Built as `build/host_test_installer_ui`.
+
 Run all of them with `make host-test`.
 
 ## 7. ROM packaging + static verification
@@ -337,6 +390,7 @@ The ROM now renders a text console:
   | `[7]`| Unlock and initialise SCFG / NWRAM (MBK1-9)          |
   | `[8]`| Autoboot the `BOOT.CFG`-resolved target              |
   | `[9]`| Inspect `BOOT.CFG` source / hotkey bindings / override |
+  | `[10]`| Install to NAND (guarded backup + verified flash; modal progress, failure/recovery screen; locked by default) |
 
   Inside `[6]`, the top screen shows the mounted FAT type and, after a
   verify/dry-run, the NDS title, game code, unit code, ARM9/ARM7

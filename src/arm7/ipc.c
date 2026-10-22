@@ -536,6 +536,94 @@ static void ipc_handle_boot_handoff(const u32 *args, u32 nargs)
     ipc_fifo_send(IPC_CH_SYSTEM, flags);
 }
 
+/* ------------------------------------------------------------------ */
+/* Guarded NAND write path (ENABLE_NAND_WRITE_DANGER only, AGENTS.md §5) */
+/* ------------------------------------------------------------------ */
+#ifdef ENABLE_NAND_WRITE_DANGER
+
+/*
+ * Runtime write guard. The eMMC refuses every write until this has been armed
+ * with a non-zero id derived from the authenticated installer token. The guard
+ * is process-local ARM7 state, so it is lost on reset; it is layered on top of
+ * the mandatory ENABLE_NAND_WRITE_DANGER build gate rather than replacing it.
+ */
+static u32 s_nand_guard_id = 0u;
+
+static void ipc_handle_nand_guard(const u32 *args, u32 nargs)
+{
+    u32 flags = IPC_IO_FLAG_OK;
+
+    if (nargs < IPC_REQ_NAND_GUARD_WORDS) {
+        flags = IPC_IO_FLAG_BAD_RANGE;
+    } else {
+        /* 0 disarms; anything else arms with that identifier. */
+        s_nand_guard_id = args[0];
+    }
+
+    ipc_fifo_send(IPC_CH_SYSTEM,
+                  ipc_reply_header(IPC_CMD_NAND_GUARD,
+                                   IPC_REPLY_NAND_GUARD_WORDS, 0u));
+    ipc_fifo_send(IPC_CH_SYSTEM, flags);
+}
+
+/*
+ * IPC_CMD_WRITE_SECTOR — write `count` sectors from shared Main RAM to the SD
+ * card (the mandatory backup) or, only when the guard is armed, to the onboard
+ * eMMC. This is the *only* place an eMMC write command is ever issued, and it
+ * is compiled out entirely without ENABLE_NAND_WRITE_DANGER.
+ */
+static void ipc_handle_write_sector(const u32 *args, u32 nargs)
+{
+    u32 flags = 0u;
+    u32 done = 0u;
+
+    if (nargs < IPC_REQ_WRITE_SECTOR_WORDS) {
+        ipc_reply_read(IPC_CMD_WRITE_SECTOR, IPC_IO_FLAG_BAD_RANGE, 0u);
+        return;
+    }
+
+    {
+        u32 dev   = args[0];
+        u32 lba   = args[1];
+        u32 src   = args[2];
+        u32 count = args[3];
+
+        if (!ipc_twl_mode()) {
+            flags = IPC_IO_FLAG_UNAVAILABLE;
+        } else if (count == 0u || count > IPC_STORAGE_MAX_SECTORS) {
+            flags = IPC_IO_FLAG_BAD_RANGE;
+        } else if (!ipc_addr_is_shared_ram(src,
+                                           count * IPC_STORAGE_SECTOR_SIZE)) {
+            flags = IPC_IO_FLAG_BAD_ADDR;
+        } else {
+            bool emmc = (dev == IPC_STORAGE_DEV_EMMC);
+
+            if (emmc && s_nand_guard_id == 0u) {
+                /* The guard is the last line of defence before the eMMC. */
+                flags = IPC_IO_FLAG_LOCKED;
+            } else {
+                bool present = false;
+                sdmmc_t *sc = ipc_sd_open(emmc, &present);
+
+                if (!present) {
+                    flags = IPC_IO_FLAG_UNAVAILABLE;
+                } else if (sdmmc_write(sc, lba * IPC_STORAGE_SECTOR_SIZE,
+                                       (const void *)(uintptr_t)src,
+                                       count * IPC_STORAGE_SECTOR_SIZE)) {
+                    flags = IPC_IO_FLAG_OK;
+                    done = count;
+                } else {
+                    flags = IPC_IO_FLAG_ERROR;
+                }
+            }
+        }
+    }
+
+    ipc_reply_read(IPC_CMD_WRITE_SECTOR, flags, done);
+}
+
+#endif /* ENABLE_NAND_WRITE_DANGER */
+
 /*
  * Route one fully-assembled command to its handler.
  *
@@ -571,11 +659,23 @@ static void ipc_dispatch_command(u32 opcode, const u32 *args, u32 nargs)
     case IPC_CMD_BOOT_HANDOFF:
         ipc_handle_boot_handoff(args, nargs);
         break;
+#ifdef ENABLE_NAND_WRITE_DANGER
+    case IPC_CMD_NAND_GUARD:
+        ipc_handle_nand_guard(args, nargs);
+        break;
+    case IPC_CMD_WRITE_SECTOR:
+        ipc_handle_write_sector(args, nargs);
+        break;
+#else
+    case IPC_CMD_NAND_GUARD:
+    case IPC_CMD_WRITE_SECTOR:
+        /* Not built: refuse silently (the write path does not exist). */
+        break;
+#endif
     case IPC_CMD_SET_STATE:
     case IPC_CMD_QUERY_STATE:
     case IPC_CMD_HANDLE_BLOCK:
     case IPC_CMD_GET_INFO:
-    case IPC_CMD_WRITE_SECTOR:
     case IPC_CMD_STATUS:
     case IPC_CMD_RESUME:
     case IPC_CMD_ARM9_INIT:
@@ -584,9 +684,7 @@ static void ipc_dispatch_command(u32 opcode, const u32 *args, u32 nargs)
     case IPC_CMD_FS_OPEN:
     case IPC_CMD_FS_SEEK:
     default:
-        /* TODO(re): port each case from FUN_0001f21c. IPC_CMD_WRITE_SECTOR in
-         * particular must stay unimplemented until ENABLE_NAND_WRITE_DANGER
-         * gates a reviewed write path (AGENTS.md §5). */
+        /* TODO(re): port each case from FUN_0001f21c. */
         break;
     }
 }

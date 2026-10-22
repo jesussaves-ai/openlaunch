@@ -32,7 +32,7 @@ SIZE       ?= $(CROSS)size
 DEVKITARM  ?= /opt/devkitpro/devkitARM
 export PATH := $(DEVKITARM)/../tools/bin:$(PATH)
 
-BUILD      := build
+BUILD      ?= build
 LD_DIR     := ld
 INCLUDES   := -Iinclude
 
@@ -74,6 +74,13 @@ ifeq ($(AUTOBOOT),1)
 CFLAGS_COMMON += -DENABLE_AUTOBOOT
 endif
 
+# NAND installer write path. DISABLED by default: the eMMC is read-only
+# (AGENTS.md §5, scripts/verify_rom.py). Build with `make NAND_WRITE_DANGER=1`
+# to compile in the guarded backup + flash pipeline (menu item [10]).
+ifeq ($(NAND_WRITE_DANGER),1)
+CFLAGS_COMMON += -DENABLE_NAND_WRITE_DANGER
+endif
+
 # ---- Per-CPU flags -------------------------------------------------------
 CFLAGS_ARM7 := $(CFLAGS_COMMON) -mcpu=arm7tdmi -marm -mfloat-abi=soft
 CFLAGS_ARM9 := $(CFLAGS_COMMON) -mcpu=arm946e-s -marm -mfloat-abi=soft
@@ -101,7 +108,7 @@ OBJS_ARM7 := $(patsubst %.c,$(BUILD)/arm7/%.o,$(SRCS_ARM7)) \
 OBJS_ARM9 := $(patsubst %.c,$(BUILD)/arm9/%.o,$(SRCS_ARM9)) \
              $(patsubst %.s,$(BUILD)/arm9/%.o,$(ASM_ARM9))
 
-.PHONY: all rom run check verify size clean host-test arm9-decompile sd-image release smoke-test configure-emulator
+.PHONY: all rom run check verify size clean host-test arm9-decompile sd-image release smoke-test configure-emulator nand-installer
 
 all: rom
 
@@ -215,6 +222,14 @@ $(SD_IMAGE): $(HELLO_ROM) scripts/make_sd_image.py
 
 sd-image: $(HELLO_ROM) $(SD_IMAGE)
 
+# ---- Guarded NAND installer variant (DISABLED by default) ---------------
+# Builds the full backup + flash pipeline into an isolated tree so the default
+# build/ (and its read-only guarantee, AGENTS.md §5) is untouched. The result
+# is build/nand/openlaunch.nds; flash it only via an authenticated package.
+nand-installer:
+	$(MAKE) BUILD=build/nand NAND_WRITE_DANGER=1 rom sd-image
+	@echo "[*] guarded installer ROM: build/nand/openlaunch.nds"
+
 # ---- Reproducible release bundle (build/release/ + tar.gz) ---------------
 # Builds the diagnostic, live-chainload and autoboot variants (each in its own
 # isolated build directory so the default build/ tree is untouched), stages the
@@ -261,14 +276,18 @@ HOST_SRCS_MEM  := tests/test_mem.c src/common/mem.c
 # input, menu state machine and the full boot path.
 HOST_SRCS_ARM9 := tests/test_arm9.c \
                   src/common/mem.c src/common/lz77.c src/common/cache.c \
-                  src/common/fat_ro.c src/common/nds_header.c \
+                  src/common/fat_ro.c src/common/fat_rw.c \
+                  src/common/nds_header.c \
                   src/common/dldi.c src/common/nand.c \
+                  src/common/sha256.c src/common/installer.c \
                   src/arm9/mpu.c src/arm9/irq.c src/arm9/ipc.c \
                   src/arm9/video.c src/arm9/dma.c src/arm9/scfg.c \
                   src/arm9/boot.c src/arm9/boot_cfg.c src/arm9/theme.c \
                   src/arm9/console.c src/arm9/font8x8.c src/arm9/ui_font.c \
                   src/arm9/input.c src/arm9/menu.c src/arm9/storage.c \
-                  src/arm9/nand_boot.c src/arm9/loader.c
+                  src/arm9/nand_boot.c src/arm9/loader.c \
+                  src/arm9/installer_ui.c \
+                  src/arm9/installer_backup.c src/arm9/installer_install.c
 # Console tile/glyph packer + bounded formatters.
 HOST_SRCS_CONSOLE := tests/test_console.c \
                      src/arm9/console.c src/arm9/font8x8.c src/common/mem.c
@@ -281,9 +300,12 @@ HOST_SRCS_MENU := tests/test_menu.c \
                   src/arm9/ipc.c src/arm9/scfg.c src/arm9/mpu.c \
                   src/arm9/irq.c src/arm9/video.c src/arm9/dma.c \
                   src/arm9/storage.c src/arm9/nand_boot.c src/arm9/loader.c \
+                  src/arm9/installer_ui.c \
                   src/common/mem.c src/common/lz77.c src/common/cache.c \
                   src/common/fat_ro.c src/common/nds_header.c src/common/dldi.c \
-                  src/common/nand.c
+                  src/common/nand.c src/common/sha256.c src/common/installer.c \
+                  src/common/fat_rw.c \
+                  src/arm9/installer_backup.c src/arm9/installer_install.c
 # ARM7 TMIO SD/MMC engine, with the register accesses mocked out.
 HOST_SRCS_SDMMC := tests/test_sdmmc.c src/arm7/sdmmc.c
 HOST_CFLAGS_SDMMC := $(HOST_CFLAGS) -DSDMMC_IO_HOOKS
@@ -322,6 +344,24 @@ HOST_SRCS_NAND := tests/test_nand.c \
 HOST_SRCS_THEME := tests/test_theme.c \
                    src/arm9/theme.c src/arm9/boot_cfg.c \
                    src/common/fat_ro.c src/common/mem.c
+# NAND installer: SHA-256/HMAC-SHA-256, token codec + policy, layout validation,
+# the bounded FAT root-file writer, and the backup/flash streaming engines
+# (suite 14).
+HOST_SRCS_INSTALLER := tests/test_installer.c \
+                       src/common/sha256.c src/common/installer.c \
+                       src/common/nand.c src/common/fat_ro.c \
+                       src/common/fat_rw.c src/common/mem.c \
+                       src/arm9/installer_backup.c \
+                       src/arm9/installer_install.c
+# Installer modal UI: pure stage/percentage formatters (suite 15). The drawing
+# entry points are linked but never invoked on the host (they would touch VRAM).
+HOST_SRCS_INSTALLER_UI := tests/test_installer_ui.c \
+                          src/arm9/installer_ui.c \
+                          src/arm9/console.c src/arm9/font8x8.c \
+                          src/arm9/input.c \
+                          src/common/installer.c src/common/sha256.c \
+                          src/common/nand.c src/common/fat_ro.c \
+                          src/common/mem.c
 
 host-test: $(SD_IMAGE)
 	@mkdir -p $(BUILD)
@@ -338,6 +378,8 @@ host-test: $(SD_IMAGE)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_ui_font $(HOST_SRCS_UI_FONT)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_nand $(HOST_SRCS_NAND)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_theme $(HOST_SRCS_THEME)
+	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_installer $(HOST_SRCS_INSTALLER)
+	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_installer_ui $(HOST_SRCS_INSTALLER_UI)
 	$(BUILD)/host_test_mem
 	$(BUILD)/host_test_arm9
 	$(BUILD)/host_test_console
@@ -351,3 +393,5 @@ host-test: $(SD_IMAGE)
 	$(BUILD)/host_test_ui_font
 	$(BUILD)/host_test_nand $(SD_IMAGE)
 	$(BUILD)/host_test_theme $(SD_IMAGE)
+	$(BUILD)/host_test_installer $(SD_IMAGE)
+	$(BUILD)/host_test_installer_ui

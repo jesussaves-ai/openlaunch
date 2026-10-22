@@ -163,3 +163,40 @@ void arm9_storage_probe(arm9_storage_probe_t *out)
         }
     }
 }
+
+#ifdef ENABLE_NAND_WRITE_DANGER
+/*
+ * Delegated sector write. The SD card is written for the mandatory backup;
+ * the eMMC is written only when the ARM7 write guard is armed (the ARM7
+ * refuses IPC_STORAGE_DEV_EMMC otherwise). The source buffer is cleaned to
+ * main memory before the request so the ARM7 (which has no data cache) sees
+ * the bytes. Never in DTCM.
+ */
+bool arm9_storage_write_sectors(u32 device, u32 lba, const void *src, u32 count)
+{
+    u32 args[IPC_REQ_WRITE_SECTOR_WORDS];
+    u32 len;
+    u32 flags;
+
+    if (src == NULL || count == 0u || count > IPC_STORAGE_MAX_SECTORS) {
+        return false;
+    }
+
+    len = count * IPC_STORAGE_SECTOR_SIZE;
+    if (!ipc_addr_is_shared_ram((u32)(uintptr_t)src, len)) {
+        return false;
+    }
+
+    dc_flush_range(src, len);
+
+    args[0] = device;
+    args[1] = lba;
+    args[2] = (u32)(uintptr_t)src;
+    args[3] = count;
+
+    flags = storage_request(IPC_CMD_WRITE_SECTOR, args,
+                            IPC_REQ_WRITE_SECTOR_WORDS);
+
+    return (flags & IPC_IO_FLAG_OK) != 0u;
+}
+#endif /* ENABLE_NAND_WRITE_DANGER */

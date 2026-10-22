@@ -1705,5 +1705,177 @@ staged splash read against the generated `build/sdcard.img`. `make sd-image`
 now installs a deterministic gradient `SPLASH.RAW` and a themed `BOOT.CFG`, and
 `scripts/verify_sd_image.py` independently re-checks both.
 
+---
+
+## 34. Safe NAND installer (`src/common/installer.c`, `src/arm9/installer_*.c`)
+
+A guarded, sandboxed installer pipeline for the internal DSi eMMC, exposed as
+menu item `[10] Install to NAND`. The design follows AGENTS.md §5 to the letter:
+the default build is physically incapable of writing the eMMC, the mandatory
+compile-time gate is `-DENABLE_NAND_WRITE_DANGER` (knob: `make NAND_WRITE_DANGER=1`,
+isolated tree: `make nand-installer`), and even in an armed build the write path
+stays locked until a signed package authenticates **and** a full NAND backup has
+been written and verified.
+
+### 34.1 Layers
+
+| Layer | Files | Compiled | Purpose |
+| :--- | :--- | :--- | :--- |
+| SHA-256 / HMAC-SHA-256 | `include/common/sha256.h`, `src/common/sha256.c` | always | backup/payload fingerprints and the token MAC |
+| Layout + guards | `src/common/nand.c` | always | MBR/TWL validation, protected boot prefix |
+| Token + policy + state machine | `include/common/installer.h`, `src/common/installer.c` | always | signed descriptor, pre-flight gate, abort/error vocabulary |
+| FAT root-file writer | `include/common/fat_rw.h`, `src/common/fat_rw.c` | always | writes `NANDBACK.BIN` on the SD card |
+| Backup / verify / flash engines | `include/arm9/installer.h`, `src/arm9/installer_backup.c`, `src/arm9/installer_install.c` | always (engines), guarded (glue) | streamed, injected-I/O transfers |
+| ARM7 write + guard | `src/arm7/ipc.c`, `src/arm7/sdmmc.c` | guarded | the only code that can write the eMMC |
+
+The injected-I/O engines carry no hardware access, so the whole
+backup → verify → flash → read-back sequence is host-testable
+(`tests/test_installer.c`, suite 14).
+
+### 34.2 SHA-256 / HMAC-SHA-256
+
+`src/common/sha256.c` is a freestanding FIPS 180-4 / RFC 2104 implementation
+(no libc, no allocation; the state lives on the stack). `sha256_digest_equal()`
+compares in constant time and `sha256_hex()` renders the 64-character
+lower-case form used by the on-screen report and `SHA256SUMS` tooling.
+
+### 34.3 NAND geometry + pre-flight layout validation
+
+`nand_validate_layout()` verifies the `0x55AA` signature, auto-detects the
+PC-style MBR vs the HiyaCFW TWL `{offset,size}` form, requires a FAT16/FAT32
+partition at least `NAND_MIN_FAT_SECTORS` (128 KiB) large, bounds it against
+`NAND_MAX_SECTORS` (256 MiB) and records the protected boot prefix
+(`protected_end = partition_lba`, at least `NAND_BOOT_GUARD_SECTORS`).
+`nand_region_is_protected()` rejects any overlapping target, overflowing
+arithmetic fails closed, and these checks run **before** the installer reads a
+single payload byte.
+
+> **Sandbox scope.** The installer never writes the protected prefix that
+> physically precedes the user FAT volume (the stage-1/stage-2 bootstrap area).
+> The target region must lie inside the user FAT volume; the boot prefix is
+> permanently off-limits. This is the AGENTS.md §5 "sandbox-first" posture: the
+> installer is a safe in-volume staging mechanism, not a factory-boot overwriter.
+
+### 34.4 Signed installer token + pre-flight state machine
+
+`INSTALL.KEY` (96 bytes) carries the target descriptor and a payload digest,
+authenticated by an HMAC-SHA-256 over the first `0x40` bytes (see
+include/common/installer.h for the byte-exact layout). `installer_token_parse()`
+structurally validates it, `installer_token_verify()` authenticates it, and
+`installer_token_check_range()`/`installer_plan_region()` bound the target to
+the validated layout and the exact payload size.
+
+`installer_preflight()` is a strict boolean cascade (build flag → SD
+destination → layout → token → prior backup); the state machine
+`IDLE → PREFLIGHT → BACKUP → VERIFY_BACKUP → UNLOCK → WRITE → VERIFY_WRITE →
+DONE`, with any failure moving to `ABORTED`, is `installer_advance()`.
+
+`scripts/make_installer_token.py` produces the token and self-verifies it; it
+shares the build's development key (`INSTALLER_AUTH_KEY`, overridable at compile
+time). The token is a **runtime** authorisation only — it can never enable
+writing in a build that did not define `ENABLE_NAND_WRITE_DANGER`.
+
+### 34.5 Mandatory backup + FAT writer
+
+Before any write, `installer_run()` streams the whole NAND (from LBA 0 to the
+layout's `total_backup_sectors`) through `installer_backup_stream()` into the SD
+root file `NANDBACK.BIN`, hashing with SHA-256, then re-reads the NAND and
+compares digests with `installer_backup_verify()`. A mismatch, a short write or
+an I/O error aborts the installation with the backup's clusters freed.
+
+`src/common/fat_rw.c` is a bounded FAT16/FAT32 root-file writer
+(`fat_create_file()` → `fat_writer_write()` → `fat_writer_end()`, plus
+`fat_writer_abort()`): only the root directory, only 8.3 names, no overwrite (a
+name clash fails closed), cluster/FAT allocation on every FAT copy, and every
+step guarded. It exists solely so the backup can be a real file; it is covered
+by `tests/test_installer.c` against `build/sdcard.img`.
+
+> The transfer engine streams one 512-byte sector per delegated IPC request.
+> This is intentionally small and bounded (it keeps the ARM7 responsive and the
+> buffers in shared RAM); batching up to `IPC_STORAGE_MAX_SECTORS` (16 KiB) per
+> request is an obvious future optimisation for a full 240 MB NAND dump.
+
+### 34.6 Flash, runtime guard and IPC
+
+`installer_flash_region()` writes each target sector, reads it back
+immediately and compares byte-for-byte before advancing; the accumulated digest
+is finally checked against the token. The gated glue arms the ARM7 with a
+token-derived id (`IPC_CMD_NAND_GUARD`), streams through `IPC_CMD_WRITE_SECTOR`
+and disarms unconditionally. The ARM7 refuses `IPC_STORAGE_DEV_EMMC` writes with
+`IPC_IO_FLAG_LOCKED` until armed; SD writes (the backup) are allowed whenever the
+build flag is set. The eMMC write is issued only from
+`src/arm7/sdmmc.c::sdmmc_write()`, which itself exists only under the flag.
+
+> **On "SCFG/MBK write-unlock".** The DSi exposes no documented SCFG or MBK bit
+> that write-protects the eMMC: `MBK9` guards the NWRAM banks, and the only
+> relevant gate is the ARM7 SD/MMC register-window enable (`SCFG_EXT7.bit18`,
+> set by `sdmmc_enable_clock()`). The installer therefore implements the
+> "unlock" as an explicit, revocable **runtime** handshake
+> (`IPC_CMD_NAND_GUARD`) layered on the mandatory compile-time flag, rather than
+> pretending to flip a security register that does not exist. This is stricter
+> than a register unlock, not weaker: a locked ARM7 rejects every eMMC write.
+
+### 34.7 Build gating
+
+* Default (`make`): none of the write glue is linked. `scripts/verify_rom.py`
+  asserts the linker maps contain no `sdmmc_write`/`nand_write`/`emmc_write`
+  symbols, and menu `[10]` reports `GUARD: NAND WRITE LOCKED` +
+  `NAND write path not built`.
+* Armed (`make nand-installer`, i.e. `BUILD=build/nand
+  NAND_WRITE_DANGER=1`): the full pipeline links, `[10]` runs the backup +
+  verified flash and the top screen shows `GUARD: WRITE PATH ARMED`.
+
+### 34.8 Verification
+
+`tests/test_installer.c` (suite 14) covers the SHA-256/HMAC known-answer
+vectors (FIPS/RFC 4231), NAND layout validation and the protected-region
+guards, the token codec (tamper/structural rejection), the pre-flight/
+state-machine policy, the streaming backup + verify + flash + read-back engines,
+the progress hook (`installer_percent()` + the per-sector reports), the FAT
+root-file writer (multi-cluster write, duplicate rejection, read-back through
+the read-only parser, `installer_sd_source_read()` zero-padding past EOF), the
+locked-build report, and a simulated menu `[10]` pre-flight on the generated
+`build/sdcard.img` that asserts an absent `INSTALL.KEY` is refused with
+`INSTALLER_ERR_BAD_TOKEN` before any write.
+
+`tests/test_installer_ui.c` (suite 15) covers the pure half of the modal UI
+(`src/arm9/installer_ui.c`): the stage labels/indices, the bounded
+`installer_ui_progress_bar()` formatter, the failure-stage selector and the
+`NANDBACK.BIN` recovery line.
+
+`make host-test` runs both after generating `build/sdcard.img`.
+
+### 34.9 Progress reporting + modal UI
+
+The installer engines are hardware-free, so they surface their progress through
+one optional global hook (`installer_set_progress_hook()` in
+`src/common/installer.c`): `installer_progress_state()` at each state
+transition and `installer_progress_step()` once per streamed sector
+(`installer_percent()` renders the 0..100 figure with a 64-bit intermediate).
+The hook is purely observational — it has no return value and cannot alter the
+transfer — so the host suites (which leave it NULL) and the on-screen renderer
+share identical control flow.
+
+Menu item `[10]` (`menu_install_view()`) drives this with
+`src/arm9/installer_ui.c`:
+
+* `installer_ui_begin()` paints the modal skeleton (both screens, `DO NOT POWER
+  OFF`) and the six-stage checklist
+  (`PREFLIGHT → BACKUP → VERIFY_BACKUP → UNLOCK → WRITE → VERIFY_WRITE`);
+* `installer_ui_update()` — the installed hook — advances the checklist,
+  redraws the progress bar/percentage and the `n/total` sector counter, and
+  throttles itself to redraw only when the stage or the percentage changes;
+* on `INSTALLER_STATE_DONE` the success screen reports the verified write and
+  the retained `NANDBACK.BIN`; on any abort `installer_ui_show_abort()` paints
+  a high-visibility failure screen that names the **exact failed stage**
+  (`installer_report_t.failed_state`, recorded by `installer_fail()` on every
+  abort path) and instructs the user to recover from the mandatory
+  `SD:/NANDBACK.BIN` full-NAND image;
+* `installer_ui_wait_back()` returns to the main menu on `B`.
+
+In the default (locked) build `installer_run()` reports the PREFLIGHT →
+ABORTED transition and the abort screen shows
+`BUILD: READ-ONLY (AGENTS 5)`, so selecting `[10]` is a safe no-op.
+
 
 

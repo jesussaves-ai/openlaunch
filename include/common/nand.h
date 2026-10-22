@@ -125,6 +125,68 @@ s32 nand_find_largest_fat(const nand_table_t *tbl);
 bool nand_resolve_path(fat_volume_t *vol, const char *path,
                        fat_file_entry_t *out);
 
+/* ---- Geometry, pre-flight layout validation and write guards ---------- */
+
+/*
+ * Sanity bound on the DSi eMMC (256 MiB / 512 = 0x80000 sectors). The real
+ * device is 240 MiB usable; this generous ceiling exists only so a corrupt or
+ * malicious partition entry cannot describe a region past the chip.
+ */
+#define NAND_MAX_SECTORS        0x80000u
+#define NAND_MIN_FAT_SECTORS    0x100u   /* 128 KiB: reject tiny/absurd FATs */
+
+/*
+ * Size of the protected boot prefix (in 512-byte sectors): the MBR sector and
+ * the stage-1/stage-2 bootstrap area that physically precedes the user FAT
+ * volume. The installer refuses to write any sector below the FAT partition
+ * start, so this prefix is derived, not assumed.
+ */
+#define NAND_BOOT_GUARD_SECTORS 1u   /* the MBR/BPB sector itself, minimum */
+
+/* Result of nand_validate_layout(). NAND_LAYOUT_OK == 0. */
+typedef enum {
+    NAND_LAYOUT_OK = 0,
+    NAND_LAYOUT_ERR_NULL,       /* NULL argument                            */
+    NAND_LAYOUT_ERR_SIGNATURE,  /* 0x55AA boot signature missing            */
+    NAND_LAYOUT_ERR_EMPTY,      /* no non-empty partition entry             */
+    NAND_LAYOUT_ERR_NO_FAT,     /* no FAT16/FAT32 partition located         */
+    NAND_LAYOUT_ERR_TOO_SMALL,  /* FAT partition smaller than the minimum   */
+    NAND_LAYOUT_ERR_BOUNDS      /* partition extends past NAND_MAX_SECTORS  */
+} nand_layout_status_t;
+
+/* A validated NAND layout: where the user FAT volume lives and where the
+ * protected boot prefix ends. */
+typedef struct {
+    nand_table_format_t format;
+    u32 partition_lba;      /* first sector of the user FAT volume          */
+    u32 partition_sectors;  /* its size                                     */
+    u32 total_sectors;      /* end sector of the highest non-empty entry    */
+    u32 protected_end;      /* exclusive end of the write-protected prefix  */
+    u32 total_backup_sectors; /* `total_sectors` (the full-image dump size)  */
+} nand_layout_t;
+
+/*
+ * Pre-flight validation of a NAND LBA-0 sector.
+ *
+ * Verifies the 0x55AA signature, auto-detects the table format, requires a
+ * FAT16/FAT32 partition (or, for the TWL form, a first partition confirmed by
+ * the caller's mount), checks the geometry against `max_sectors` and fills
+ * `*out`. Returns NAND_LAYOUT_OK on success. Pure (no device access) so the
+ * installer can prove a layout is safe before it reads a single payload byte.
+ */
+nand_layout_status_t nand_validate_layout(const u8 sector[NAND_SECTOR_SIZE],
+                                          u32 max_sectors,
+                                          nand_layout_t *out);
+
+/* Human-readable text for a layout status (never NULL). */
+const char *nand_layout_status_text(nand_layout_status_t status);
+
+/*
+ * True when the half-open sector range [lba, lba + count) overlaps the
+ * protected boot prefix of `layout`. Used as the final veto before any write.
+ */
+bool nand_region_is_protected(const nand_layout_t *layout, u32 lba, u32 count);
+
 /* ---- Boot-redirect policy (pure) -------------------------------------- */
 
 /* Inputs to the redirect decision. */

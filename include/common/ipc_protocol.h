@@ -95,10 +95,32 @@
  */
 #define IPC_CMD_BOOT_HANDOFF    0x1012u
 
+/*
+ * ---- Guarded NAND write path (ENABLE_NAND_WRITE_DANGER only) ------------
+ *
+ * The whole write path exists only in a build that defines
+ * ENABLE_NAND_WRITE_DANGER (AGENTS.md §5). Even there, the ARM7 refuses to
+ * write the onboard eMMC until it has been explicitly armed:
+ *
+ * IPC_CMD_NAND_GUARD request payload (IPC_REQ_NAND_GUARD_WORDS words):
+ *   arg0  auth_id   0 = disarm; non-zero = arm with the token-derived id
+ *
+ * IPC_CMD_WRITE_SECTOR request payload (IPC_REQ_WRITE_SECTOR_WORDS words):
+ *   arg0  device      IPC_STORAGE_DEV_* (SD backup sink / guarded eMMC)
+ *   arg1  lba         first 512-byte sector
+ *   arg2  src         source buffer address in shared Main RAM
+ *   arg3  count       number of 512-byte sectors
+ *
+ * The reply reuses the IPC_REPLY_READ_WORDS framing (flags + transferred).
+ */
+#define IPC_CMD_NAND_GUARD      0x1013u
+
 /* Request payload word counts (excluding the request header). */
 #define IPC_REQ_READ_SECTOR_WORDS   4u
 #define IPC_REQ_READ_FIRMWARE_WORDS 3u
 #define IPC_REQ_BOOT_HANDOFF_WORDS  4u
+#define IPC_REQ_WRITE_SECTOR_WORDS  4u
+#define IPC_REQ_NAND_GUARD_WORDS    1u
 
 /* Largest request we will assemble (bounds the ARM7-side argument buffer). */
 #define IPC_REQUEST_MAX_WORDS       4u
@@ -125,6 +147,7 @@
 #define IPC_IO_FLAG_BAD_ADDR    BIT(2)   /* buffer not in shared Main RAM   */
 #define IPC_IO_FLAG_BAD_RANGE   BIT(3)   /* count/length out of range       */
 #define IPC_IO_FLAG_UNAVAILABLE BIT(4)   /* controller absent (legacy DS)   */
+#define IPC_IO_FLAG_LOCKED      BIT(5)   /* eMMC write guard not armed      */
 
 /* Payload word counts (excluding the reply header). */
 #define IPC_REPLY_RTC_WORDS     3u
@@ -133,6 +156,7 @@
 #define IPC_REPLY_EXTKEY_WORDS  1u
 #define IPC_REPLY_READ_WORDS    2u   /* flags, transferred (sectors/bytes) */
 #define IPC_REPLY_BOOT_WORDS    1u   /* handoff result flags               */
+#define IPC_REPLY_NAND_GUARD_WORDS 1u /* guard result flags                */
 
 /* IPC_CMD_GET_RTC status bits (reply header status field). */
 #define IPC_RTC_STATUS_VALID     BIT(0)

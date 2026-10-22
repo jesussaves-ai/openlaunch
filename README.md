@@ -48,6 +48,19 @@ disassembled from `asm/UNLAUNCH.DSI` into readable, strictly typed C99. See
   (PC-style MBR and HiyaCFW TWL `{offset,size}`), reached through the
   ARM7-gated eMMC IPC, plus a boot policy that falls back to the DSi System
   Menu (`00030004`/`484e4c41`) when no SD boot target is present.
+* **Guarded NAND installer (opt-in)** — menu item `[10] Install to NAND`
+  drives a signed, sandboxed installation pipeline: pre-flight MBR/TWL layout
+  validation with a permanently protected boot prefix, a **mandatory** full
+  raw NAND backup (`NANDBACK.BIN`, SHA-256 verified) on the SD card, an
+  HMAC-SHA-256 authenticated installer token (`INSTALL.KEY`), then a guarded
+  eMMC write with byte-for-byte read-back verification and unconditional
+  guard release. A modal progress screen walks the six stages
+  (`PREFLIGHT → BACKUP → VERIFY_BACKUP → UNLOCK → WRITE → VERIFY_WRITE`) with
+  live percentages; an abort paints a high-visibility failure screen naming the
+  exact failed stage and the `SD:/NANDBACK.BIN` recovery image. The write glue
+  is compiled **only** with `make NAND_WRITE_DANGER=1` (isolated tree:
+  `make nand-installer`); the default build reports `GUARD: NAND WRITE LOCKED`
+  and refuses `[10]` safely.
 * **Reproducible release** — `make release` builds the diagnostic,
   live-chainload and autoboot variants (plus a ready-to-copy SD card template)
   into `build/release/` with a deterministic `SHA256SUMS.txt` and
@@ -57,7 +70,9 @@ disassembled from `asm/UNLAUNCH.DSI` into readable, strictly typed C99. See
   root `BOOT.CFG`) for emulator and CI verification.
 
 No eMMC/NAND write path exists outside the `ENABLE_NAND_WRITE_DANGER` build
-(AGENTS.md §5); the storage pipeline is read-only by default.
+(AGENTS.md §5); the storage pipeline is read-only by default. The opt-in
+installer keeps that guarantee: even an armed build refuses to write until a
+signed package authenticates *and* a full, SHA-256-verified NAND backup exists.
 
 ## Requirements
 
@@ -87,6 +102,19 @@ To arm the real dual-CPU chainload branch (off by default):
 make clean
 make CHAINLOAD_BOOT=1 rom sd-image
 ```
+
+To build the guarded NAND installer (DISABLED by default, AGENTS.md §5):
+
+```sh
+make nand-installer     # -> build/nand/openlaunch.nds (+ build/nand/sdcard.img)
+python3 scripts/make_installer_token.py --payload <image> --target-lba 0x100 \
+        --out INSTALL.KEY
+```
+
+`make nand-installer` builds in an isolated `build/nand/` tree so the default
+`build/` keeps its read-only guarantee. The installer requires an authenticated
+`INSTALL.KEY` on the SD root and writes a full `NANDBACK.BIN` backup before any
+eMMC write; see docs/hardware_notes.md §34.
 
 ## Repository layout
 

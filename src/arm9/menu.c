@@ -15,6 +15,7 @@
 #include "arm9/boot.h"
 #include "arm9/boot_cfg.h"
 #include "arm9/console.h"
+#include "arm9/installer_ui.h"
 #include "arm9/ipc.h"
 #include "arm9/loader.h"
 #include "arm9/mpu.h"
@@ -46,6 +47,7 @@ static const char *const s_menu_labels[MENU_ITEM_COUNT] = {
     "[7] Init SCFG / MBK",
     "[8] Autoboot BOOT.CFG",
     "[9] Inspect BOOT.CFG",
+    "[10] Install to NAND",
 };
 
 static const char *const s_menu_desc[MENU_ITEM_COUNT] = {
@@ -58,6 +60,7 @@ static const char *const s_menu_desc[MENU_ITEM_COUNT] = {
     "Unlock + map DSi SCFG/NWRAM",
     "Boot the resolved BOOT.CFG target",
     "BOOT.CFG source + hotkey map",
+    "Backup NAND then flash (guarded)",
 };
 
 /* Embedded LZ77 self-test vector: literals "ABCD" + length-4/distance-4 back
@@ -150,6 +153,7 @@ menu_action_t menu_action_for(const menu_state_t *m)
     case 6u: return MENU_ACTION_SCFG_INIT;
     case 7u: return MENU_ACTION_AUTOBOOT;
     case 8u: return MENU_ACTION_INSPECT_CFG;
+    case 9u: return MENU_ACTION_INSTALL;
     default: return MENU_ACTION_NONE;
     }
 }
@@ -777,12 +781,12 @@ static void render_menu(const menu_state_t *state)
         console_puts(0, 2 + (int)i, pal, line);
     }
 
-    console_puts(0, 11, CONSOLE_PAL_GREY, "UP/DOWN SELECT  A RUN");
-    console_puts(0, 12, CONSOLE_PAL_GREY, "B: RE-RUN SELF-TEST");
-    console_puts(0, 14, CONSOLE_PAL_CYAN, "INFO:");
-    console_puts(0, 15, CONSOLE_PAL_WHITE, s_menu_desc[state->cursor]);
+    console_puts(0, 12, CONSOLE_PAL_GREY, "UP/DOWN SELECT  A RUN");
+    console_puts(0, 13, CONSOLE_PAL_GREY, "B: RE-RUN SELF-TEST");
+    console_puts(0, 15, CONSOLE_PAL_CYAN, "INFO:");
+    console_puts(0, 16, CONSOLE_PAL_WHITE, s_menu_desc[state->cursor]);
     if (s_theme_footer[0] != '\0') {
-        console_puts(0, 17, CONSOLE_PAL_CYAN, s_theme_footer);
+        console_puts(0, 18, CONSOLE_PAL_CYAN, s_theme_footer);
     }
 }
 
@@ -1359,6 +1363,44 @@ static void menu_browse_view(menu_diag_t *d)
     d->last_action = "SD browse";
 }
 
+/*
+ * Menu item [10]: the NAND installer. This is the only code path in the
+ * firmware permitted to write the eMMC, and it is compiled into the image only
+ * under ENABLE_NAND_WRITE_DANGER (AGENTS.md §5). In the locked build
+ * installer_run() reports INSTALLER_ERR_DISABLED and nothing is written.
+ *
+ * The modal progress screen is driven by the installer's own progress hook
+ * (installer_ui_update), so the six stages PREFLIGHT -> BACKUP ->
+ * VERIFY_BACKUP -> UNLOCK -> WRITE -> VERIFY_WRITE and the backup/write
+ * percentages update live as the engines stream. The outcome is either the
+ * success screen or a high-visibility abort screen that names the exact
+ * failure stage and points at the mandatory NANDBACK.BIN recovery file.
+ */
+static void menu_install_view(menu_diag_t *d)
+{
+    d->install_ran = true;
+    d->last_action = "NAND installer";
+
+    installer_ui_begin();
+    installer_set_progress_hook(installer_ui_update, NULL);
+
+    installer_run(&d->install);
+
+    /* Detach before painting the outcome so no further updates arrive. */
+    installer_set_progress_hook(NULL, NULL);
+
+    if (d->install.state == INSTALLER_STATE_DONE) {
+        installer_ui_show_success(&d->install);
+    } else {
+        installer_ui_show_abort(&d->install);
+    }
+
+    d->last_action = installer_state_text(d->install.state);
+
+    /* B returns to the main menu (which redraws the telemetry + menu). */
+    installer_ui_wait_back();
+}
+
 static void menu_execute(const menu_state_t *state, menu_diag_t *d)
 {
     switch (menu_action_for(state)) {
@@ -1398,6 +1440,9 @@ static void menu_execute(const menu_state_t *state, menu_diag_t *d)
         break;
     case MENU_ACTION_INSPECT_CFG:
         menu_bootcfg_view(d);
+        break;
+    case MENU_ACTION_INSTALL:
+        menu_install_view(d);
         break;
     default:
         break;

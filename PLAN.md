@@ -99,6 +99,13 @@ Consequences:
 | BOOT.CFG theme / color parser | clean-room (`THEME_ACCENT`/`TEXT`/`BG`, `SPLASH_IMAGE`) | `src/arm9/theme.c` + `boot_cfg.c` | **new** |
 | Theme splash renderer | clean-room (SD 256x192 15-bit BGR555 -> Engine A BG2) | `src/arm9/theme.c`     | **new**       |
 | Release packager     | clean-room (variants + SD template + SHA256SUMS)    | `scripts/make_release.py` | **new**       |
+| SHA-256 / HMAC       | clean-room (FIPS 180-4 / RFC 2104)                  | `src/common/sha256.c`     | **new**       |
+| NAND layout guards   | clean-room (MBR/TWL validation + boot-prefix veto)  | `src/common/nand.c`       | **new**       |
+| Installer policy     | clean-room (signed token + preflight + state machine)| `src/common/installer.c`  | **new**       |
+| FAT root-file writer | clean-room (bounded create/write/abort)             | `src/common/fat_rw.c`     | **new**       |
+| NAND backup/flash    | clean-room (injected I/O + SHA-256 backup + read-back)| `src/arm9/installer_backup.c`/`installer_install.c` | **new** |
+| Installer progress UI| clean-room (progress hook + modal stages + recovery) | `src/arm9/installer_ui.c` | **new** |
+| Guarded eMMC write   | clean-room (`IPC_CMD_WRITE_SECTOR`/`NAND_GUARD`)    | `src/arm7/ipc.c`          | gated         |
 
 ## 2. Next steps
 
@@ -289,3 +296,28 @@ Consequences:
   installs a deterministic gradient `SPLASH.RAW` + themed `BOOT.CFG`. Covered by
   `tests/test_theme.c` (suite 13), `tests/test_sd_image.c` and
   `scripts/verify_sd_image.py` (docs §33).
+* **Safe NAND installer** — a guarded, sandboxed eMMC installation pipeline,
+  default read-only. `src/common/sha256.c` adds freestanding SHA-256 +
+  HMAC-SHA-256 (FIPS 180-4 / RFC 2104); `nand_validate_layout()` +
+  `nand_region_is_protected()` (`src/common/nand.c`) verify the MBR/TWL
+  partition table and permanently protect the boot prefix; `src/common/installer.c`
+  implements the 96-byte signed token (`INSTALL.KEY`), the strict pre-flight
+  cascade and the `IDLE → … → DONE/ABORTED` state machine; `src/common/fat_rw.c`
+  is a bounded FAT16/FAT32 root-file writer used to drop the mandatory
+  `NANDBACK.BIN` full-NAND backup on the SD card; and
+  `src/arm9/installer_backup.c`/`installer_install.c` stream the
+  backup → SHA-256 verify → guarded flash → byte-for-byte read-back. The write
+  glue (ARM7 `IPC_CMD_WRITE_SECTOR` + `IPC_CMD_NAND_GUARD`, ARM9
+  `arm9_storage_write_sectors`) is compiled **only** under
+  `ENABLE_NAND_WRITE_DANGER` (`make nand-installer`); the default build reports
+  `GUARD: NAND WRITE LOCKED` and `verify_rom.py` still asserts no write symbols
+  are linked. Menu item `[10] Install to NAND` now drives the whole flow through
+  a modal progress screen (`src/arm9/installer_ui.c`) fed by the installer's
+  optional progress hook — the six stages `PREFLIGHT → BACKUP →
+  VERIFY_BACKUP → UNLOCK → WRITE → VERIFY_WRITE`, live backup/write percentages
+  and a `n/total` sector counter — and renders a dedicated success or
+  high-visibility abort screen that names the exact failed stage
+  (`installer_report_t.failed_state`) and points at the mandatory
+  `SD:/NANDBACK.BIN` recovery image. `scripts/make_installer_token.py` produces
+  and self-verifies the signed package. Covered by `tests/test_installer.c`
+  (suite 14) and `tests/test_installer_ui.c` (suite 15), and docs §34.

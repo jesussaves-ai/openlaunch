@@ -14,9 +14,10 @@
 #include "../common/nds_header.h"
 #include "boot_cfg.h"
 #include "input.h"
+#include "installer.h"
 
 /* Menu entries, in display order. */
-#define MENU_ITEM_COUNT   9u
+#define MENU_ITEM_COUNT   10u
 
 /* Maximum number of .nds/.srl files listed by the SD browser. */
 #define MENU_BROWSE_MAX   16u
@@ -31,7 +32,8 @@ typedef enum {
     MENU_ACTION_BROWSE,     /* [6] browse the SD card's FAT volume        */
     MENU_ACTION_SCFG_INIT,  /* [7] unlock + initialise SCFG/MBK           */
     MENU_ACTION_AUTOBOOT,   /* [8] autoboot BOOT.NDS from the SD root     */
-    MENU_ACTION_INSPECT_CFG /* [9] inspect BOOT.CFG + hotkey bindings     */
+    MENU_ACTION_INSPECT_CFG,/* [9] inspect BOOT.CFG + hotkey bindings     */
+    MENU_ACTION_INSTALL     /* [10] NAND installer (guarded)              */
 } menu_action_t;
 
 typedef struct {
@@ -124,6 +126,10 @@ typedef struct {
     u32  nand_fat_lba;
     u32  nand_total_sectors;
     char nand_launcher_path[NAND_LAUNCHER_PATH_MAX];
+
+    /* NAND installer state (item [10]); see include/arm9/installer.h. */
+    bool               install_ran;   /* installer_run() was invoked        */
+    installer_report_t install;       /* the last installer report          */
 
     const char *last_action;
 } menu_diag_t;
