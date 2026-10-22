@@ -21,6 +21,7 @@
 #define DSI_ARM9_LOADER_H
 
 #include "../common/types.h"
+#include "../common/dldi.h"
 #include "../common/fat_ro.h"
 #include "../common/nds_header.h"
 
@@ -32,6 +33,13 @@
  */
 #define LOADER_ARM7_BOUNCE_ADDR 0x02100000u
 #define LOADER_ARM7_BOUNCE_MAX  0x00100000u   /* 1 MiB */
+
+/*
+ * Bounded window used by loader_detect_dldi(): the ARM9 prefix streamed into a
+ * .bss scratch buffer for the verify/dry-run inspector. Large enough for a
+ * header-proximate DLDI stub without staging the whole image.
+ */
+#define LOADER_DLDI_SCAN_MAX    0x00004000u   /* 16 KiB */
 
 /* Plan derived from a validated header (pure; host-testable). */
 typedef struct {
@@ -60,6 +68,12 @@ typedef struct {
     u32  arm9i_size;       /* TWL ARM9i streamed (0 when absent)          */
     u32  arm7i_size;       /* TWL ARM7i streamed (0 when absent)          */
     u32  argv_len;         /* bytes in the populated command line         */
+
+    /* DLDI section detection (and optional in-RAM patching). */
+    bool dldi_present;     /* a valid DLDI stub was found in the ARM9      */
+    bool dldi_patched;     /* it was replaced by the built-in RO driver    */
+    u32  dldi_alloc_kb;    /* reserved block size in KiB                   */
+    char dldi_io_type[DLDI_IO_TYPE_LEN + 1u]; /* 4-char tag + NUL       */
 } loader_result_t;
 
 /* Read sector 0 of `entry` through `vol` and validate it. */
@@ -130,5 +144,18 @@ nds_load_status_t loader_stage_and_boot(fat_volume_t *vol,
                                         const fat_file_entry_t *entry,
                                         bool extended_ram,
                                         loader_result_t *out);
+
+/*
+ * Bounded DLDI detection for the verify/dry-run inspector: stream up to
+ * LOADER_DLDI_SCAN_MAX bytes of the ARM9 segment through the delegated FAT
+ * reader and scan that prefix for a valid DLDI stub. Fills `*out` when present
+ * (the string fields of a zeroed `dldi_info_t` otherwise).
+ *
+ * The scan is bounded because the inspector reads into a fixed .bss window
+ * rather than staging the whole image; the deterministic payload keeps its
+ * stub at offset 0. Returns true only for a valid, in-range stub.
+ */
+bool loader_detect_dldi(fat_volume_t *vol, const fat_file_entry_t *entry,
+                        const nds_header_t *hdr, dldi_info_t *out);
 
 #endif /* DSI_ARM9_LOADER_H */

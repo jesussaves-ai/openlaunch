@@ -42,6 +42,7 @@ static const char *const s_menu_labels[MENU_ITEM_COUNT] = {
     "[6] Browse SD Card (.nds)",
     "[7] Init SCFG / MBK",
     "[8] Autoboot BOOT.CFG",
+    "[9] Inspect BOOT.CFG",
 };
 
 static const char *const s_menu_desc[MENU_ITEM_COUNT] = {
@@ -53,6 +54,7 @@ static const char *const s_menu_desc[MENU_ITEM_COUNT] = {
     "Mount FAT, browse root + /NDS/",
     "Unlock + map DSi SCFG/NWRAM",
     "Boot the resolved BOOT.CFG target",
+    "BOOT.CFG source + hotkey map",
 };
 
 /* Embedded LZ77 self-test vector: literals "ABCD" + length-4/distance-4 back
@@ -140,6 +142,7 @@ menu_action_t menu_action_for(const menu_state_t *m)
     case 5u: return MENU_ACTION_BROWSE;
     case 6u: return MENU_ACTION_SCFG_INIT;
     case 7u: return MENU_ACTION_AUTOBOOT;
+    case 8u: return MENU_ACTION_INSPECT_CFG;
     default: return MENU_ACTION_NONE;
     }
 }
@@ -597,7 +600,16 @@ static void render_telemetry(const menu_diag_t *d)
         console_puts(0, 14, CONSOLE_PAL_YELLOW, "SD RD: unavailable");
     }
 
-    if (d->sd_total_sectors != 0u) {
+    /*
+     * Row 16 is shared: an in-progress staging report takes precedence over the
+     * static card-capacity readout.
+     */
+    if (d->boot_staged) {
+        console_printf(0, 16,
+                       d->boot_dry_run ? CONSOLE_PAL_YELLOW : CONSOLE_PAL_GREEN,
+                       "STAGE: %s",
+                       d->boot_dry_run ? "DRY-RUN OK" : "BOOTING...");
+    } else if (d->sd_total_sectors != 0u) {
         console_printf(0, 16, CONSOLE_PAL_GREY, "SDCAP: %u MiB",
                        (unsigned)((d->sd_total_sectors + 2047u) / 2048u));
     }
@@ -643,13 +655,13 @@ static void render_telemetry(const menu_diag_t *d)
                        "LOADABLE: %s",
                        d->loader_loadable ? "YES" : nds_load_status_text(
                            (nds_load_status_t)d->loader_status));
-    }
 
-    if (d->boot_staged) {
-        console_printf(0, 23,
-                       d->boot_dry_run ? CONSOLE_PAL_YELLOW : CONSOLE_PAL_GREEN,
-                       "STAGE: %s",
-                       d->boot_dry_run ? "DRY-RUN OK" : "BOOTING...");
+        if (d->dldi_present) {
+            console_printf(0, 23, CONSOLE_PAL_CYAN, "DLDI: YES (%s, %uK)",
+                           d->dldi_io_type, (unsigned)d->dldi_alloc_kb);
+        } else {
+            console_puts(0, 23, CONSOLE_PAL_GREY, "DLDI: NONE");
+        }
     }
 }
 
@@ -746,6 +758,101 @@ static void menu_inspect_view(const menu_diag_t *d)
 }
 
 /*
+ * Format a BOOT.CFG key label padded to the 7-character display column
+ * ("DEFAULT", "A      ", ...). `dst` always ends NUL-terminated.
+ */
+static void menu_bootcfg_label(char *dst, u32 cap, boot_cfg_key_t key)
+{
+    const char *name = boot_cfg_key_name(key);
+    u32 i = 0u;
+
+    if (dst == NULL || cap == 0u) {
+        return;
+    }
+    while (name[i] != '\0' && i + 1u < cap) {
+        dst[i] = name[i];
+        i++;
+    }
+    /* Pad the key column to 7 characters ("DEFAULT" / "A      "). */
+    while (i + 1u < cap && i < 7u) {
+        dst[i] = ' ';
+        i++;
+    }
+    dst[i] = '\0';
+}
+
+/*
+ * Menu item [9]: inspect the parsed BOOT.CFG / hotkey map. It reports where the
+ * configuration came from (the SD root or the built-in defaults), every
+ * recognised binding with a live SD target check (OK / MISSING), and the
+ * unbrickable B/SELECT override. Read-only: it mounts, resolves and renders.
+ */
+static void menu_bootcfg_view(menu_diag_t *d)
+{
+    input_state_t keys = { 0u, 0u, 0u };
+    bool mounted = false;
+    u32 i;
+
+    d->last_action = "Inspect BOOT.CFG";
+
+    diag_query_sd(d);
+    if ((d->sd_flags & IPC_SD_FLAG_UNAVAILABLE) == 0u &&
+        (d->sd_flags & IPC_SD_FLAG_PRESENT) != 0u) {
+        mounted = arm9_storage_mount(&s_fat_vol, IPC_STORAGE_DEV_SD);
+    }
+
+    console_select(CONSOLE_MAIN);
+    console_clear();
+    console_puts(0, 0, CONSOLE_PAL_CYAN, "BOOT.CFG / HOTKEY INSPECT");
+
+    console_printf(0, 2,
+                   s_boot_cfg_present ? CONSOLE_PAL_GREEN : CONSOLE_PAL_YELLOW,
+                   "SOURCE : %s",
+                   s_boot_cfg_present ? "SD:/BOOT.CFG" : "DEFAULTS");
+    console_printf(0, 3, mounted ? CONSOLE_PAL_GREEN : CONSOLE_PAL_GREY,
+                   "SD     : %s", mounted ? "MOUNTED" : "UNAVAILABLE");
+
+    console_puts(0, 5, CONSOLE_PAL_WHITE, "BINDING / TARGET");
+
+    for (i = 0u; i < BOOT_CFG_KEY_COUNT; i++) {
+        char label[8];
+        const char *t = s_boot_cfg.target[i];
+
+        menu_bootcfg_label(label, sizeof(label), (boot_cfg_key_t)i);
+
+        if (t[0] == '\0') {
+            console_printf(0, 6 + (int)i, CONSOLE_PAL_GREY, "%s: -", label);
+        } else {
+            bool ok = false;
+
+            if (mounted) {
+                fat_file_entry_t e;
+
+                ok = fat_find_path(&s_fat_vol, t, &e) && !e.is_dir;
+            }
+            console_printf(0, 6 + (int)i,
+                           ok ? CONSOLE_PAL_GREEN : CONSOLE_PAL_RED,
+                           "%s: %s [%s]", label, t, ok ? "OK" : "MISSING");
+        }
+    }
+
+    console_puts(0, 14, CONSOLE_PAL_YELLOW, "B/SEL  : FORCE MENU (LOCKED)");
+    console_puts(0, 16, CONSOLE_PAL_GREY, "B: RETURN");
+
+    /* Seed the edge detector so the A press that opened this view is ignored. */
+    input_poll(&keys);
+
+    for (;;) {
+        wait_vblank();
+        diag_poll_extkey();
+        input_poll(&keys);
+        if (input_pressed(&keys, INPUT_B)) {
+            break;
+        }
+    }
+}
+
+/*
  * Verify / dry-run inspect: read the selected file's 512-byte header through
  * the delegated FAT reader, run the full loadability validation (CRC16 plus
  * ARM9/ARM7 range safety) and decode the descriptors for the top screen.
@@ -761,6 +868,10 @@ static void loader_inspect(menu_diag_t *d, fat_volume_t *vol,
     d->boot_loaded = false;
     d->boot_staged = false;
     d->boot_dry_run = false;
+    d->dldi_present = false;
+    d->dldi_patched = false;
+    d->dldi_alloc_kb = 0u;
+    d->dldi_io_type[0] = '\0';
 
     st = loader_validate_file(vol, entry, d->extended_ram, &h);
 
@@ -780,6 +891,22 @@ static void loader_inspect(menu_diag_t *d, fat_volume_t *vol,
     d->loader_arm7_entry = h.arm7_entry;
     d->loader_arm7_load  = h.arm7_ram_addr;
     d->loader_arm7_size  = h.arm7_size;
+
+    /*
+     * Bounded DLDI scan of the ARM9 segment prefix. This is a read-only
+     * inspection: patching only happens on the staging path (item [6] A).
+     */
+    if (h.arm9_size != 0u && h.arm9_rom_offset != 0u) {
+        dldi_info_t dinfo;
+
+        if (loader_detect_dldi(vol, entry, &h, &dinfo)) {
+            d->dldi_present = true;
+            d->dldi_alloc_kb = dinfo.allocated_size >> 10;
+            dsi_memcpy(d->dldi_io_type, dinfo.io_type,
+                       sizeof(d->dldi_io_type));
+        }
+    }
+
     d->loader_inspected  = true;
 }
 
@@ -819,6 +946,10 @@ static void loader_boot_selected(menu_diag_t *d, fat_volume_t *vol,
 
     d->boot_staged = res.staged;
     d->boot_dry_run = res.dry_run;
+    d->dldi_present = res.dldi_present;
+    d->dldi_patched = res.dldi_patched;
+    d->dldi_alloc_kb = res.dldi_alloc_kb;
+    dsi_memcpy(d->dldi_io_type, res.dldi_io_type, sizeof(d->dldi_io_type));
 }
 
 /*
@@ -1057,6 +1188,9 @@ static void menu_execute(const menu_state_t *state, menu_diag_t *d)
     }
     case MENU_ACTION_AUTOBOOT:
         menu_autoboot(d);
+        break;
+    case MENU_ACTION_INSPECT_CFG:
+        menu_bootcfg_view(d);
         break;
     default:
         break;

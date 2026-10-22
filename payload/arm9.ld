@@ -24,6 +24,17 @@ SECTIONS
 
     . = ORIGIN(MAIN_RAM);
 
+    /*
+     * The DLDI stub header must be at a 1 KiB boundary so the bootloader's
+     * bounded ARM9 prefix scan (dldi_find_offset) sees the whole 12-byte
+     * signature at file offset 0. Placed before .text; __rom_start__ stays at
+     * ORIGIN, so verify_rom.py's ARM9 RAM-address cross-check is unaffected.
+     */
+    .dldi : ALIGN(1024)
+    {
+        KEEP(*(.dldi))
+    } > MAIN_RAM
+
     .text :
     {
         KEEP(*(.text*))

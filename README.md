@@ -27,6 +27,14 @@ disassembled from `asm/UNLAUNCH.DSI` into readable, strictly typed C99. See
   / `X` / `Y` / `L` / `R` / `START` select the target and `BOOT.NDS` is probed)
   plus menu item `[8] Autoboot BOOT.CFG` and an optional `make AUTOBOOT=1`
   automatic-boot build.
+* **DLDI compatibility** — a clean-room DLDI section scanner and in-RAM patcher:
+  a staged ARM9 image whose default `"NONE"` stub is found is patched with the
+  built-in read-only driver before the handoff, with full address-table
+  relocation (`FIX_ALL`/`FIX_GLUE`/`FIX_GOT`/`FIX_BSS`).
+* **Inspectors** — menu item `[9] Inspect BOOT.CFG` shows the config source
+  (`SD:/BOOT.CFG` or `DEFAULTS`), every hotkey binding with a live SD target
+  check (`OK`/`MISSING`) and the locked `B`/`SELECT` override; item `[6]`'s
+  verify view reports `DLDI : YES (…)`/`NONE`.
 * **Deterministic test image** — `make sd-image` builds a FAT16 SD card with
   real, loadable and negative-test payloads (including `NDS/SUBAPP.NDS` and a
   root `BOOT.CFG`) for emulator and CI verification.
@@ -86,6 +94,10 @@ ld/           linker scripts for the bootloader
 | `BADCRC.NDS`  | rejected with `NDS_ERR_BAD_CRC` |
 | `OVERLAP.NDS` | rejected with `NDS_ERR_OVERLAP_BOOTLOADER` |
 | `README.TXT`  | hidden by the `.nds`/`.srl` browser filter |
+
+Every loadable payload (`HELLO.NDS`, `BOOT.NDS`, `NDS/SUBAPP.NDS`) carries the
+canonical unpatched `"NONE"` DLDI stub in its ARM9 segment, so the bootloader
+detects and patches it in RAM with its built-in read-only driver while staging.
 
 ### Testing it in melonDS
 

@@ -226,6 +226,7 @@ HOST_SRCS_MEM  := tests/test_mem.c src/common/mem.c
 HOST_SRCS_ARM9 := tests/test_arm9.c \
                   src/common/mem.c src/common/lz77.c src/common/cache.c \
                   src/common/fat_ro.c src/common/nds_header.c \
+                  src/common/dldi.c \
                   src/arm9/mpu.c src/arm9/irq.c src/arm9/ipc.c \
                   src/arm9/video.c src/arm9/dma.c src/arm9/scfg.c \
                   src/arm9/boot.c src/arm9/boot_cfg.c \
@@ -244,7 +245,7 @@ HOST_SRCS_MENU := tests/test_menu.c \
                   src/arm9/irq.c src/arm9/video.c src/arm9/dma.c \
                   src/arm9/storage.c src/arm9/loader.c \
                   src/common/mem.c src/common/lz77.c src/common/cache.c \
-                  src/common/fat_ro.c src/common/nds_header.c
+                  src/common/fat_ro.c src/common/nds_header.c src/common/dldi.c
 # ARM7 TMIO SD/MMC engine, with the register accesses mocked out.
 HOST_SRCS_SDMMC := tests/test_sdmmc.c src/arm7/sdmmc.c
 HOST_CFLAGS_SDMMC := $(HOST_CFLAGS) -DSDMMC_IO_HOOKS
@@ -255,7 +256,8 @@ HOST_SRCS_FAT := tests/test_fat_ro.c \
 HOST_SRCS_LOADER := tests/test_loader.c \
                     src/arm9/loader.c \
                     src/common/fat_ro.c src/common/nds_header.c \
-                    src/common/mem.c src/common/cache.c src/arm9/ipc.c
+                    src/common/mem.c src/common/cache.c src/arm9/ipc.c \
+                    src/common/dldi.c
 # SCFG/MBK pure decoders (mode, clock, RAM window, slot packer).
 HOST_SRCS_SCFG := tests/test_scfg.c src/arm9/scfg.c
 # End-to-end chainload pipeline over the generated build/sdcard.img. loader.c is
@@ -263,8 +265,12 @@ HOST_SRCS_SCFG := tests/test_scfg.c src/arm9/scfg.c
 HOST_SRCS_SDIMG := tests/test_sd_image.c \
                    src/arm9/loader.c src/arm9/boot_cfg.c \
                    src/common/fat_ro.c src/common/nds_header.c \
-                   src/common/mem.c src/common/cache.c src/arm9/ipc.c
+                   src/common/mem.c src/common/cache.c src/arm9/ipc.c \
+                   src/common/dldi.c
 HOST_CFLAGS_SDIMG := $(HOST_CFLAGS) -DLOADER_HOST_TEST
+
+# Clean-room DLDI scanner / in-RAM patcher + built-in read-only stub driver.
+HOST_SRCS_DLDI := tests/test_dldi.c src/common/dldi.c src/common/mem.c
 
 host-test: $(SD_IMAGE)
 	@mkdir -p $(BUILD)
@@ -277,6 +283,7 @@ host-test: $(SD_IMAGE)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_loader $(HOST_SRCS_LOADER)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_scfg $(HOST_SRCS_SCFG)
 	$(HOST_CC) $(HOST_CFLAGS_SDIMG) -o $(BUILD)/host_test_sd_image $(HOST_SRCS_SDIMG)
+	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_dldi $(HOST_SRCS_DLDI)
 	$(BUILD)/host_test_mem
 	$(BUILD)/host_test_arm9
 	$(BUILD)/host_test_console
@@ -286,3 +293,4 @@ host-test: $(SD_IMAGE)
 	$(BUILD)/host_test_loader
 	$(BUILD)/host_test_scfg
 	$(BUILD)/host_test_sd_image $(SD_IMAGE)
+	$(BUILD)/host_test_dldi

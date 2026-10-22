@@ -33,6 +33,13 @@
 #define LOADER_HEADER_READ_LEN 1024u
 static u8 s_header_sector[LOADER_HEADER_READ_LEN];
 
+/*
+ * Bounded ARM9 prefix window for loader_detect_dldi() (the verify/dry-run
+ * inspector). Lives in .bss (shared Main RAM) so the delegated ARM9 storage
+ * reader can fill it directly over IPC. Never DTCM.
+ */
+static u8 s_dldi_scan_buf[LOADER_DLDI_SCAN_MAX];
+
 #ifdef LOADER_HOST_TEST
 /*
  * Host integration tests (tests/test_sd_image.c) run the full staging pipeline
@@ -221,6 +228,35 @@ nds_load_status_t loader_validate_file(fat_volume_t *vol,
     return status;
 }
 
+bool loader_detect_dldi(fat_volume_t *vol, const fat_file_entry_t *entry,
+                        const nds_header_t *hdr, dldi_info_t *out)
+{
+    u32 want;
+    u32 got = 0u;
+    fat_chain_status_t chain = FAT_CHAIN_ERR_ARG;
+
+    if (out != NULL) {
+        dsi_memset(out, 0, sizeof(*out));
+    }
+    if (vol == NULL || entry == NULL || hdr == NULL || hdr->arm9_size == 0u) {
+        return false;
+    }
+
+    want = hdr->arm9_size;
+    if (want > LOADER_DLDI_SCAN_MAX) {
+        want = LOADER_DLDI_SCAN_MAX;
+    }
+
+    if (!fat_read_file_range(vol, entry, hdr->arm9_rom_offset,
+                             s_dldi_scan_buf, want, &got, &chain)) {
+        return false;
+    }
+    if (got < DLDI_HEADER_SIZE) {
+        return false;
+    }
+    return dldi_scan(s_dldi_scan_buf, got, out, NULL);
+}
+
 #if defined(ENABLE_CHAINLOAD_BOOT) && \
     (defined(__arm__) || defined(__thumb__))
 
@@ -315,6 +351,47 @@ nds_load_status_t loader_stage_and_boot_path(fat_volume_t *vol,
             out->status = NDS_ERR_FILE_TRUNCATED;
         }
         return NDS_ERR_FILE_TRUNCATED;
+    }
+
+    /*
+     * 1b. DLDI detection / in-RAM patch. The ARM9 segment is now staged, so a
+     *     DLDI stub can be found and (when it is the default "NONE" placeholder
+     *     and space permits) replaced with the built-in clean-room read-only
+     *     driver before any cache flush or handoff. This only rewrites the
+     *     staged RAM image; no hardware register is touched.
+     */
+    if (out != NULL) {
+        out->dldi_present = false;
+        out->dldi_patched = false;
+        out->dldi_alloc_kb = 0u;
+        out->dldi_io_type[0] = '\0';
+    }
+    {
+        u8 *staged = loader_stage_ptr(hdr.arm9_ram_addr, hdr.arm9_size);
+        dldi_info_t dinfo;
+
+        if (dldi_scan(staged, hdr.arm9_size, &dinfo, NULL)) {
+            if (out != NULL) {
+                out->dldi_present = true;
+                out->dldi_alloc_kb = dinfo.allocated_size >> 10;
+                dsi_memcpy(out->dldi_io_type, dinfo.io_type,
+                           sizeof(out->dldi_io_type));
+            }
+
+            if (dsi_memcmp(dinfo.io_type, "NONE", 5u) == 0) {
+                const u8 *ro = dldi_builtin_ro_driver();
+
+                if (dldi_apply_patch(staged, hdr.arm9_size, hdr.arm9_ram_addr,
+                                     ro, DLDI_BUILTIN_RO_SIZE)) {
+                    if (out != NULL) {
+                        out->dldi_patched = true;
+                        dsi_memcpy(out->dldi_io_type,
+                                   DLDI_BUILTIN_RO_IO_TYPE,
+                                   sizeof(out->dldi_io_type));
+                    }
+                }
+            }
+        }
     }
 
     /*

@@ -1286,4 +1286,126 @@ the `NDS/SUBAPP.NDS` chain/CRC/title and the `BOOT.CFG` contents.
   validates and stages it, and asserts the published `"sd:/NDS/SUBAPP.NDS"`
   command line, plus the parsed `BOOT.CFG` map.
 
+## 29. DLDI section scanner / in-RAM patcher + `[9] Inspect BOOT.CFG`
+
+This section covers the two homebrew-compatibility and diagnostic-visibility
+features: a clean-room DLDI (Dynamically Linked Device Interface) scanner and
+optional in-RAM patcher, and a dedicated `BOOT.CFG` / hotkey inspector.
+
+### 29.1 The DLDI section (`include/common/dldi.h`, `src/common/dldi.c`)
+
+DLDI is Chishm's position-independent storage-driver format used by libfat. A
+homebrew `.nds` reserves a block of RAM for a "DLDI section" and marks it with a
+fixed 12-byte signature; a loader replaces that block with a real device driver.
+The clean-room module understands only the on-disk/on-RAM structure — it never
+touches hardware.
+
+Canonical header (GBATEK "DS Cart DLDI Driver"):
+
+| Offset | Size | Field |
+| :--- | :--- | :--- |
+| `0x00` | 4 | magic `0xBF8DA5ED` |
+| `0x04` | 8 | `" Chishm\0"` signature string |
+| `0x0C` | 1 | `version` (1) |
+| `0x0D` | 1 | `driver_size_log2` (log2 of `.dldi` + BSS) |
+| `0x0E` | 1 | `fix_flags` (`DLDI_FIX_*`) |
+| `0x0F` | 1 | `allocated_size_log2` (log2 of RAM reserved in the `.nds`) |
+| `0x10` | 48 | NUL-padded friendly name |
+| `0x40` | 32 | address table: `data_start/data_end`, `glue_start/glue_end`, `got_start/got_end`, `bss_start/bss_end` |
+| `0x60` | 4 | IOType tag (`"NONE"`, `"DSiR"`, …) |
+| `0x64` | 4 | `features` (`FEATURE_*`) |
+| `0x68` | 24 | 6 `IO_INTERFACE` function pointers (`startup`, `is_inserted`, `read_sectors`, `write_sectors`, `clear_status`, `shutdown`) |
+| `0x80` | .. | driver code |
+
+The pure, bounds-checked API:
+
+| Function | Behaviour |
+| :--- | :--- |
+| `dldi_find_offset(buf, len, &off)` | Scan `buf` on 4-byte boundaries for the 12-byte signature, requiring room for a whole header after the match. |
+| `dldi_parse_header(buf, len, &info)` | Decode the header; require `allocated_size_log2` in `[10, 16]` (1 KiB..64 KiB) and `1 << allocated_size_log2 <= len` (for a target stub, `len` is the remaining ARM9 image after the stub). Strings are NUL-terminated and sanitised. |
+| `dldi_scan(buf, len, &info, &off)` | `dldi_find_offset()` + `dldi_parse_header()` in one call. |
+| `dldi_apply_patch(...)` | Validate both headers, require `driver_size_log2 <= allocated_size_log2` and that the driver fits, copy the driver over the stub and relocate. |
+
+`dldi_apply_patch(arm9_buf, arm9_len, arm9_ram_base, driver_buf, driver_len)`
+mirrors the documented `dlditool` algorithm. The stub header begins at
+`arm9_buf + off`, which is loaded at `arm9_ram_base + off`; the delta is
+`(arm9_ram_base + off) - driver.data_start`. After the copy the eight address
+fields and six function pointers are shifted by the delta, then:
+
+* `DLDI_FIX_ALL` (`0x01`) walks `[data_start, data_end)` and shifts every
+  32-bit word that still points into the driver's original window;
+* `DLDI_FIX_GLUE` (`0x02`) does the same for `[glue_start, glue_end)`;
+* `DLDI_FIX_GOT` (`0x04`) for `[got_start, got_end)`;
+* `DLDI_FIX_BSS` (`0x08`) zero-fills `[bss_start, bss_end)`.
+
+Header fields are rebased first, so they fall outside the driver window and the
+range guard skips them (no double relocation), exactly as the reference tool
+intends. The target's `allocated_size_log2` is preserved in the patched header.
+
+`dldi_builtin_ro_driver()` returns a 1 KiB clean-room, position-independent
+read-only driver template: IOType `"DSiR"`, `driver_size_log2 =
+allocated_size_log2 = 10`, `FIX_BSS`, and six in-image ARM stubs (`startup`,
+`is_inserted`, `clear_status`, `shutdown` return true; `read_sectors` and
+`write_sectors` fail safely, so no medium is ever written).
+
+### 29.2 Boot-flow integration (`src/arm9/loader.c`, `src/arm9/menu.c`)
+
+`loader_result_t` gained `dldi_present`, `dldi_patched`, `dldi_alloc_kb` and the
+4-char `dldi_io_type`. During `loader_stage_and_boot()` the staged ARM9 segment
+is scanned (`dldi_scan`); a valid stub is reported, and when its IOType is the
+default `"NONE"` placeholder and space permits it is patched in RAM with the
+built-in driver before the cache flush / IPC handoff. Item `[6]`'s `Y`/`SELECT`
+verify view uses `loader_detect_dldi()` (a bounded prefix read into a 16 KiB
+`.bss` window) and renders `DLDI : YES (<io_type>, <alloc_kb>K)` or
+`DLDI : NONE`.
+
+The deterministic payload (`payload/arm9_payload.s` + `payload/arm9.ld`) now
+begins with a 1 KiB, 1 KiB-aligned `.dldi` section carrying the canonical
+`"NONE"` stub, so `HELLO.NDS` / `BOOT.NDS` / `NDS/SUBAPP.NDS` exercise real
+detection and patching on `build/sdcard.img`.
+
+### 29.3 `[9] Inspect BOOT.CFG`
+
+Menu item `[9]` (`MENU_ACTION_INSPECT_CFG`) renders a read-only screen:
+
+```
+BOOT.CFG / HOTKEY INSPECT
+SOURCE : SD:/BOOT.CFG        (or DEFAULTS)
+SD     : MOUNTED             (or UNAVAILABLE)
+BINDING / TARGET
+DEFAULT: BOOT.NDS [OK]
+A      : HELLO.NDS [OK]
+X      : NDS/SUBAPP.NDS [OK]
+Y      : -
+L      : -
+R      : -
+START  : -
+B/SEL  : FORCE MENU (LOCKED)
+B: RETURN
+```
+
+The source line reflects whether a `BOOT.CFG` was loaded or the built-in
+defaults apply; each recognised binding shows its configured path and a live SD
+target check (`OK` / `MISSING`); unbound keys render `-`; and the unbrickable
+`B`/`SELECT` override is shown as locked. `B` returns to the menu.
+
+### 29.4 Verification
+
+* `tests/test_dldi.c` (suite 10) covers `dldi_find_offset()` (present/absent,
+  4-byte alignment, header-room rejection), `dldi_parse_header()` (field decode,
+  the 10..16 bounds, the fit check, string sanitisation), `dldi_apply_patch()`
+  (address-table and function-pointer relocation, the `FIX_ALL` / `FIX_GLUE` /
+  `FIX_GOT` pointer walks, `FIX_BSS` zeroing, and the
+  `driver_size_log2 > allocated_size_log2` rejection) and the built-in `"DSiR"`
+  template.
+* `tests/test_menu.c` asserts the nine-item action map (including
+  `MENU_ACTION_INSPECT_CFG`).
+* `tests/test_sd_image.c` asserts `HELLO.NDS` / `BOOT.NDS` /
+  `NDS/SUBAPP.NDS` report `dldi_present` and `dldi_patched` (`"DSiR"`, 1 KiB)
+  after staging, and that only the replaced DLDI block differs from the on-disk
+  ARM9 bytes.
+* `scripts/verify_sd_image.py` independently finds the unpatched `"NONE"` stub,
+  checks `allocated_size_log2 == 10` and that the reserved block fits the ARM9
+  segment for all three payloads.
+
 

@@ -27,7 +27,7 @@ packer, the font table bounds, and the bounded `console_format` /
 ## 4. Host unit tests — menu + input
 
 `tests/test_menu.c` covers the menu state machine (wrapping, action mapping for
-all eight items, degenerate inputs), the keypad edge detector
+all nine items, degenerate inputs), the keypad edge detector
 (`input_normalize_*`, `input_edge_*`), the Unlaunch-style startup policy
 `boot_resolve_policy()` (`KEY_B`/`KEY_SELECT` force the menu, `KEY_A`/no key
 probes `BOOT.NDS`), the zero-allocation `BOOT.CFG` parser `boot_cfg_parse()`
@@ -126,8 +126,30 @@ ROM offsets. Built as `build/host_test_sd_image` with `-DLOADER_HOST_TEST`,
 which redirects the absolute-address staging writes into a scratch arena (the
 target build is unaffected).
 
+It also asserts the DLDI path end to end: `HELLO.NDS`, `BOOT.NDS` and
+`NDS/SUBAPP.NDS` report `dldi_present` and `dldi_patched` (`"DSiR"`, 1 KiB)
+after staging, the staged ARM9 header parses as the built-in read-only driver,
+and only the replaced 1 KiB DLDI block differs from the on-disk ARM9 bytes.
+
 `make host-test` builds `build/sdcard.img` first, so this suite always runs
 against the real generated artefact.
+
+## 6e. Host unit tests — DLDI scanner / patcher (suite 10)
+
+`tests/test_dldi.c` covers the clean-room DLDI module (`src/common/dldi.c`):
+
+* `dldi_find_offset()` — signature present/absent, 4-byte-boundary scanning and
+  the rejection of a signature without room for a full header after it;
+* `dldi_parse_header()` — field decode, the `allocated_size_log2` bounds
+  (10..16), the "reserved block must fit the remaining image" check, and
+  string sanitisation;
+* `dldi_apply_patch()` — the header address-table and IO function-pointer
+  relocation, the `FIX_ALL` / `FIX_GLUE` / `FIX_GOT` in-range pointer walks
+  (and that an out-of-range word is left alone), the `FIX_BSS` zero-fill, and
+  the `driver_size_log2 > allocated_size_log2` rejection;
+* the built-in read-only driver template (`"DSiR"`, 1 KiB, `FIX_BSS`).
+
+Built as `build/host_test_dldi`.
 
 Run all of them with `make host-test`.
 
@@ -158,8 +180,10 @@ BPB geometry, the root-directory entries (`HELLO.NDS`, `BOOT.NDS`,
 subdirectory, the one-level `NDS/SUBAPP.NDS` payload (title `SUBDIR PAYLOAD`,
 valid CRC16), the `BOOT.CFG` `DEFAULT`/`A`/`X` mappings, the fragmented
 multi-cluster `HELLO.NDS` chain, the `BOOT.NDS` autoboot variant (title
-`AUTOBOOT OK`, valid CRC16), and the two negative-test headers (`BADCRC.NDS`
-bad CRC16, `OVERLAP.NDS` ARM9 range inside the bootloader reservation).
+`AUTOBOOT OK`, valid CRC16), the canonical unpatched `"NONE"` DLDI stub in the
+`HELLO.NDS` / `BOOT.NDS` / `NDS/SUBAPP.NDS` ARM9 segments (1 KiB reserved), and
+the two negative-test headers (`BADCRC.NDS` bad CRC16, `OVERLAP.NDS` ARM9 range
+inside the bootloader reservation).
 
 ## 8. melonDS smoke test
 
@@ -186,12 +210,18 @@ loads `build/dsi_bootloader.nds`. The ROM now renders a text console:
   | `[6]`| Browse the SD card's FAT volume (root + `/NDS`), verify (`Y`/`SELECT`) and chainload (`A`) a `.nds` image |
   | `[7]`| Unlock and initialise SCFG / NWRAM (MBK1-9)          |
   | `[8]`| Autoboot the `BOOT.CFG`-resolved target              |
+  | `[9]`| Inspect `BOOT.CFG` source / hotkey bindings / override |
 
   Inside `[6]`, the top screen shows the mounted FAT type and, after a
   verify/dry-run, the NDS title, game code, unit code, ARM9/ARM7
-  entry/load/size and `LOADABLE: YES` (or the specific rejection reason);
+  entry/load/size, `LOADABLE: YES` (or the specific rejection reason) and
+  `DLDI : YES (<io_type>, <alloc_kb>K)` / `DLDI : NONE`;
   `A` stages the image and reports `STAGE: DRY-RUN OK` unless the ROM was built
   with `ENABLE_CHAINLOAD_BOOT`.
+
+  Item `[9]` renders the `BOOT.CFG` source (`SD:/BOOT.CFG` or `DEFAULTS`), every
+  binding (`DEFAULT`/`A`/`X`/`Y`/`L`/`R`/`START`) with a live SD target check
+  (`OK`/`MISSING`) and the locked `B`/`SELECT` override; `B` returns.
 
 ### Recommended melonDS configuration
 

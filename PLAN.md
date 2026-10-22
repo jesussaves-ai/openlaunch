@@ -88,6 +88,8 @@ Consequences:
 | Dual-CPU handoff     | clean-room (`IPC_CMD_BOOT_HANDOFF`)                 | `src/arm7/ipc.c`          | **new**       |
 | BOOT.CFG hotkey map  | clean-room (zero-allocation text parser)            | `src/arm9/boot_cfg.c`     | **new**       |
 | 1-level subdir FAT   | clean-room (`fat_find_path`/`fat_list_dir_cluster`) | `src/common/fat_ro.c`     | **new**       |
+| DLDI scan / patch    | clean-room (Chishm DLDI format)                     | `src/common/dldi.c`       | **new**       |
+| BOOT.CFG inspector   | clean-room (menu item [9])                          | `src/arm9/menu.c`         | **new**       |
 
 ## 2. Next steps
 
@@ -210,3 +212,17 @@ Consequences:
   `NDS/SUBAPP.NDS` (title `SUBDIR PAYLOAD`) and a root `BOOT.CFG`. Covered by
   `tests/test_fat_ro.c`, `tests/test_menu.c`, `tests/test_loader.c` and
   `tests/test_sd_image.c` (docs §28).
+* **DLDI scanner / in-RAM patcher + `[9] Inspect BOOT.CFG`** —
+  `src/common/dldi.c` scans a staged ARM9 segment for the canonical Chishm DLDI
+  signature (`0xBF8DA5ED` + `" Chishm\0"`), validates the header (1 KiB..64 KiB
+  allocation bounds) and can replace a default `"NONE"` stub in RAM with the
+  built-in clean-room read-only `"DSiR"` driver, relocating the address table
+  (`FIX_ALL`/`FIX_GLUE`/`FIX_GOT`) and zeroing BSS (`FIX_BSS`).
+  `loader_stage_and_boot()` auto-patches and reports the result in
+  `loader_result_t`; `[6]`'s `Y`/`SELECT` verify shows `DLDI : YES (…)` /
+  `NONE`. `payload/arm9_payload.s` now carries a 1 KiB `"NONE"` stub so the SD
+  image exercises the whole path. Menu item `[9] Inspect BOOT.CFG` renders the
+  config source (`SD:/BOOT.CFG` vs `DEFAULTS`), every binding with a live
+  SD target check (`OK`/`MISSING`) and the locked `B`/`SELECT` override.
+  Covered by `tests/test_dldi.c` (suite 10), `tests/test_sd_image.c` and
+  `tests/test_menu.c` (docs §29).

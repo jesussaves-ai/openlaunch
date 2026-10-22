@@ -230,6 +230,23 @@ static void test_hello_validates_and_stages(void)
     assert(s_handoff_args[3] == hdr.arm7_size);
 
     /*
+     * 2a. The ARM9 segment carried the default "NONE" DLDI stub from offset 0
+     *     and the staging path patched it in RAM with the built-in read-only
+     *     driver before the handoff.
+     */
+    assert(res.dldi_present);
+    assert(res.dldi_patched);
+    assert(res.dldi_alloc_kb == 1u);
+    assert(strcmp(res.dldi_io_type, "DSiR") == 0);
+    {
+        dldi_info_t dinfo;
+
+        assert(dldi_parse_header(s_arm9_arena, hdr.arm9_size, &dinfo));
+        assert(strcmp(dinfo.io_type, "DSiR") == 0);
+        assert(dinfo.allocated_size == 1024u);
+    }
+
+    /*
      * 2b. The canonical __system_argv was published: the command line at
      *     NDS_ARGV_CMDLINE_ADDR_TWL and the 24-byte header inside the copied
      *     header page at header_base + 0x70.
@@ -248,8 +265,10 @@ static void test_hello_validates_and_stages(void)
     }
 
     /*
-     * 3. The whole file streams back through the cluster-chain reader and the
-     *    staged payloads match the bytes at their ROM offsets: this proves the
+     * 3. The whole file streams back through the cluster-chain reader. The
+     *    staged ARM9 segment was patched in place at offset 0 (the DLDI stub),
+     *    so only the region after the replaced driver must still match the
+     *    on-disk bytes; the ARM7 segment must match exactly. This proves the
      *    multi-cluster/fragmented walk, not just the header read.
      */
     full = (u8 *)malloc(hello.file_size);
@@ -258,8 +277,10 @@ static void test_hello_validates_and_stages(void)
                                &got, &chain));
     assert(got == hello.file_size);
     assert(chain == FAT_CHAIN_OK);
-    assert(memcmp(full + hdr.arm9_rom_offset, s_arm9_arena,
-                  hdr.arm9_size) == 0);
+    assert(hdr.arm9_size > DLDI_BUILTIN_RO_SIZE);
+    assert(memcmp(full + hdr.arm9_rom_offset + DLDI_BUILTIN_RO_SIZE,
+                  s_arm9_arena + DLDI_BUILTIN_RO_SIZE,
+                  hdr.arm9_size - DLDI_BUILTIN_RO_SIZE) == 0);
     assert(memcmp(full + hdr.arm7_rom_offset, s_arm7_arena,
                   hdr.arm7_size) == 0);
     free(full);
@@ -318,6 +339,9 @@ static void test_boot_nds(void)
     assert(s_handoff_calls == 1u);
     assert(res.argv_len == 12u);   /* "sd:/BOOT.NDS" */
     assert(strcmp((char *)s_cmdline_arena, "sd:/BOOT.NDS") == 0);
+    assert(res.dldi_present);
+    assert(res.dldi_patched);
+    assert(strcmp(res.dldi_io_type, "DSiR") == 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -401,6 +425,9 @@ static void test_subapp_stages(void)
     assert(s_handoff_calls == 1u);
     assert(res.argv_len == 18u);   /* "sd:/NDS/SUBAPP.NDS" */
     assert(strcmp((char *)s_cmdline_arena, "sd:/NDS/SUBAPP.NDS") == 0);
+    assert(res.dldi_present);
+    assert(res.dldi_patched);
+    assert(strcmp(res.dldi_io_type, "DSiR") == 0);
     {
         const u8 *av = s_header_arena + NDS_ARGV_OFFSET;
 

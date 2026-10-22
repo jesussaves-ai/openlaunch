@@ -16,6 +16,11 @@ with real, loadable and negative-test ``.nds`` payloads for the chainloader:
   README.TXT    a non-executable file, ignored by the ``.nds``/``.srl`` browser
                 filter
 
+All three loadable payloads (HELLO.NDS, BOOT.NDS and NDS/SUBAPP.NDS) carry a
+canonical, unpatched ``"NONE"`` DLDI stub in their ARM9 segment (1 KiB
+reserved), so the bootloader's clean-room DLDI scanner detects it and patches it
+in RAM with the built-in read-only driver during staging.
+
 Nothing here needs ``sudo``, ``mount`` or ``mtools``: the MBR, BPB, FAT tables,
 root-directory entries and data clusters are written byte by byte.
 
@@ -371,6 +376,7 @@ def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
         b"BOOT.NDS     default autoboot target (AUTOBOOT OK)\r\n"
         b"NDS/SUBAPP.NDS  one-level subdirectory payload (SUBDIR PAYLOAD)\r\n"
         b"BOOT.CFG     hotkey map: DEFAULT/A/X\r\n"
+        b"DLDI         ARM9 carries a NONE stub patched in RAM at boot\r\n"
         b"BADCRC.NDS   rejected: bad header CRC16\r\n"
         b"OVERLAP.NDS  rejected: ARM9 range hits the bootloader\r\n"
         b"\r\n"
@@ -445,6 +451,7 @@ def main(argv) -> int:
              (len(boot_bytes) + cluster_bytes - 1) // cluster_bytes))
     print("    NDS/SUBAPP.NDS %6d bytes (title SUBDIR PAYLOAD)"
           % (len(hello_bytes)))
+    print("    DLDI stub   1 KiB NONE section in each ARM9 (patched at boot)")
     print("    BOOT.CFG    %6d bytes (DEFAULT/A/X hotkey map)"
           % len(BOOT_CFG_CONTENT))
     print("    BADCRC.NDS  0x1000 bytes (header CRC16 corrupted)")

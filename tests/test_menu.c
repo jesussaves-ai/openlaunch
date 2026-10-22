@@ -39,7 +39,7 @@ static void test_menu_state(void)
     /* Wrapping at both ends. */
     menu_state_move(&m, -1);
     assert(menu_state_selected(&m) == (u8)(MENU_ITEM_COUNT - 1u));
-    assert(menu_action_for(&m) == MENU_ACTION_AUTOBOOT);
+    assert(menu_action_for(&m) == MENU_ACTION_INSPECT_CFG);
 
     menu_state_move(&m, 1);
     assert(menu_state_selected(&m) == 0u);
@@ -60,7 +60,8 @@ static void test_menu_state(void)
     m.cursor = 5u; assert(menu_action_for(&m) == MENU_ACTION_BROWSE);
     m.cursor = 6u; assert(menu_action_for(&m) == MENU_ACTION_SCFG_INIT);
     m.cursor = 7u; assert(menu_action_for(&m) == MENU_ACTION_AUTOBOOT);
-    m.cursor = 8u; assert(menu_action_for(&m) == MENU_ACTION_NONE);
+    m.cursor = 8u; assert(menu_action_for(&m) == MENU_ACTION_INSPECT_CFG);
+    m.cursor = 9u; assert(menu_action_for(&m) == MENU_ACTION_NONE);
 
     /* Degenerate inputs must not misbehave. */
     menu_state_init(&m, 0u);

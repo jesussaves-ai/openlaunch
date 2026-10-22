@@ -14,7 +14,7 @@
 #include "input.h"
 
 /* Menu entries, in display order. */
-#define MENU_ITEM_COUNT   8u
+#define MENU_ITEM_COUNT   9u
 
 /* Maximum number of .nds/.srl files listed by the SD browser. */
 #define MENU_BROWSE_MAX   16u
@@ -28,7 +28,8 @@ typedef enum {
     MENU_ACTION_HALT,       /* [5] halt the system                        */
     MENU_ACTION_BROWSE,     /* [6] browse the SD card's FAT volume        */
     MENU_ACTION_SCFG_INIT,  /* [7] unlock + initialise SCFG/MBK           */
-    MENU_ACTION_AUTOBOOT    /* [8] autoboot BOOT.NDS from the SD root     */
+    MENU_ACTION_AUTOBOOT,   /* [8] autoboot BOOT.NDS from the SD root     */
+    MENU_ACTION_INSPECT_CFG /* [9] inspect BOOT.CFG + hotkey bindings     */
 } menu_action_t;
 
 typedef struct {
@@ -87,6 +88,12 @@ typedef struct {
     u32  loader_arm7_size;
     bool boot_staged;       /* A staged the image (dry run or real)      */
     bool boot_dry_run;      /* staging ran but no CPU handoff happened   */
+
+    /* DLDI section report for the [6] verify/dry-run inspector. */
+    bool dldi_present;      /* a valid DLDI stub was found in the ARM9   */
+    bool dldi_patched;      /* it was replaced by the built-in RO driver */
+    u32  dldi_alloc_kb;     /* reserved block size in KiB                */
+    char dldi_io_type[5];   /* 4-char IOType tag + NUL                   */
 
     /* Unlaunch-style BOOT.NDS / BOOT.CFG autoboot policy / discovery state. */
     bool autoboot_checked;  /* the SD root was probed for the target       */

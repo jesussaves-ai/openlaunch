@@ -15,6 +15,8 @@ the chainloader safety gate perform, so a regression in either side is caught:
      matches the directory entry and (when ``--hello`` is given) the payload.
   4b. BOOT.NDS is the autoboot variant with title ``AUTOBOOT OK`` and a valid
      header CRC16.
+  4c. HELLO.NDS / BOOT.NDS / NDS/SUBAPP.NDS ARM9 segments carry the
+      canonical unpatched "NONE" DLDI stub with a 1 KiB reserved block.
   5. BADCRC.NDS has a corrupted header CRC16 (``NDS_ERR_BAD_CRC``).
   6. OVERLAP.NDS has a valid header CRC16 but an ARM9 load range inside the
      bootloader reservation (``NDS_ERR_OVERLAP_BOOTLOADER``).
@@ -36,6 +38,51 @@ BOOTLOADER_RESERVE_BASE = 0x02100000
 BOOTLOADER_RESERVE_END = 0x02280000
 NDS_HEADER_CRC_OFF = 0x15E
 NDS_HEADER_CRC_LEN = 0x15E
+
+# DLDI header (include/common/dldi.h): 12-byte signature, 1 KiB allocation.
+DLDI_MAGIC = b"\xED\xA5\x8D\xBF Chishm\x00"
+DLDI_HEADER_SIZE = 128
+DLDI_ALLOC_LOG2 = 10
+DLDI_OFF_ALLOC_SIZE = 0x0F
+DLDI_OFF_DRIVER_SIZE = 0x0D
+DLDI_OFF_IO_TYPE = 0x60
+DLDI_OFF_NAME = 0x10
+DLDI_NAME_LEN = 48
+
+
+def find_dldi(data: bytes) -> int:
+    """Return the 4-aligned offset of the DLDI signature, or -1."""
+    limit = len(data) - DLDI_HEADER_SIZE
+    for off in range(0, limit + 1, 4):
+        if data[off:off + len(DLDI_MAGIC)] == DLDI_MAGIC:
+            return off
+    return -1
+
+
+def check_dldi(c, name: str, nds: bytes) -> None:
+    """Assert that an .nds ARM9 segment carries the unpatched NONE DLDI stub."""
+    if len(nds) < SECTOR:
+        return
+    arm9_off = u32(nds, 0x20)
+    arm9_size = u32(nds, 0x2C)
+    if arm9_off + arm9_size > len(nds) or arm9_size == 0:
+        return
+    arm9 = nds[arm9_off:arm9_off + arm9_size]
+    do = find_dldi(arm9)
+    c.check(do >= 0, "%s ARM9 carries a DLDI stub" % name)
+    if do < 0:
+        return
+    io = arm9[do + DLDI_OFF_IO_TYPE:do + DLDI_OFF_IO_TYPE + 4]
+    alloc = arm9[do + DLDI_OFF_ALLOC_SIZE]
+    c.check(io == b"NONE",
+            "%s DLDI IOType is the default NONE (unpatched)" % name,
+            "got %r" % io)
+    c.check(alloc == DLDI_ALLOC_LOG2,
+            "%s DLDI allocated_size_log2 is 10 (1 KiB)" % name,
+            "got %d" % alloc)
+    c.check(do + (1 << alloc) <= arm9_size,
+            "%s DLDI reserved block fits inside the ARM9 segment" % name,
+            "offset %d + %d > %d" % (do, 1 << alloc, arm9_size))
 
 
 def crc16(data: bytes) -> int:
@@ -264,6 +311,7 @@ def main(argv) -> int:
                         .startswith("SUBDIR"),
                         "NDS/SUBAPP.NDS title is SUBDIR PAYLOAD",
                         "got %r" % sub[0:12])
+                check_dldi(c, "NDS/SUBAPP.NDS", sub)
 
     if "BOOT.CFG" in entries:
         _, cfg_data = read_chain(entries["BOOT.CFG"]["cluster"])
@@ -313,6 +361,7 @@ def main(argv) -> int:
         c.check(hello_bytes[0x0C:0x10] == b"TSTL",
                 "HELLO.NDS game code is TSTL",
                 "got %r" % hello_bytes[0x0C:0x10])
+        check_dldi(c, "HELLO.NDS", hello_bytes)
 
     # ---- BOOT.NDS: the autoboot variant ---------------------------------
     if "BOOT.NDS" in entries:
@@ -333,6 +382,7 @@ def main(argv) -> int:
                     "AUTOBOOT OK",
                     "BOOT.NDS title is AUTOBOOT OK",
                     "got %r" % boot_bytes[0:12])
+            check_dldi(c, "BOOT.NDS", boot_bytes)
 
     # ---- BADCRC.NDS -----------------------------------------------------
     if "BADCRC.NDS" in entries:

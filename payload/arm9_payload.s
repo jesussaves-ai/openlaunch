@@ -20,6 +20,51 @@
     .syntax unified
     .arm
 
+    /*
+     * ---- DLDI stub section (1 KiB, allocated_size_log2 = 10) ------------
+     *
+     * A canonical Chishm DLDI header with the default "no interface" identity
+     * (IOType "NONE"), exactly as a stock homebrew .nds would carry. The
+     * bootloader's clean-room DLDI scanner finds it in the staged ARM9 image
+     * and patches it in RAM with the built-in read-only driver (see
+     * include/common/dldi.h), so HELLO.NDS / BOOT.NDS / NDS/SUBAPP.NDS on the
+     * deterministic SD image exercise real DLDI detection and patching.
+     *
+     * Placed first (and 1 KiB aligned) so it lives at offset 0 of the ARM9
+     * binary and is found by a bounded prefix scan. It is data, never code.
+     */
+    .section .dldi, "a", %progbits
+    .balign 1024
+    .global dldi_stub
+    .type   dldi_stub, %object
+dldi_stub:
+    .word   0xBF8DA5ED              @ magic (LE bytes ED A5 8D BF)
+    .asciz  " Chishm"              @ 7-char signature + NUL (8 bytes)
+    .byte   0x00                    @ version
+    .byte   0x0A                    @ driver_size_log2 = 10 (1 KiB)
+    .byte   0x00                    @ fix_flags (stub, no relocation)
+    .byte   0x0A                    @ allocated_size_log2 = 10 (1 KiB)
+    .ascii  "Default (No interface)"@ friendly name (22 chars)
+    .zero   48 - 22                 @ pad the name field to 48 bytes
+    .word   0x00000000              @ data_start  (set by the patcher)
+    .word   0x00000000              @ data_end
+    .word   0x00000000              @ glue_start
+    .word   0x00000000              @ glue_end
+    .word   0x00000000              @ got_start
+    .word   0x00000000              @ got_end
+    .word   0x00000000              @ bss_start
+    .word   0x00000000              @ bss_end
+    .ascii  "NONE"                  @ ioType (4 bytes)
+    .word   0x00000001              @ features (FEATURE_MEDIUM_CANREAD)
+    .word   0x00000000              @ startup
+    .word   0x00000000              @ isInserted
+    .word   0x00000000              @ readSectors
+    .word   0x00000000              @ writeSectors
+    .word   0x00000000              @ clearStatus
+    .word   0x00000000              @ shutdown
+    .zero   896                     @ pad the section to exactly 1 KiB
+    .size   dldi_stub, . - dldi_stub
+
     .section .text, "ax", %progbits
     .global _start
     .type   _start, %function
