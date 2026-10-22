@@ -1068,6 +1068,98 @@ takes over and the screens turn **green (top)** / **blue (bottom)**, which is
 the unmistakable handoff proof. Selecting `BADCRC.NDS` or `OVERLAP.NDS` shows
 the specific rejection reason instead.
 
+## 27. Homebrew `argv`, TWL `ARM9i`/`ARM7i` staging and `BOOT.NDS` autoboot
 
+This section covers the three capabilities that turn the chainloader into a
+general clean-room Unlaunch alternative: the standard launch `argv` protocol,
+optional DSi extended-binary staging and the Unlaunch-style `BOOT.NDS`
+autoboot + hotkey policy.
 
+### 27.1 Homebrew `argv` / `__system_argv` protocol
+
+A loaded devkitPro/BlocksDS homebrew learns its launch path from the canonical
+`__system_argv` structure. `src/arm9/loader.c` now populates it right after the
+512-byte NDS header is copied to its fixed RAM address:
+
+| Region | DS mode | TWL mode |
+| :--- | :--- | :--- |
+| 512-byte header copy | `0x027FFE00` | `0x02FFFE00` |
+| `__system_argv` header (`base + 0x70`) | `0x027FFE70` | `0x02FFFE70` |
+| command-line buffer | `0x027FF000` | `0x02FFF000` |
+
+The 24-byte header (little-endian `u32` fields) is:
+
+| Offset | Field | Value |
+| :--- | :--- | :--- |
+| `+0x00` | `argvMagic` | `0x5F617267` (`"_arg"`) |
+| `+0x04` | `commandLine` | command-line RAM pointer |
+| `+0x08` | `length` | command-line length, excluding NUL |
+| `+0x0C` | `argc` | `1` |
+| `+0x10` | `argv[0]` | command-line RAM pointer |
+| `+0x14` | `endARGV` | `0xFFFFFFFF` |
+
+The command line is formatted as `"sd:/<8.3 NAME>\0"` — for example
+`"sd:/HELLO.NDS"` — by the pure, host-testable `loader_format_command_line()`
+and `loader_build_argv()`, and published to high RAM by `loader_stage_argv()`.
+All three are bounded: an over-long name or an undersized buffer fails cleanly
+and leaves the destination NUL-terminated.
+
+### 27.2 TWL extended binaries (`ARM9i` / `ARM7i`)
+
+`nds_header_t` / `nds_header_parse()` decode the DSi extended header when the
+caller supplies at least `NDS_HEADER_TWL_MIN_LEN` (`0x1E0`) readable bytes and
+the unit code advertises DSi support (`unit_code & 0x02`):
+
+| Offset | Field |
+| :--- | :--- |
+| `0x1BF` | `twl_flags` (application flags) |
+| `0x1C0` / `0x1C8` / `0x1CC` | ARM9i ROM offset / RAM address / size |
+| `0x1D0` / `0x1D8` / `0x1DC` | ARM7i ROM offset / RAM address / size |
+
+`loader_validate_file()` reads a bounded 2-sector (1024-byte) header so those
+descriptors are always available, then runs
+`nds_header_validate_twl_segments()`. Every non-zero segment must be 4-byte
+aligned (offset, address and size), fit inside the file, land in TWL Main RAM
+`0x02000000..0x02FE0000` or New Shared WRAM `0x03000000..0x03800000`, and avoid
+the bootloader reservation. In TWL mode `loader_stage_and_boot()` streams each
+non-zero `ARM9i`/`ARM7i` segment to its validated RAM address alongside the two
+primary payloads. A plain NDS image (unit code `0x00`) has no extended segments
+and is unaffected.
+
+### 27.3 Unlaunch-style `BOOT.NDS` autoboot + hotkey policy
+
+`boot_resolve_policy()` (pure; `src/arm9/boot.c`) reads the raw, active-low
+`KEYINPUT` word captured at startup and resolves:
+
+| Held at boot | Policy |
+| :--- | :--- |
+| **B** or **SELECT** | `BOOT_POLICY_MENU` — force the interactive diagnostic menu |
+| **A**, or nothing | `BOOT_POLICY_AUTOBOOT` — probe the SD root |
+
+`menu_run()` then probes the mounted SD root for `BOOT.NDS` (falling back to
+`HELLO.NDS` for the deterministic test image) and reports the outcome on the
+top screen as `BOOT : BOOT.NDS READY`, `BOOT : NO BOOT.NDS` or
+`BOOT : MENU (KEY HELD)`. Menu item `[8] Autoboot BOOT.NDS` locates, validates
+and stages the discovered image through the normal chainload pipeline. When the
+ROM is built with `make AUTOBOOT=1` (`-DENABLE_AUTOBOOT`) a discovered
+`BOOT.NDS` is booted automatically instead of waiting in the menu.
+
+### 27.4 Deterministic SD image
+
+`scripts/make_sd_image.py` now also installs `BOOT.NDS` — a retitled,
+CRC-fixed variant of the `HELLO.NDS` payload (title `AUTOBOOT OK`, game code
+`TSTL`) in a fragmented cluster chain. `scripts/verify_sd_image.py` re-checks
+its presence, chain, header CRC16 and title.
+
+### 27.5 Verification
+
+* `tests/test_loader.c` checks the `argv` byte layout (magic, pointers, length,
+  `argc`, terminator), the `"sd:/HELLO.NDS"` path formatting and the bounds
+  failures, plus `nds_header_validate_twl_segments()` for valid, out-of-bounds,
+  unaligned, truncated and bootloader-overlapping TWL segments.
+* `tests/test_sd_image.c` discovers `BOOT.NDS` on `build/sdcard.img`, validates
+  and stages it, and asserts the published `"sd:/HELLO.NDS"` /
+  `"sd:/BOOT.NDS"` command lines and the `__system_argv` header.
+* `tests/test_menu.c` covers `boot_resolve_policy()` for `KEY_B`, `KEY_SELECT`,
+  `KEY_A` and the no-key case.
 

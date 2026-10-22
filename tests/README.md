@@ -26,9 +26,11 @@ packer, the font table bounds, and the bounded `console_format` /
 
 ## 4. Host unit tests — menu + input
 
-`tests/test_menu.c` covers the menu state machine (wrapping, action mapping,
-degenerate inputs) and the keypad edge detector (`input_normalize_*`,
-`input_edge_*`). Built as `build/host_test_menu`.
+`tests/test_menu.c` covers the menu state machine (wrapping, action mapping for
+all eight items, degenerate inputs), the keypad edge detector
+(`input_normalize_*`, `input_edge_*`) and the Unlaunch-style startup policy
+`boot_resolve_policy()` (`KEY_B`/`KEY_SELECT` force the menu, `KEY_A`/no key
+probes `BOOT.NDS`). Built as `build/host_test_menu`.
 
 ## 5. Host unit tests — TMIO SD/MMC engine
 
@@ -74,6 +76,14 @@ write-protect field layout. Built as `build/host_test_scfg`.
   (`FAT_CHAIN_ERR_TRUNCATED`) and a failed sector read
   (`FAT_CHAIN_ERR_IO`).
 * `loader_validate_file()` end to end over a synthetic volume.
+* the homebrew `argv` protocol: `loader_format_command_line()` /
+  `loader_build_argv()` byte layout (`argvMagic 0x5F617267`, pointers, length,
+  `argc`, terminator), the `"sd:/HELLO.NDS"` path formatting and the bounds
+  failures (undersized buffer, NULL/empty inputs, failed build leaving the
+  header untouched).
+* `nds_header_validate_twl_segments()` for valid `ARM9i`/`ARM7i` segments
+  (Main RAM and NWRAM), out-of-bounds/un-aligned addresses, truncated files and
+  bootloader-reservation overlap.
 
 Built as `build/host_test_loader` (`src/arm9/loader.c` compiles on the host with
 the hardware CPU handoff compiled out).
@@ -91,10 +101,13 @@ fat_mbr_find_fat_partition() -> fat_mount() -> fat_dir_iter_*()
 
 It asserts that `HELLO.NDS` is listed, validates as `NDS_LOAD_OK` and stages
 cleanly (both payloads copied and exactly one `IPC_CMD_BOOT_HANDOFF` request),
-that `BADCRC.NDS` is rejected with `NDS_ERR_BAD_CRC`, that `OVERLAP.NDS` is
-rejected with `NDS_ERR_OVERLAP_BOOTLOADER`, and that `README.TXT` is hidden by
-the `.nds`/`.srl` filter. It also streams the whole multi-cluster `HELLO.NDS`
-back and compares the staged payloads against their ROM offsets. Built as
+that the published `__system_argv` holds the `"sd:/HELLO.NDS"` command line and
+a `0x5F617267` magic, that the `BOOT.NDS` autoboot target is discovered,
+validated (title `AUTOBOOT OK`) and staged with `"sd:/BOOT.NDS"`, that
+`BADCRC.NDS` is rejected with `NDS_ERR_BAD_CRC`, that `OVERLAP.NDS` is rejected
+with `NDS_ERR_OVERLAP_BOOTLOADER`, and that `README.TXT` is hidden by the
+`.nds`/`.srl` filter. It also streams the whole multi-cluster `HELLO.NDS` back
+and compares the staged payloads against their ROM offsets. Built as
 `build/host_test_sd_image` with `-DLOADER_HOST_TEST`, which redirects the
 absolute-address staging writes into a scratch arena (the target build is
 unaffected).
@@ -126,8 +139,10 @@ and `build/hello_payload.nds`), which asserts:
 
 It then runs `scripts/verify_sd_image.py`, which independently re-checks the
 generated `build/sdcard.img`: the MBR signature and FAT16 partition entry, the
-BPB geometry, the root-directory entries, the fragmented multi-cluster
-`HELLO.NDS` chain, and the two negative-test headers (`BADCRC.NDS` bad CRC16,
+BPB geometry, the root-directory entries (`HELLO.NDS`, `BOOT.NDS`,
+`BADCRC.NDS`, `OVERLAP.NDS`, `README.TXT`), the fragmented multi-cluster
+`HELLO.NDS` chain, the `BOOT.NDS` autoboot variant (title `AUTOBOOT OK`, valid
+CRC16), and the two negative-test headers (`BADCRC.NDS` bad CRC16,
 `OVERLAP.NDS` ARM9 range inside the bootloader reservation).
 
 ## 8. melonDS smoke test
@@ -154,6 +169,7 @@ loads `build/dsi_bootloader.nds`. The ROM now renders a text console:
   | `[5]`| Halt the CPU safely                                  |
   | `[6]`| Browse the SD card's FAT volume, verify (`Y`/`SELECT`) and chainload (`A`) a `.nds` image |
   | `[7]`| Unlock and initialise SCFG / NWRAM (MBK1-9)          |
+  | `[8]`| Autoboot `BOOT.NDS` from the SD root                 |
 
   Inside `[6]`, the top screen shows the mounted FAT type and, after a
   verify/dry-run, the NDS title, game code, unit code, ARM9/ARM7

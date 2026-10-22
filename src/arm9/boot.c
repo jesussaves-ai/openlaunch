@@ -12,6 +12,7 @@
 #include "arm9/boot.h"
 #include "arm9/console.h"
 #include "arm9/dma.h"
+#include "arm9/input.h"
 #include "arm9/ipc.h"
 #include "arm9/irq.h"
 #include "arm9/menu.h"
@@ -115,6 +116,20 @@ void arm9_irq_handler(void)
     /* No ARM9 interrupt sources are enabled during the boot smoke test
      * (IE is left at 0). The reference installs a handler at the top of DTCM
      * via FUN_06025c20 once the menu subsystems are up. */
+}
+
+/* ------------------------------------------------------------------ */
+/* Boot policy                                                         */
+/* ------------------------------------------------------------------ */
+
+boot_policy_t boot_resolve_policy(u16 raw_keyinput)
+{
+    u16 held = input_normalize_keys(raw_keyinput);
+
+    if ((held & (INPUT_B | INPUT_SELECT)) != 0u) {
+        return BOOT_POLICY_MENU;
+    }
+    return BOOT_POLICY_AUTOBOOT;
 }
 
 /*

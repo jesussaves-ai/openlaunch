@@ -173,6 +173,17 @@ Consequences:
   render all of it or a specific failure reason. No write command exists outside
   `ENABLE_NAND_WRITE_DANGER` (docs §24, AGENTS.md §5). Covered by the extended
   `tests/test_sdmmc.c` and `tests/test_fat_ro.c`.
+* **Homebrew argv + TWL extended segments + BOOT.NDS autoboot** —
+  `loader_build_argv()`/`loader_stage_argv()` publish the canonical
+  `__system_argv` structure (`0x5F617267`, command line `"sd:/<NAME>"`) at
+  `header_base + 0x70`; `nds_header_parse()` decodes the DSi extended header and
+  `nds_header_validate_twl_segments()` gates optional `ARM9i`/`ARM7i` segments,
+  which `loader_stage_and_boot()` streams in TWL mode; and
+  `boot_resolve_policy()` implements the Unlaunch-style hotkey policy (B/SELECT
+  forces the menu, otherwise `BOOT.NDS` is probed/booted, with menu item `[8]`
+  and an optional `AUTOBOOT=1` build). `make sd-image` now also installs
+  `BOOT.NDS` (title `AUTOBOOT OK`). Covered by `tests/test_loader.c`,
+  `tests/test_sd_image.c` and `tests/test_menu.c` (docs §27).
 * **Read-only chainloader + dual-CPU handoff** — `nds_header_validate_loadable()`
   now enforces the CRC16 and the ARM9/ARM7 load-range safety window
   (`src/common/nds_header.c`), and `fat_read_file_range()` streams a bounded byte

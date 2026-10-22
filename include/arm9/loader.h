@@ -57,6 +57,9 @@ typedef struct {
     u32  arm7_stage;       /* shared-RAM source handed to the ARM7        */
     u32  arm7_dst;         /* final ARM7 RAM destination                  */
     u32  arm7_size;
+    u32  arm9i_size;       /* TWL ARM9i streamed (0 when absent)          */
+    u32  arm7i_size;       /* TWL ARM7i streamed (0 when absent)          */
+    u32  argv_len;         /* bytes in the populated command line         */
 } loader_result_t;
 
 /* Read sector 0 of `entry` through `vol` and validate it. */
@@ -64,6 +67,46 @@ nds_load_status_t loader_validate_file(fat_volume_t *vol,
                                        const fat_file_entry_t *entry,
                                        bool extended_ram,
                                        nds_header_t *out_hdr);
+
+/* ---- Homebrew argv / __system_argv protocol (pure) -------------------- */
+
+/*
+ * Build the canonical command line "sd:/<name>" (NUL-terminated) into
+ * `cmdline` (capacity `cmdline_cap`).
+ *
+ * Returns the command-line length excluding the NUL, or 0 when the inputs are
+ * invalid (NULL destination, empty name) or the path does not fit `cmdline_cap`
+ * including its terminator. `cmdline` is left NUL-terminated when capacity
+ * permits even on failure.
+ */
+u32 loader_format_command_line(char *cmdline, u32 cmdline_cap, const char *name);
+
+/*
+ * Build the 24-byte __system_argv header into `argv` and the command line into
+ * `cmdline`, following the devkitPro/BlocksDS launch contract.
+ *
+ *   argv        : NDS_ARGV_HEADER_SIZE-byte destination for the header
+ *   cmdline     : NUL-terminated command-line destination
+ *   cmdline_cap : capacity of `cmdline`
+ *   cmdline_addr: RAM address of `cmdline` (stored in the header)
+ *   name        : 8.3 file name, e.g. "HELLO.NDS"
+ *
+ * Writes argvMagic = NDS_ARGV_MAGIC, the command-line pointer/length,
+ * argc = 1, argv[0] = cmdline_addr and the 0xFFFFFFFF terminator.
+ *
+ * Returns the command-line length (excluding the NUL), or 0 on failure. Never
+ * reads or writes outside the supplied buffers.
+ */
+u32 loader_build_argv(u8 *argv, char *cmdline, u32 cmdline_cap,
+                      u32 cmdline_addr, const char *name);
+
+/*
+ * Populate the real high-RAM argv region for a launched image: writes the
+ * command line at NDS_ARGV_CMDLINE_ADDR_{DS,TWL} and the 24-byte header at
+ * header_copy_base + NDS_ARGV_OFFSET. Returns the command-line length, or 0 on
+ * failure.
+ */
+u32 loader_stage_argv(const char *name, bool extended_ram);
 
 /*
  * Stage and hand off. Returns a specific nds_load_status_t. With

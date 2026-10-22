@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <stdio.h>
 
+#include "arm9/boot.h"
 #include "arm9/menu.h"
 #include "arm9/input.h"
 
@@ -36,7 +37,7 @@ static void test_menu_state(void)
     /* Wrapping at both ends. */
     menu_state_move(&m, -1);
     assert(menu_state_selected(&m) == (u8)(MENU_ITEM_COUNT - 1u));
-    assert(menu_action_for(&m) == MENU_ACTION_SCFG_INIT);
+    assert(menu_action_for(&m) == MENU_ACTION_AUTOBOOT);
 
     menu_state_move(&m, 1);
     assert(menu_state_selected(&m) == 0u);
@@ -56,7 +57,8 @@ static void test_menu_state(void)
     m.cursor = 4u; assert(menu_action_for(&m) == MENU_ACTION_HALT);
     m.cursor = 5u; assert(menu_action_for(&m) == MENU_ACTION_BROWSE);
     m.cursor = 6u; assert(menu_action_for(&m) == MENU_ACTION_SCFG_INIT);
-    m.cursor = 7u; assert(menu_action_for(&m) == MENU_ACTION_NONE);
+    m.cursor = 7u; assert(menu_action_for(&m) == MENU_ACTION_AUTOBOOT);
+    m.cursor = 8u; assert(menu_action_for(&m) == MENU_ACTION_NONE);
 
     /* Degenerate inputs must not misbehave. */
     menu_state_init(&m, 0u);
@@ -120,12 +122,38 @@ static void test_input_state(void)
     assert(!input_pressed(&s, INPUT_SELECT));
 }
 
+/* ------------------------------------------------------------------ */
+/* Unlaunch-style boot policy                                          */
+/* ------------------------------------------------------------------ */
+
+static void test_boot_policy(void)
+{
+    /* No keys held: the active-low KEYINPUT word reads all ones. */
+    assert(boot_resolve_policy(0xFFFFu) == BOOT_POLICY_AUTOBOOT);
+
+    /* A held (active-low: bit 0 clear) -> probe/autoboot. */
+    assert(boot_resolve_policy((u16)(0xFFFFu & ~KEY_A))
+           == BOOT_POLICY_AUTOBOOT);
+
+    /* B held -> force the interactive menu. */
+    assert(boot_resolve_policy((u16)(0xFFFFu & ~KEY_B)) == BOOT_POLICY_MENU);
+
+    /* SELECT held -> also force the menu. */
+    assert(boot_resolve_policy((u16)(0xFFFFu & ~KEY_SELECT))
+           == BOOT_POLICY_MENU);
+
+    /* B + A: the menu override wins. */
+    assert(boot_resolve_policy((u16)(0xFFFFu & ~(KEY_A | KEY_B)))
+           == BOOT_POLICY_MENU);
+}
+
 int main(void)
 {
     test_menu_state();
     test_input_normalise();
     test_input_edges();
     test_input_state();
+    test_boot_policy();
 
     puts("test_menu: all assertions passed");
     return 0;

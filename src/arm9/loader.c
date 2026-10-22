@@ -23,9 +23,15 @@
 #include "common/ipc_protocol.h"
 #include "common/mem.h"
 
-/* Sector-0 staging buffer. Lives in .bss (shared Main RAM, inside the loader
- * reservation) so it is never confused with the destination image. */
-static u8 s_header_sector[NDS_HEADER_SECTOR_SIZE];
+/*
+ * Header staging buffer. We read a full 2-sector (1024-byte) header when the
+ * file allows it so the TWL ARM9i/ARM7i descriptors are available, but the
+ * canonical 512-byte header copy is still taken from the first sector only.
+ * Lives in .bss (shared Main RAM, inside the loader reservation) so it is
+ * never confused with the destination image.
+ */
+#define LOADER_HEADER_READ_LEN 1024u
+static u8 s_header_sector[LOADER_HEADER_READ_LEN];
 
 #ifdef LOADER_HOST_TEST
 /*
@@ -65,7 +71,7 @@ void loader_plan_from_header(const nds_header_t *hdr, bool extended_ram,
         return;
     }
 
-    out->hdr = *hdr;
+    dsi_memcpy(&out->hdr, hdr, sizeof(out->hdr));
     out->twl_extended = extended_ram;
 
     /*
@@ -78,6 +84,84 @@ void loader_plan_from_header(const nds_header_t *hdr, bool extended_ram,
     out->arm7_stage_addr = LOADER_ARM7_BOUNCE_ADDR;
 }
 
+/* ---- Homebrew argv / __system_argv protocol --------------------------- */
+
+u32 loader_format_command_line(char *cmdline, u32 cmdline_cap, const char *name)
+{
+    static const char prefix[4] = { 's', 'd', ':', '/' };
+    u32 prefix_len = 4u;
+    u32 name_len;
+    u32 total;
+
+    if (cmdline == NULL) {
+        return 0u;
+    }
+    if (cmdline_cap > 0u) {
+        cmdline[0] = '\0';
+    }
+    if (cmdline_cap == 0u || name == NULL || name[0] == '\0') {
+        return 0u;
+    }
+
+    name_len = (u32)dsi_strlen(name);
+    /* Need room for "sd:/" + name + NUL. */
+    if (cmdline_cap <= prefix_len + 1u ||
+        name_len > cmdline_cap - prefix_len - 1u) {
+        return 0u;
+    }
+
+    total = prefix_len + name_len;
+    dsi_memcpy(cmdline, prefix, prefix_len);
+    dsi_memcpy(cmdline + prefix_len, name, name_len);
+    cmdline[total] = '\0';
+    return total;
+}
+
+u32 loader_build_argv(u8 *argv, char *cmdline, u32 cmdline_cap,
+                      u32 cmdline_addr, const char *name)
+{
+    u32 len;
+
+    if (argv == NULL) {
+        return 0u;
+    }
+
+    len = loader_format_command_line(cmdline, cmdline_cap, name);
+    if (len == 0u) {
+        return 0u;
+    }
+
+    dsi_write_le32(argv + NDS_ARGV_MAGIC_OFF, NDS_ARGV_MAGIC);
+    dsi_write_le32(argv + NDS_ARGV_CMD_OFF, cmdline_addr);
+    dsi_write_le32(argv + NDS_ARGV_LEN_OFF, len);
+    dsi_write_le32(argv + NDS_ARGV_ARGC_OFF, 1u);
+    dsi_write_le32(argv + NDS_ARGV_ARG0_OFF, cmdline_addr);
+    dsi_write_le32(argv + NDS_ARGV_END_OFF, NDS_ARGV_END_MARKER);
+    return len;
+}
+
+u32 loader_stage_argv(const char *name, bool extended_ram)
+{
+    char cmdline[NDS_ARGV_CMDLINE_MAX];
+    u8 argv[NDS_ARGV_HEADER_SIZE];
+    u32 hdr_base = extended_ram ? NDS_HEADER_COPY_ADDR_TWL
+                                : NDS_HEADER_COPY_ADDR_DS;
+    u32 cmdline_addr = extended_ram ? NDS_ARGV_CMDLINE_ADDR_TWL
+                                    : NDS_ARGV_CMDLINE_ADDR_DS;
+    u32 len = loader_build_argv(argv, cmdline, sizeof(cmdline),
+                                cmdline_addr, name);
+
+    if (len == 0u) {
+        return 0u;
+    }
+
+    dsi_memcpy(loader_stage_ptr(cmdline_addr, len + 1u), cmdline, len + 1u);
+    dsi_memcpy(loader_stage_ptr(hdr_base + NDS_ARGV_OFFSET,
+                                NDS_ARGV_HEADER_SIZE),
+               argv, NDS_ARGV_HEADER_SIZE);
+    return len;
+}
+
 nds_load_status_t loader_validate_file(fat_volume_t *vol,
                                        const fat_file_entry_t *entry,
                                        bool extended_ram,
@@ -86,6 +170,7 @@ nds_load_status_t loader_validate_file(fat_volume_t *vol,
     u32 got = 0u;
     fat_chain_status_t chain = FAT_CHAIN_ERR_ARG;
     nds_load_bounds_t bounds;
+    nds_load_status_t status;
 
     if (out_hdr != NULL) {
         dsi_memset(out_hdr, 0, sizeof(*out_hdr));
@@ -97,16 +182,35 @@ nds_load_status_t loader_validate_file(fat_volume_t *vol,
         return NDS_ERR_FILE_TRUNCATED;
     }
 
-    /* Read exactly sector 0 (the first cluster always contains it). */
+    /*
+     * Read a bounded 2-sector header (clamped to the file): the base fields
+     * live in sector 0, the TWL ARM9i/ARM7i descriptors immediately after.
+     */
     if (!fat_read_file_range(vol, entry, 0u, s_header_sector,
-                             NDS_HEADER_SECTOR_SIZE, &got, &chain) ||
-        got != NDS_HEADER_SECTOR_SIZE) {
+                             LOADER_HEADER_READ_LEN, &got, &chain) ||
+        got < NDS_HEADER_SECTOR_SIZE) {
         return NDS_ERR_FILE_TRUNCATED;
     }
 
     nds_load_bounds_default(&bounds, extended_ram);
-    return nds_header_validate_loadable(s_header_sector, got,
-                                        entry->file_size, &bounds, out_hdr);
+    status = nds_header_validate_loadable(s_header_sector, got,
+                                          entry->file_size, &bounds, out_hdr);
+    if (status != NDS_LOAD_OK) {
+        return status;
+    }
+
+    /*
+     * In TWL mode, a DSi-capable image may carry optional ARM9i/ARM7i segments.
+     * They are validated even when absent (a plain hybrid image has none).
+     */
+    if (extended_ram) {
+        nds_header_t tmp;
+        nds_header_t *h = (out_hdr != NULL) ? out_hdr : &tmp;
+
+        return nds_header_validate_twl_segments(h, entry->file_size, &bounds);
+    }
+
+    return status;
 }
 
 #if defined(ENABLE_CHAINLOAD_BOOT) && \
@@ -171,6 +275,8 @@ nds_load_status_t loader_stage_and_boot(fat_volume_t *vol,
         out->arm7_dst = hdr.arm7_ram_addr;
         out->arm7_size = hdr.arm7_size;
         out->arm7_stage = LOADER_ARM7_BOUNCE_ADDR;
+        out->arm9i_size = hdr.arm9i_size;
+        out->arm7i_size = hdr.arm7i_size;
         out->dry_run = true;
     }
     if (status != NDS_LOAD_OK) {
@@ -217,6 +323,37 @@ nds_load_status_t loader_stage_and_boot(fat_volume_t *vol,
     }
 
     /*
+     * 2b. TWL extended segments. A DSi-capable image may carry optional ARM9i
+     *     and ARM7i binaries alongside the primaries; in TWL mode stream each
+     *     non-zero segment straight to its validated RAM address (Main RAM or
+     *     NWRAM, both directly writable from the ARM9).
+     */
+    if (extended_ram && hdr.twl_capable && hdr.arm9i_size != 0u) {
+        if (!fat_read_file_range(vol, entry, hdr.arm9i_rom_offset,
+                                 loader_stage_ptr(hdr.arm9i_ram_address,
+                                                  hdr.arm9i_size),
+                                 hdr.arm9i_size, &got, &chain) ||
+            got != hdr.arm9i_size) {
+            if (out != NULL) {
+                out->status = NDS_ERR_FILE_TRUNCATED;
+            }
+            return NDS_ERR_FILE_TRUNCATED;
+        }
+    }
+    if (extended_ram && hdr.twl_capable && hdr.arm7i_size != 0u) {
+        if (!fat_read_file_range(vol, entry, hdr.arm7i_rom_offset,
+                                 loader_stage_ptr(hdr.arm7i_ram_address,
+                                                  hdr.arm7i_size),
+                                 hdr.arm7i_size, &got, &chain) ||
+            got != hdr.arm7i_size) {
+            if (out != NULL) {
+                out->status = NDS_ERR_FILE_TRUNCATED;
+            }
+            return NDS_ERR_FILE_TRUNCATED;
+        }
+    }
+
+    /*
      * 3. Publish the 512-byte header copy at the canonical firmware address
      *    (0x027FFE00 on DS / 0x02FFFE00 on a 16 MiB DSi), then make every
      *    staged buffer visible to the ARM7 and the fresh instruction stream.
@@ -225,6 +362,16 @@ nds_load_status_t loader_stage_and_boot(fat_volume_t *vol,
                                              : NDS_HEADER_COPY_ADDR_DS,
                                 NDS_HEADER_SECTOR_SIZE),
                s_header_sector, NDS_HEADER_SECTOR_SIZE);
+
+    /*
+     * 3b. Populate the canonical __system_argv structure so the launched
+     *     homebrew learns its launch path ("sd:/<NAME>").
+     */
+    if (out != NULL) {
+        out->argv_len = loader_stage_argv(entry->name, extended_ram);
+    } else {
+        (void)loader_stage_argv(entry->name, extended_ram);
+    }
 
     dc_flush_range((const void *)(uintptr_t)hdr.arm9_ram_addr, hdr.arm9_size);
     dc_flush_range((const void *)(uintptr_t)LOADER_ARM7_BOUNCE_ADDR,

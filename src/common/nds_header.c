@@ -82,7 +82,28 @@ bool nds_header_parse(const u8 *buf, u32 len, nds_header_t *out)
     out->arm7_ram_addr   = dsi_read_le32(buf + NDS_ARM7_RAM_ADDR_OFF);
     out->arm7_size       = dsi_read_le32(buf + NDS_ARM7_SIZE_OFF);
 
+    /*
+     * The TWL extended header is only meaningful for a DSi-capable image and
+     * only readable when the caller supplied enough bytes. Decoding it is
+     * purely additive: a DS-only (0x00) or short header leaves it zeroed.
+     */
+    if (out->twl_capable && len >= NDS_HEADER_TWL_MIN_LEN) {
+        out->twl_flags         = buf[NDS_TWL_FLAGS_OFF];
+        out->arm9i_rom_offset  = dsi_read_le32(buf + NDS_TWL_ARM9I_ROM_OFF);
+        out->arm9i_ram_address = dsi_read_le32(buf + NDS_TWL_ARM9I_RAM_OFF);
+        out->arm9i_size        = dsi_read_le32(buf + NDS_TWL_ARM9I_SIZE_OFF);
+        out->arm7i_rom_offset  = dsi_read_le32(buf + NDS_TWL_ARM7I_ROM_OFF);
+        out->arm7i_ram_address = dsi_read_le32(buf + NDS_TWL_ARM7I_RAM_OFF);
+        out->arm7i_size        = dsi_read_le32(buf + NDS_TWL_ARM7I_SIZE_OFF);
+        out->twl_header_valid  = true;
+    }
+
     return true;
+}
+
+bool nds_header_read(const u8 *buf, u32 len, nds_header_t *out)
+{
+    return nds_header_parse(buf, len, out);
 }
 
 /* ------------------------------------------------------------------ */
@@ -95,11 +116,14 @@ void nds_load_bounds_default(nds_load_bounds_t *out, bool extended_ram)
         return;
     }
 
+    out->extended_ram   = extended_ram;
     out->ram_base       = NDS_SAFE_RAM_BASE;
     out->ram_end        = extended_ram ? NDS_SAFE_RAM_END_TWL
                                        : NDS_SAFE_RAM_END_DS;
     out->arm7_wram_base = NDS_ARM7_WRAM_BASE;
     out->arm7_wram_end  = NDS_ARM7_WRAM_END;
+    out->nwram_base     = NDS_NWRAM_BASE;
+    out->nwram_end      = NDS_NWRAM_END;
     out->reserve_base   = NDS_BOOTLOADER_RESERVE_BASE;
     out->reserve_end    = NDS_BOOTLOADER_RESERVE_END;
 }
@@ -170,7 +194,9 @@ nds_load_status_t nds_header_validate_loadable(const u8 *buf, u32 len,
         return NDS_ERR_FILE_TRUNCATED;
     }
     if (out != NULL) {
-        *out = h;
+        /* Explicit call avoids a libc memcpy dependency (GCC can lower a
+         * large struct assignment to memcpy even under -ffreestanding). */
+        dsi_memcpy(out, &h, sizeof(h));
     }
 
     if (!h.crc_ok) {
@@ -229,6 +255,77 @@ nds_load_status_t nds_header_validate_loadable(const u8 *buf, u32 len,
     }
 
     return NDS_LOAD_OK;
+}
+
+/*
+ * Validate a single optional TWL segment. `err` is the status to report when
+ * the segment is malformed or lands outside the accepted RAM windows.
+ */
+static nds_load_status_t validate_twl_segment(u32 rom_off, u32 ram, u32 size,
+                                              u32 file_size,
+                                              const nds_load_bounds_t *bounds,
+                                              nds_load_status_t err)
+{
+    bool in_ram;
+    bool in_nwram;
+
+    /* A missing segment (size 0) is always fine. */
+    if (size == 0u) {
+        return NDS_LOAD_OK;
+    }
+
+    if (!aligned_nonzero(rom_off) || !aligned_nonzero(ram) ||
+        !aligned_nonzero(size)) {
+        return err;
+    }
+
+    if (file_size != 0u && !file_range_ok(rom_off, size, file_size)) {
+        return NDS_ERR_FILE_TRUNCATED;
+    }
+
+    in_ram   = range_within(ram, size, bounds->ram_base, bounds->ram_end);
+    in_nwram = range_within(ram, size, bounds->nwram_base, bounds->nwram_end);
+    if (!in_ram && !in_nwram) {
+        return err;
+    }
+
+    if (range_overlaps(ram, size, bounds->reserve_base, bounds->reserve_end)) {
+        return NDS_ERR_OVERLAP_BOOTLOADER;
+    }
+
+    return NDS_LOAD_OK;
+}
+
+nds_load_status_t nds_header_validate_twl_segments(const nds_header_t *hdr,
+                                                   u32 file_size,
+                                                   const nds_load_bounds_t *bounds)
+{
+    nds_load_bounds_t def;
+    nds_load_status_t st;
+
+    if (hdr == NULL) {
+        return NDS_ERR_FILE_TRUNCATED;
+    }
+    if (bounds == NULL) {
+        nds_load_bounds_default(&def, true);
+        bounds = &def;
+    }
+
+    /* A non-TWL image simply has no extended segments. */
+    if (!hdr->twl_capable) {
+        return NDS_LOAD_OK;
+    }
+
+    st = validate_twl_segment(hdr->arm9i_rom_offset, hdr->arm9i_ram_address,
+                              hdr->arm9i_size, file_size, bounds,
+                              NDS_ERR_ARM9_BOUNDS);
+    if (st != NDS_LOAD_OK) {
+        return st;
+    }
+
+    return validate_twl_segment(hdr->arm7i_rom_offset, hdr->arm7i_ram_address,
+                                hdr->arm7i_size, file_size, bounds,
+                                NDS_ERR_ARM7_BOUNDS);
 }
 
 const char *nds_load_status_text(nds_load_status_t status)

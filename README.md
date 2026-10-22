@@ -17,8 +17,13 @@ disassembled from `asm/UNLAUNCH.DSI` into readable, strictly typed C99. See
   CMD3/CMD9/CMD7/CMD16/CMD17) reached from the ARM9 only through IPC, plus a
   zero-allocation FAT16/FAT32 parser.
 * **SD browser + chainloader** — a menu item that lists `.nds`/`.srl` files,
-  validates their header CRC16 and load ranges, stages the payloads in RAM and
-  (optionally) hands off to the new image.
+  validates their header CRC16 and load ranges, stages the payloads (including
+  optional TWL `ARM9i`/`ARM7i` segments) in RAM and (optionally) hands off to
+  the new image; the canonical `__system_argv` launch path (`sd:/<NAME>`) is
+  published for the loaded homebrew.
+* **Unlaunch-style autoboot** — a startup hotkey policy (**B**/**SELECT** force
+  the menu, otherwise `BOOT.NDS` is probed) plus menu item `[8] Autoboot
+  BOOT.NDS` and an optional `make AUTOBOOT=1` automatic-boot build.
 * **Deterministic test image** — `make sd-image` builds a FAT16 SD card with
   real, loadable and negative-test payloads for emulator and CI verification.
 
@@ -71,6 +76,7 @@ ld/           linker scripts for the bootloader
 | File          | Purpose |
 | :------------ | :------ |
 | `HELLO.NDS`   | the loadable chainload payload (title `CHAINLOAD OK`, code `TSTL`), fragmented across 16 clusters |
+| `BOOT.NDS`    | the autoboot variant of the payload (title `AUTOBOOT OK`, code `TSTL`) |
 | `BADCRC.NDS`  | rejected with `NDS_ERR_BAD_CRC` |
 | `OVERLAP.NDS` | rejected with `NDS_ERR_OVERLAP_BOOTLOADER` |
 | `README.TXT`  | hidden by the `.nds`/`.srl` browser filter |

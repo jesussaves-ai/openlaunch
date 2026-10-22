@@ -39,8 +39,15 @@
 static u8  s_arm9_arena[ARENA_BYTES];
 static u8  s_arm7_arena[ARENA_BYTES];
 static u8  s_header_arena[FAT_SECTOR_SIZE];
+static u8  s_cmdline_arena[NDS_ARGV_CMDLINE_MAX];
 static u32 s_handoff_calls;
 static u32 s_handoff_args[4];
+
+/* True when [addr, addr+len) lies inside the 512-byte header-copy page. */
+static bool in_header_page(u32 addr, u32 base)
+{
+    return addr >= base && (addr - base) < NDS_HEADER_SECTOR_SIZE;
+}
 
 u8 *loader_host_test_stage(u32 addr, u32 len)
 {
@@ -49,8 +56,14 @@ u8 *loader_host_test_stage(u32 addr, u32 len)
     if (addr == LOADER_ARM7_BOUNCE_ADDR) {
         return s_arm7_arena;
     }
-    if (addr == NDS_HEADER_COPY_ADDR_DS || addr == NDS_HEADER_COPY_ADDR_TWL) {
-        return s_header_arena;
+    if (in_header_page(addr, NDS_HEADER_COPY_ADDR_DS)) {
+        return s_header_arena + (addr - NDS_HEADER_COPY_ADDR_DS);
+    }
+    if (in_header_page(addr, NDS_HEADER_COPY_ADDR_TWL)) {
+        return s_header_arena + (addr - NDS_HEADER_COPY_ADDR_TWL);
+    }
+    if (addr == NDS_ARGV_CMDLINE_ADDR_DS || addr == NDS_ARGV_CMDLINE_ADDR_TWL) {
+        return s_cmdline_arena;
     }
     return s_arm9_arena;
 }
@@ -59,6 +72,12 @@ void loader_host_test_handoff(const u32 *args)
 {
     s_handoff_calls++;
     memcpy(s_handoff_args, args, sizeof(s_handoff_args));
+}
+
+static u32 le32(const u8 *p)
+{
+    return (u32)p[0] | ((u32)p[1] << 8) |
+           ((u32)p[2] << 16) | ((u32)p[3] << 24);
 }
 
 /* ------------------------------------------------------------------ */
@@ -107,6 +126,7 @@ static void test_root_listing(void)
     fat_dir_iter_t it;
     fat_file_entry_t e;
     bool hello = false;
+    bool boot = false;
     bool badcrc = false;
     bool overlap = false;
     bool readme_filtered = false;
@@ -115,12 +135,14 @@ static void test_root_listing(void)
 
     assert(fat_mount(&vol, img_read, NULL));
 
-    /* .nds/.srl filter: HELLO/BADCRC/OVERLAP only. */
+    /* .nds/.srl filter: HELLO/BOOT/BADCRC/OVERLAP only. */
     fat_dir_iter_init(&vol, &it, true);
     while (fat_dir_next(&it, &e)) {
         listed++;
         if (strcmp(e.name, "HELLO.NDS") == 0) {
             hello = true;
+        } else if (strcmp(e.name, "BOOT.NDS") == 0) {
+            boot = true;
         } else if (strcmp(e.name, "BADCRC.NDS") == 0) {
             badcrc = true;
         } else if (strcmp(e.name, "OVERLAP.NDS") == 0) {
@@ -129,9 +151,9 @@ static void test_root_listing(void)
             readme_filtered = true;
         }
     }
-    assert(hello && badcrc && overlap);
+    assert(hello && boot && badcrc && overlap);
     assert(!readme_filtered);
-    assert(listed == 3u);
+    assert(listed == 4u);
 
     /* The unfiltered listing still sees README.TXT... */
     fat_dir_iter_init(&vol, &it, false);
@@ -207,6 +229,24 @@ static void test_hello_validates_and_stages(void)
     assert(s_handoff_args[3] == hdr.arm7_size);
 
     /*
+     * 2b. The canonical __system_argv was published: the command line at
+     *     NDS_ARGV_CMDLINE_ADDR_TWL and the 24-byte header inside the copied
+     *     header page at header_base + 0x70.
+     */
+    assert(res.argv_len == 13u);
+    assert(strcmp((char *)s_cmdline_arena, "sd:/HELLO.NDS") == 0);
+    {
+        const u8 *av = s_header_arena + NDS_ARGV_OFFSET;
+
+        assert(le32(av + NDS_ARGV_MAGIC_OFF) == NDS_ARGV_MAGIC);
+        assert(le32(av + NDS_ARGV_CMD_OFF) == NDS_ARGV_CMDLINE_ADDR_TWL);
+        assert(le32(av + NDS_ARGV_LEN_OFF) == 13u);
+        assert(le32(av + NDS_ARGV_ARGC_OFF) == 1u);
+        assert(le32(av + NDS_ARGV_ARG0_OFF) == NDS_ARGV_CMDLINE_ADDR_TWL);
+        assert(le32(av + NDS_ARGV_END_OFF) == NDS_ARGV_END_MARKER);
+    }
+
+    /*
      * 3. The whole file streams back through the cluster-chain reader and the
      *    staged payloads match the bytes at their ROM offsets: this proves the
      *    multi-cluster/fragmented walk, not just the header read.
@@ -247,6 +287,36 @@ static void test_negative_images(void)
            == NDS_ERR_OVERLAP_BOOTLOADER);
     assert(!res.staged);
     assert(res.status == NDS_ERR_OVERLAP_BOOTLOADER);
+}
+
+/*
+ * Unlaunch-style autoboot target: BOOT.NDS must be discoverable on the SD root,
+ * validate cleanly and stage through the same pipeline, publishing the
+ * "sd:/BOOT.NDS" command line.
+ */
+static void test_boot_nds(void)
+{
+    fat_volume_t vol;
+    fat_file_entry_t boot;
+    nds_header_t hdr;
+    loader_result_t res;
+
+    assert(fat_mount(&vol, img_read, NULL));
+    assert(find_entry(&vol, "BOOT.NDS", &boot));
+
+    assert(loader_validate_file(&vol, &boot, true, &hdr) == NDS_LOAD_OK);
+    assert(hdr.crc_ok);
+    assert(strcmp(hdr.title, "AUTOBOOT OK") == 0);
+    assert(strcmp(hdr.gamecode, "TSTL") == 0);
+    assert(hdr.unit_code == NDS_UNIT_CODE_NDS_DSI);
+
+    s_handoff_calls = 0u;
+    assert(loader_stage_and_boot(&vol, &boot, true, &res) == NDS_LOAD_OK);
+    assert(res.staged);
+    assert(res.dry_run);
+    assert(s_handoff_calls == 1u);
+    assert(res.argv_len == 12u);   /* "sd:/BOOT.NDS" */
+    assert(strcmp((char *)s_cmdline_arena, "sd:/BOOT.NDS") == 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -303,6 +373,7 @@ int main(int argc, char **argv)
     test_root_listing();
     test_hello_validates_and_stages();
     test_negative_images();
+    test_boot_nds();
 
     free(g_img);
     puts("test_sd_image: all assertions passed");

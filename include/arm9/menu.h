@@ -13,7 +13,7 @@
 #include "input.h"
 
 /* Menu entries, in display order. */
-#define MENU_ITEM_COUNT   7u
+#define MENU_ITEM_COUNT   8u
 
 /* Maximum number of .nds/.srl files listed by the SD browser. */
 #define MENU_BROWSE_MAX   16u
@@ -26,7 +26,8 @@ typedef enum {
     MENU_ACTION_LZ77,       /* [4] expand the embedded LZ77 self-test     */
     MENU_ACTION_HALT,       /* [5] halt the system                        */
     MENU_ACTION_BROWSE,     /* [6] browse the SD card's FAT volume        */
-    MENU_ACTION_SCFG_INIT   /* [7] unlock + initialise SCFG/MBK           */
+    MENU_ACTION_SCFG_INIT,  /* [7] unlock + initialise SCFG/MBK           */
+    MENU_ACTION_AUTOBOOT    /* [8] autoboot BOOT.NDS from the SD root     */
 } menu_action_t;
 
 typedef struct {
@@ -85,6 +86,12 @@ typedef struct {
     u32  loader_arm7_size;
     bool boot_staged;       /* A staged the image (dry run or real)      */
     bool boot_dry_run;      /* staging ran but no CPU handoff happened   */
+
+    /* Unlaunch-style BOOT.NDS autoboot policy / discovery state. */
+    bool autoboot_checked;  /* the SD root was probed for BOOT.NDS       */
+    bool autoboot_ready;    /* a BOOT.NDS (or fallback) target was found */
+    bool autoboot_key_held; /* B/SELECT forced the menu at startup       */
+    char autoboot_name[13]; /* the discovered file name (or "")          */
 
     const char *last_action;
 } menu_diag_t;

@@ -12,6 +12,7 @@
  * reported from the build configuration.
  */
 #include "arm9/menu.h"
+#include "arm9/boot.h"
 #include "arm9/console.h"
 #include "arm9/ipc.h"
 #include "arm9/loader.h"
@@ -39,6 +40,7 @@ static const char *const s_menu_labels[MENU_ITEM_COUNT] = {
     "[5] Reboot / Halt System",
     "[6] Browse SD Card (.nds)",
     "[7] Init SCFG / MBK",
+    "[8] Autoboot BOOT.NDS",
 };
 
 static const char *const s_menu_desc[MENU_ITEM_COUNT] = {
@@ -49,6 +51,7 @@ static const char *const s_menu_desc[MENU_ITEM_COUNT] = {
     "Halt the CPU safely",
     "Mount FAT, verify + chainload .nds",
     "Unlock + map DSi SCFG/NWRAM",
+    "Boot the SD root BOOT.NDS image",
 };
 
 /* Embedded LZ77 self-test vector: literals "ABCD" + length-4/distance-4 back
@@ -72,6 +75,10 @@ static u8 s_fw_probe[8];
  */
 static fat_volume_t   s_fat_vol;
 static fat_file_entry_t s_fat_files[MENU_BROWSE_MAX];
+
+/* Unlaunch-style autoboot target resolved from the SD root directory. */
+static fat_file_entry_t s_autoboot_entry;
+static bool s_autoboot_entry_valid;
 
 /* ---- Pure menu state machine ----------------------------------------- */
 
@@ -120,6 +127,7 @@ menu_action_t menu_action_for(const menu_state_t *m)
     case 4u: return MENU_ACTION_HALT;
     case 5u: return MENU_ACTION_BROWSE;
     case 6u: return MENU_ACTION_SCFG_INIT;
+    case 7u: return MENU_ACTION_AUTOBOOT;
     default: return MENU_ACTION_NONE;
     }
 }
@@ -302,6 +310,82 @@ static void diag_collect(menu_diag_t *d)
     diag_lz77(d);
 }
 
+/* ---- Unlaunch-style BOOT.NDS autoboot -------------------------------- */
+
+/* Case-sensitive 8.3 name equality (the FAT layer upper-cases every name). */
+static bool menu_name_eq(const char *a, const char *b)
+{
+    u32 i = 0u;
+
+    while (a[i] != '\0' && b[i] != '\0') {
+        if (a[i] != b[i]) {
+            return false;
+        }
+        i++;
+    }
+    return a[i] == b[i];
+}
+
+/* Linear search of the mounted root directory for an exact 8.3 name. */
+static bool menu_find_root_file(fat_volume_t *vol, const char *name,
+                                fat_file_entry_t *out)
+{
+    fat_dir_iter_t it;
+    fat_file_entry_t e;
+
+    fat_dir_iter_init(vol, &it, false);
+    while (fat_dir_next(&it, &e)) {
+        if (menu_name_eq(e.name, name)) {
+            *out = e;
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * Resolve the startup policy and, when autobooting, probe the SD root for
+ * BOOT.NDS (falling back to HELLO.NDS for the deterministic test image).
+ * Pure policy decision; only the discovery touches the card.
+ */
+static void menu_probe_autoboot(menu_diag_t *d, boot_policy_t policy)
+{
+    d->autoboot_checked = false;
+    d->autoboot_ready = false;
+    d->autoboot_key_held = false;
+    d->autoboot_name[0] = '\0';
+    s_autoboot_entry_valid = false;
+
+    if (policy == BOOT_POLICY_MENU) {
+        d->autoboot_key_held = true;
+        d->last_action = "MENU (KEY HELD)";
+        return;
+    }
+
+    diag_query_sd(d);
+    if ((d->sd_flags & IPC_SD_FLAG_UNAVAILABLE) != 0u ||
+        (d->sd_flags & IPC_SD_FLAG_PRESENT) == 0u) {
+        d->autoboot_checked = true;
+        return;
+    }
+    if (!arm9_storage_mount(&s_fat_vol, IPC_STORAGE_DEV_SD)) {
+        d->autoboot_checked = true;
+        return;
+    }
+
+    if (menu_find_root_file(&s_fat_vol, BOOT_DEFAULT_NDS_NAME,
+                            &s_autoboot_entry) ||
+        menu_find_root_file(&s_fat_vol, BOOT_FALLBACK_NDS_NAME,
+                            &s_autoboot_entry)) {
+        s_autoboot_entry_valid = true;
+        d->autoboot_ready = true;
+        dsi_memcpy(d->autoboot_name, s_autoboot_entry.name,
+                   sizeof(d->autoboot_name));
+        d->autoboot_name[sizeof(d->autoboot_name) - 1u] = '\0';
+    }
+    d->autoboot_checked = true;
+}
+
 /* ---- Rendering -------------------------------------------------------- */
 
 static const char *sd_status_text(u8 flags)
@@ -422,7 +506,15 @@ static void render_telemetry(const menu_diag_t *d)
                        (unsigned)((d->sd_total_sectors + 2047u) / 2048u));
     }
 
-    if (d->boot_loaded) {
+    if (d->autoboot_key_held) {
+        console_puts(0, 15, CONSOLE_PAL_YELLOW, "BOOT : MENU (KEY HELD)");
+    } else if (d->autoboot_checked) {
+        console_printf(0, 15,
+                       d->autoboot_ready ? CONSOLE_PAL_GREEN
+                                         : CONSOLE_PAL_YELLOW,
+                       "BOOT : %s",
+                       d->autoboot_ready ? "BOOT.NDS READY" : "NO BOOT.NDS");
+    } else if (d->boot_loaded) {
         console_printf(0, 15,
                        d->boot_crc_ok ? CONSOLE_PAL_GREEN : CONSOLE_PAL_RED,
                        "BOOT : %s %s %s", d->boot_title, d->boot_code,
@@ -477,10 +569,10 @@ static void render_menu(const menu_state_t *state)
         console_puts(0, 2 + (int)i, pal, line);
     }
 
-    console_puts(0, 8, CONSOLE_PAL_GREY, "UP/DOWN SELECT  A RUN");
-    console_puts(0, 9, CONSOLE_PAL_GREY, "B: RE-RUN SELF-TEST");
-    console_puts(0, 11, CONSOLE_PAL_CYAN, "INFO:");
-    console_puts(0, 12, CONSOLE_PAL_WHITE, s_menu_desc[state->cursor]);
+    console_puts(0, 11, CONSOLE_PAL_GREY, "UP/DOWN SELECT  A RUN");
+    console_puts(0, 12, CONSOLE_PAL_GREY, "B: RE-RUN SELF-TEST");
+    console_puts(0, 14, CONSOLE_PAL_CYAN, "INFO:");
+    console_puts(0, 15, CONSOLE_PAL_WHITE, s_menu_desc[state->cursor]);
 }
 
 /* ---- Actions ---------------------------------------------------------- */
@@ -621,6 +713,34 @@ static void loader_boot_selected(menu_diag_t *d, fat_volume_t *vol,
 
     d->boot_staged = res.staged;
     d->boot_dry_run = res.dry_run;
+}
+
+/*
+ * Menu item [8]: locate BOOT.NDS (or the HELLO.NDS fallback) on the SD root,
+ * validate it and stage the dual-CPU handoff. Discovery runs on demand if the
+ * startup probe has not already populated the target.
+ */
+static void menu_autoboot(menu_diag_t *d)
+{
+    d->boot_staged = false;
+    d->boot_dry_run = false;
+    d->last_action = "Autoboot";
+
+    if (!s_autoboot_entry_valid) {
+        menu_probe_autoboot(d, BOOT_POLICY_AUTOBOOT);
+    }
+    if (!s_autoboot_entry_valid) {
+        d->last_action = "Autoboot: no BOOT.NDS";
+        return;
+    }
+
+    loader_boot_selected(d, &s_fat_vol, &s_autoboot_entry);
+    if (d->boot_staged) {
+        d->last_action = d->boot_dry_run ? "Autoboot dry-run OK"
+                                         : "Autoboot handoff";
+    } else {
+        d->last_action = "Autoboot rejected";
+    }
 }
 
 /*
@@ -779,6 +899,9 @@ static void menu_execute(const menu_state_t *state, menu_diag_t *d)
                                     : "SCFG init: N/A (DS mode)";
         break;
     }
+    case MENU_ACTION_AUTOBOOT:
+        menu_autoboot(d);
+        break;
     default:
         break;
     }
@@ -800,6 +923,23 @@ void menu_run(void)
 
     diag_collect(&diag);
     diag.last_action = "Boot self-test";
+
+    /*
+     * Unlaunch-style hotkey policy: read the buttons held at startup. B or
+     * SELECT forces the interactive menu; otherwise probe the SD root for a
+     * BOOT.NDS autoboot image. With ENABLE_AUTOBOOT the probe result is acted
+     * on immediately.
+     */
+    {
+        boot_policy_t policy = boot_resolve_policy(REG16(KEYINPUT));
+
+        menu_probe_autoboot(&diag, policy);
+#ifdef ENABLE_AUTOBOOT
+        if (policy == BOOT_POLICY_AUTOBOOT && s_autoboot_entry_valid) {
+            menu_autoboot(&diag);
+        }
+#endif
+    }
 
     for (;;) {
         diag_poll_extkey();

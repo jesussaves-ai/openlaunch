@@ -40,7 +40,20 @@ typedef struct {
     u32 a9_off, a9_entry, a9_ram, a9_size;
     u32 a7_off, a7_entry, a7_ram, a7_size;
     u8  unit;
+    /* TWL extended fields (appended so existing positional initializers map
+     * unchanged; omitted entries default to zero). */
+    u8  twl_flags;
+    u32 a9i_off, a9i_ram, a9i_size;
+    u32 a7i_off, a7i_ram, a7i_size;
 } hdr_spec_t;
+
+static u32 get32(const u8 *p, u32 off)
+{
+    return (u32)p[off] |
+           ((u32)p[off + 1u] << 8) |
+           ((u32)p[off + 2u] << 16) |
+           ((u32)p[off + 3u] << 24);
+}
 
 static void build_nds_header(u8 hdr[NDS_HEADER_SECTOR_SIZE],
                              const hdr_spec_t *s)
@@ -59,6 +72,15 @@ static void build_nds_header(u8 hdr[NDS_HEADER_SECTOR_SIZE],
     put32(hdr, NDS_ARM7_RAM_ADDR_OFF,   s->a7_ram);
     put32(hdr, NDS_ARM7_SIZE_OFF,       s->a7_size);
 
+    /* TWL extended header (inside sector 0). */
+    hdr[NDS_TWL_FLAGS_OFF] = s->twl_flags;
+    put32(hdr, NDS_TWL_ARM9I_ROM_OFF,  s->a9i_off);
+    put32(hdr, NDS_TWL_ARM9I_RAM_OFF,  s->a9i_ram);
+    put32(hdr, NDS_TWL_ARM9I_SIZE_OFF, s->a9i_size);
+    put32(hdr, NDS_TWL_ARM7I_ROM_OFF,  s->a7i_off);
+    put32(hdr, NDS_TWL_ARM7I_RAM_OFF,  s->a7i_ram);
+    put32(hdr, NDS_TWL_ARM7I_SIZE_OFF, s->a7i_size);
+
     put16(hdr, NDS_HEADER_CRC_OFF, nds_crc16(hdr, NDS_HEADER_CRC_LEN));
 }
 
@@ -66,7 +88,9 @@ static void build_nds_header(u8 hdr[NDS_HEADER_SECTOR_SIZE],
 static const hdr_spec_t k_valid_spec = {
     0x00004000u, 0x02000200u, 0x02000000u, 0x00004000u,
     0x00008000u, 0x02380000u, 0x02380000u, 0x00002000u,
-    NDS_UNIT_CODE_NDS_DSI
+    NDS_UNIT_CODE_NDS_DSI,
+    /* TWL extended fields: absent by default. */
+    0u, 0u, 0u, 0u, 0u, 0u, 0u
 };
 
 /* ------------------------------------------------------------------ */
@@ -747,6 +771,166 @@ static void test_loader_plan(void)
     loader_plan_from_header(&h, false, NULL);       /* must not crash */
 }
 
+/* ------------------------------------------------------------------ */
+/* Homebrew argv / __system_argv protocol                              */
+/* ------------------------------------------------------------------ */
+
+static void test_argv_build(void)
+{
+    char cmdline[NDS_ARGV_CMDLINE_MAX];
+    u8 argv[NDS_ARGV_HEADER_SIZE];
+    u32 cmd_addr = NDS_ARGV_CMDLINE_ADDR_TWL;
+    u32 len;
+
+    memset(argv, 0xAA, sizeof(argv));
+    len = loader_build_argv(argv, cmdline, sizeof(cmdline), cmd_addr,
+                            "HELLO.NDS");
+    assert(len == 13u);                       /* "sd:/HELLO.NDS" */
+    assert(strcmp(cmdline, "sd:/HELLO.NDS") == 0);
+
+    /* Byte layout (little-endian) of the 24-byte header. */
+    assert(get32(argv, NDS_ARGV_MAGIC_OFF) == NDS_ARGV_MAGIC);
+    assert(NDS_ARGV_MAGIC == 0x5F617267u);
+    assert(get32(argv, NDS_ARGV_CMD_OFF) == cmd_addr);
+    assert(get32(argv, NDS_ARGV_LEN_OFF) == 13u);
+    assert(get32(argv, NDS_ARGV_ARGC_OFF) == 1u);
+    assert(get32(argv, NDS_ARGV_ARG0_OFF) == cmd_addr);
+    assert(get32(argv, NDS_ARGV_END_OFF) == NDS_ARGV_END_MARKER);
+
+    /* The DS-mode command-line address is also accepted. */
+    len = loader_build_argv(argv, cmdline, sizeof(cmdline),
+                            NDS_ARGV_CMDLINE_ADDR_DS, "BOOT.NDS");
+    assert(len == 12u);                       /* "sd:/BOOT.NDS" */
+    assert(strcmp(cmdline, "sd:/BOOT.NDS") == 0);
+    assert(get32(argv, NDS_ARGV_CMD_OFF) == NDS_ARGV_CMDLINE_ADDR_DS);
+
+    /* ---- Bounds safety --------------------------------------------- */
+    /* A command line that cannot fit (including its NUL) fails cleanly. */
+    cmdline[0] = 'X';
+    assert(loader_format_command_line(cmdline, 13u, "HELLO.NDS") == 0u);
+    assert(cmdline[0] == '\0');
+    /* A shorter name in a smaller buffer also fails. */
+    assert(loader_format_command_line(cmdline, 9u, "HELLO.ND") == 0u);
+    /* Exact fit succeeds ("sd:/" + 8-char name + NUL == 13). */
+    assert(loader_format_command_line(cmdline, 13u, "HELLO.ND") == 12u);
+    assert(strcmp(cmdline, "sd:/HELLO.ND") == 0);
+    assert(loader_format_command_line(cmdline, 14u, "HELLO.NDS") == 13u);
+
+    /* Degenerate inputs. */
+    assert(loader_format_command_line(NULL, 32u, "A") == 0u);
+    assert(loader_format_command_line(cmdline, 32u, NULL) == 0u);
+    assert(loader_format_command_line(cmdline, 32u, "") == 0u);
+    assert(loader_format_command_line(cmdline, 0u, "A") == 0u);
+    assert(loader_build_argv(NULL, cmdline, sizeof(cmdline), cmd_addr, "A")
+           == 0u);
+    /* A failed command-line build must not touch the argv header. */
+    memset(argv, 0x55, sizeof(argv));
+    assert(loader_build_argv(argv, NULL, 0u, cmd_addr, "A") == 0u);
+    assert(argv[NDS_ARGV_MAGIC_OFF] == 0x55u);
+}
+
+/* ------------------------------------------------------------------ */
+/* TWL extended segments (ARM9i / ARM7i)                               */
+/* ------------------------------------------------------------------ */
+
+static void test_twl_segments(void)
+{
+    u8 hdr[NDS_HEADER_SECTOR_SIZE];
+    nds_header_t h;
+    hdr_spec_t s;
+    nds_load_bounds_t b;
+    u32 file_size = 0x20000u;
+
+    nds_load_bounds_default(&b, true);
+    assert(b.extended_ram);
+    assert(b.nwram_base == NDS_NWRAM_BASE);
+    assert(b.nwram_end == NDS_NWRAM_END);
+
+    /* No extended segments: always valid. */
+    s = k_valid_spec;
+    build_nds_header(hdr, &s);
+    assert(nds_header_parse(hdr, sizeof(hdr), &h));
+    assert(h.twl_header_valid);
+    assert(h.arm9i_size == 0u && h.arm7i_size == 0u);
+    assert(nds_header_validate_twl_segments(&h, file_size, &b) == NDS_LOAD_OK);
+
+    /* Valid ARM9i + ARM7i in TWL Main RAM. */
+    s = k_valid_spec;
+    s.a9i_off = 0x10000u; s.a9i_ram = 0x02010000u; s.a9i_size = 0x1000u;
+    s.a7i_off = 0x11000u; s.a7i_ram = 0x02020000u; s.a7i_size = 0x1000u;
+    build_nds_header(hdr, &s);
+    assert(nds_header_parse(hdr, sizeof(hdr), &h));
+    assert(h.arm9i_ram_address == 0x02010000u);
+    assert(h.arm7i_rom_offset == 0x11000u);
+    assert(nds_header_validate_twl_segments(&h, file_size, &b) == NDS_LOAD_OK);
+
+    /* A segment may also live in New Shared WRAM. */
+    s.a9i_ram = NDS_NWRAM_BASE;
+    build_nds_header(hdr, &s);
+    assert(nds_header_parse(hdr, sizeof(hdr), &h));
+    assert(nds_header_validate_twl_segments(&h, file_size, &b) == NDS_LOAD_OK);
+
+    /* Out of the accepted TWL RAM windows. */
+    s.a9i_ram = 0x01F00000u;
+    build_nds_header(hdr, &s);
+    assert(nds_header_parse(hdr, sizeof(hdr), &h));
+    assert(nds_header_validate_twl_segments(&h, file_size, &b)
+           == NDS_ERR_ARM9_BOUNDS);
+
+    s.a9i_ram = 0x02010000u;
+    s.a7i_ram = 0x0A000000u;
+    build_nds_header(hdr, &s);
+    assert(nds_header_parse(hdr, sizeof(hdr), &h));
+    assert(nds_header_validate_twl_segments(&h, file_size, &b)
+           == NDS_ERR_ARM7_BOUNDS);
+
+    /* Overlapping the bootloader reservation. */
+    s.a7i_ram = 0x02020000u;
+    s.a9i_ram = NDS_BOOTLOADER_RESERVE_BASE;
+    build_nds_header(hdr, &s);
+    assert(nds_header_parse(hdr, sizeof(hdr), &h));
+    assert(nds_header_validate_twl_segments(&h, file_size, &b)
+           == NDS_ERR_OVERLAP_BOOTLOADER);
+
+    /* Unaligned size / address. */
+    s.a9i_ram = 0x02010000u;
+    s.a9i_size = 0x1001u;
+    build_nds_header(hdr, &s);
+    assert(nds_header_parse(hdr, sizeof(hdr), &h));
+    assert(nds_header_validate_twl_segments(&h, file_size, &b)
+           == NDS_ERR_ARM9_BOUNDS);
+
+    s.a9i_size = 0x1000u;
+    s.a9i_ram = 0x02010002u;
+    build_nds_header(hdr, &s);
+    assert(nds_header_parse(hdr, sizeof(hdr), &h));
+    assert(nds_header_validate_twl_segments(&h, file_size, &b)
+           == NDS_ERR_ARM9_BOUNDS);
+
+    /* A segment past EOF is rejected as truncated. */
+    s.a9i_ram = 0x02010000u;
+    s.a9i_off = 0x1F000u;
+    s.a9i_size = 0x2000u;                     /* ends at 0x21000 > 0x20000 */
+    build_nds_header(hdr, &s);
+    assert(nds_header_parse(hdr, sizeof(hdr), &h));
+    assert(nds_header_validate_twl_segments(&h, file_size, &b)
+           == NDS_ERR_FILE_TRUNCATED);
+
+    /* A DS-only image has no extended segments to validate. */
+    s = k_valid_spec;
+    s.unit = NDS_UNIT_CODE_NDS;
+    s.a9i_off = 0x10000u; s.a9i_ram = 0x02010000u; s.a9i_size = 0x1000u;
+    build_nds_header(hdr, &s);
+    assert(nds_header_parse(hdr, sizeof(hdr), &h));
+    assert(!h.twl_header_valid);
+    assert(nds_header_validate_twl_segments(&h, file_size, &b) == NDS_LOAD_OK);
+
+    /* NULL header and NULL bounds must not crash. */
+    assert(nds_header_validate_twl_segments(NULL, file_size, &b)
+           == NDS_ERR_FILE_TRUNCATED);
+    assert(nds_header_validate_twl_segments(&h, file_size, NULL) == NDS_LOAD_OK);
+}
+
 int main(void)
 {
     test_bounds_default();
@@ -757,6 +941,9 @@ int main(void)
     test_validate_arm7_bounds();
     test_validate_truncated();
     test_status_text();
+
+    test_argv_build();
+    test_twl_segments();
 
     test_fat16_range();
     test_fat16_wide_cluster();

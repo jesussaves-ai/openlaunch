@@ -77,4 +77,33 @@ void arm9_main(void) __attribute__((noreturn));
 /* ARM9 interrupt dispatcher, called from the IRQ vector. */
 void arm9_irq_handler(void);
 
+/* ------------------------------------------------------------------ */
+/* Unlaunch-style boot policy                                          */
+/* ------------------------------------------------------------------ */
+
+/* Default autoboot target, with the test/probe fallback (SD root). */
+#define BOOT_DEFAULT_NDS_NAME   "BOOT.NDS"
+#define BOOT_FALLBACK_NDS_NAME  "HELLO.NDS"
+
+/*
+ * Startup policy resolved from the buttons held when the loader starts:
+ *
+ *   B or SELECT held  -> BOOT_POLICY_MENU     (interactive diagnostics menu)
+ *   A held / no key   -> BOOT_POLICY_AUTOBOOT (probe BOOT.NDS, then boot)
+ *
+ * Unlaunch semantics: holding B/SELECT is an explicit "give me the menu"
+ * override; otherwise the loader probes the card for a default autoboot image.
+ */
+typedef enum {
+    BOOT_POLICY_MENU = 0,
+    BOOT_POLICY_AUTOBOOT = 1
+} boot_policy_t;
+
+/*
+ * Pure, host-testable policy resolver. `raw_keyinput` is the raw, active-low
+ * KEYINPUT word (0x04000130), exactly as read from the register. Returns the
+ * startup policy.
+ */
+boot_policy_t boot_resolve_policy(u16 raw_keyinput);
+
 #endif /* DSI_ARM9_BOOT_H */

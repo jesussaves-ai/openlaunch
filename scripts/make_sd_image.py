@@ -7,6 +7,8 @@ with real, loadable and negative-test ``.nds`` payloads for the chainloader:
   HELLO.NDS     the chainloadable payload from ``--hello`` (spans many clusters,
                 deliberately fragmented so the loader's cluster walk is
                 exercised)
+  BOOT.NDS      a variant of the payload with title ``AUTOBOOT OK``, the default
+                Unlaunch-style autoboot target on the SD root
   BADCRC.NDS    a synthetic ``.nds`` whose stored header CRC16 is wrong
                 (``NDS_ERR_BAD_CRC``)
   OVERLAP.NDS   a synthetic ``.nds`` whose ARM9 load range hits the bootloader
@@ -50,6 +52,7 @@ VOLUME_LABEL = b"CHAINLOAD  "
 FS_TYPE = b"FAT16   "
 
 # NDS header field offsets (mirror include/common/nds_header.h).
+NDS_TITLE_LEN = 12
 NDS_HEADER_CRC_OFF = 0x15E
 NDS_HEADER_CRC_LEN = 0x15E
 NDS_ARM9_ROM_OFFSET_OFF = 0x020
@@ -106,6 +109,26 @@ def compute_fat_size(total_sectors: int, reserved: int, nfats: int,
 # --------------------------------------------------------------------------
 # Synthetic .nds files (valid header, one specific defect)
 # --------------------------------------------------------------------------
+
+# Title written into the BOOT.NDS autoboot variant (12-byte header field).
+BOOT_NDS_TITLE = b"AUTOBOOT OK"
+
+
+def make_boot_variant(hello: bytes, title: bytes = BOOT_NDS_TITLE) -> bytes:
+    """Return a copy of ``hello`` retitled and with its header CRC16 fixed up.
+
+    ``BOOT.NDS`` is intentionally byte-identical to ``HELLO.NDS`` apart from the
+    12-byte title and the derived header CRC16, so the loader's autoboot path and
+    the browse path exercise exactly the same payload layout.
+    """
+    if len(hello) < SECTOR:
+        raise ValueError("payload is smaller than one sector")
+    out = bytearray(hello)
+    out[0:NDS_TITLE_LEN] = title.ljust(NDS_TITLE_LEN, b" ")[:NDS_TITLE_LEN]
+    crc = crc16(bytes(out[:NDS_HEADER_CRC_LEN]))
+    put16(out, NDS_HEADER_CRC_OFF, crc)
+    return bytes(out)
+
 
 def build_nds_stub(*, arm9_off: int, arm9_entry: int, arm9_ram: int,
                    arm9_size: int, arm7_off: int, arm7_entry: int,
@@ -277,6 +300,12 @@ def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
     hello_chain = [2 + 2 * i for i in range(hello_clusters)]
     cursor = 2 + 2 * hello_clusters + 1          # first free (odd) cluster
 
+    # BOOT.NDS: the autoboot variant, also fragmented (even clusters, to stay
+    # clear of the odd-cluster allocation used by the negative-test stubs).
+    boot_bytes = make_boot_variant(hello_bytes)
+    boot_clusters = max(1, (len(boot_bytes) + cluster_bytes - 1) // cluster_bytes)
+    boot_chain = [2 + 2 * hello_clusters + 2 * i for i in range(boot_clusters)]
+
     badcrc_bytes = build_nds_stub(
         arm9_off=0x200, arm9_entry=0x02000000, arm9_ram=0x02000000,
         arm9_size=0x400,
@@ -295,6 +324,7 @@ def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
         b"OPENUNLAUNCH chainload SD image\r\n"
         b"\r\n"
         b"HELLO.NDS    valid, loadable chainload payload (CHAINLOAD OK)\r\n"
+        b"BOOT.NDS     default autoboot target (AUTOBOOT OK)\r\n"
         b"BADCRC.NDS   rejected: bad header CRC16\r\n"
         b"OVERLAP.NDS  rejected: ARM9 range hits the bootloader\r\n"
         b"\r\n"
@@ -308,6 +338,8 @@ def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
 
     w.add_file(b"HELLO", b"NDS", hello_chain[0], len(hello_bytes),
                hello_bytes, hello_chain)
+    w.add_file(b"BOOT", b"NDS", boot_chain[0], len(boot_bytes),
+               boot_bytes, boot_chain)
     w.add_file(b"BADCRC", b"NDS", badcrc_chain[0], len(badcrc_bytes),
                badcrc_bytes, badcrc_chain)
     w.add_file(b"OVERLAP", b"NDS", overlap_chain[0], len(overlap_bytes),
@@ -337,6 +369,7 @@ def main(argv) -> int:
         ap.error("%s is smaller than one sector" % args.hello)
 
     image = build_image(hello_bytes, args.size_mib)
+    boot_bytes = make_boot_variant(hello_bytes)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "wb") as fh:
@@ -352,6 +385,9 @@ def main(argv) -> int:
     print("    HELLO.NDS   %6d bytes over %d clusters (fragmented)"
           % (len(hello_bytes),
              (len(hello_bytes) + cluster_bytes - 1) // cluster_bytes))
+    print("    BOOT.NDS    %6d bytes over %d clusters (AUTOBOOT OK)"
+          % (len(boot_bytes),
+             (len(boot_bytes) + cluster_bytes - 1) // cluster_bytes))
     print("    BADCRC.NDS  0x1000 bytes (header CRC16 corrupted)")
     print("    OVERLAP.NDS 0x1000 bytes (ARM9 load 0x%08X)"
           % OVERLAP_ARM9_ADDR)

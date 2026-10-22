@@ -6,10 +6,12 @@ the chainloader safety gate perform, so a regression in either side is caught:
 
   1. MBR signature + FAT16 partition entry at the expected LBA.
   2. FAT16 BPB geometry (512-byte sectors, power-of-two cluster, FATs, root).
-  3. Root-directory entries for HELLO.NDS / BADCRC.NDS / OVERLAP.NDS /
-     README.TXT, and that README.TXT is not a .nds/.srl file.
+  3. Root-directory entries for HELLO.NDS / BOOT.NDS / BADCRC.NDS /
+     OVERLAP.NDS / README.TXT, and that README.TXT is not a .nds/.srl file.
   4. HELLO.NDS follows a multi-cluster (fragmented) chain whose total size
      matches the directory entry and (when ``--hello`` is given) the payload.
+  4b. BOOT.NDS is the autoboot variant with title ``AUTOBOOT OK`` and a valid
+     header CRC16.
   5. BADCRC.NDS has a corrupted header CRC16 (``NDS_ERR_BAD_CRC``).
   6. OVERLAP.NDS has a valid header CRC16 but an ARM9 load range inside the
      bootloader reservation (``NDS_ERR_OVERLAP_BOOTLOADER``).
@@ -192,11 +194,12 @@ def main(argv) -> int:
             "attr": attr,
         }
 
-    for name in ("HELLO.NDS", "BADCRC.NDS", "OVERLAP.NDS", "README.TXT"):
+    for name in ("HELLO.NDS", "BOOT.NDS", "BADCRC.NDS", "OVERLAP.NDS",
+                 "README.TXT"):
         c.check(name in entries, "root entry present: %s" % name)
-    c.check(is_nds_name("HELLO.NDS") and is_nds_name("BADCRC.NDS")
-            and is_nds_name("OVERLAP.NDS"),
-            "the three .nds files pass the browser filter")
+    c.check(is_nds_name("HELLO.NDS") and is_nds_name("BOOT.NDS")
+            and is_nds_name("BADCRC.NDS") and is_nds_name("OVERLAP.NDS"),
+            "the four .nds files pass the browser filter")
     c.check(not is_nds_name("README.TXT"),
             "README.TXT is filtered out by the .nds/.srl browser filter")
 
@@ -240,6 +243,26 @@ def main(argv) -> int:
         c.check(hello_bytes[0x0C:0x10] == b"TSTL",
                 "HELLO.NDS game code is TSTL",
                 "got %r" % hello_bytes[0x0C:0x10])
+
+    # ---- BOOT.NDS: the autoboot variant ---------------------------------
+    if "BOOT.NDS" in entries:
+        boot = entries["BOOT.NDS"]
+        boot_clusters, boot_data = read_chain(boot["cluster"])
+        c.check(len(boot_clusters) >= 1,
+                "BOOT.NDS chain is present",
+                "chain length %d" % len(boot_clusters))
+        c.check(len(boot_data) >= boot["size"],
+                "BOOT.NDS chain holds the declared size")
+        boot_bytes = boot_data[:boot["size"]]
+        if len(boot_bytes) >= SECTOR:
+            stored = u16(boot_bytes, NDS_HEADER_CRC_OFF)
+            computed = crc16(boot_bytes[:NDS_HEADER_CRC_LEN])
+            c.check(stored == computed, "BOOT.NDS header CRC16 is valid",
+                    "stored 0x%04X computed 0x%04X" % (stored, computed))
+            c.check(boot_bytes[0:12].decode("ascii", "replace").rstrip() ==
+                    "AUTOBOOT OK",
+                    "BOOT.NDS title is AUTOBOOT OK",
+                    "got %r" % boot_bytes[0:12])
 
     # ---- BADCRC.NDS -----------------------------------------------------
     if "BADCRC.NDS" in entries:
