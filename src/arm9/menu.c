@@ -13,6 +13,7 @@
  */
 #include "arm9/menu.h"
 #include "arm9/boot.h"
+#include "arm9/boot_cfg.h"
 #include "arm9/console.h"
 #include "arm9/ipc.h"
 #include "arm9/loader.h"
@@ -40,7 +41,7 @@ static const char *const s_menu_labels[MENU_ITEM_COUNT] = {
     "[5] Reboot / Halt System",
     "[6] Browse SD Card (.nds)",
     "[7] Init SCFG / MBK",
-    "[8] Autoboot BOOT.NDS",
+    "[8] Autoboot BOOT.CFG",
 };
 
 static const char *const s_menu_desc[MENU_ITEM_COUNT] = {
@@ -49,9 +50,9 @@ static const char *const s_menu_desc[MENU_ITEM_COUNT] = {
     "TMIO SD read-only status probe",
     "Expand embedded LZ77 vector",
     "Halt the CPU safely",
-    "Mount FAT, verify + chainload .nds",
+    "Mount FAT, browse root + /NDS/",
     "Unlock + map DSi SCFG/NWRAM",
-    "Boot the SD root BOOT.NDS image",
+    "Boot the resolved BOOT.CFG target",
 };
 
 /* Embedded LZ77 self-test vector: literals "ABCD" + length-4/distance-4 back
@@ -75,10 +76,21 @@ static u8 s_fw_probe[8];
  */
 static fat_volume_t   s_fat_vol;
 static fat_file_entry_t s_fat_files[MENU_BROWSE_MAX];
+static char s_fat_paths[MENU_BROWSE_MAX][BOOT_CFG_PATH_MAX];
 
-/* Unlaunch-style autoboot target resolved from the SD root directory. */
+/* Unlaunch-style autoboot target resolved from BOOT.CFG + the SD directory. */
 static fat_file_entry_t s_autoboot_entry;
+static char s_autoboot_path[BOOT_CFG_PATH_MAX];
 static bool s_autoboot_entry_valid;
+
+/* Parsed BOOT.CFG (or the built-in defaults) and the startup decision. */
+static boot_cfg_t   s_boot_cfg;
+static bool         s_boot_cfg_present;
+static boot_target_t s_boot_target;
+
+/* The optional one-level subdirectory scanned by the browser (see §28). */
+#define MENU_SUBDIR_NAME "NDS"
+#define MENU_SUBDIR_PREFIX "NDS/"
 
 /* ---- Pure menu state machine ----------------------------------------- */
 
@@ -310,53 +322,117 @@ static void diag_collect(menu_diag_t *d)
     diag_lz77(d);
 }
 
-/* ---- Unlaunch-style BOOT.NDS autoboot -------------------------------- */
+/* ---- Unlaunch-style BOOT.CFG / target autoboot ----------------------- */
 
-/* Case-sensitive 8.3 name equality (the FAT layer upper-cases every name). */
-static bool menu_name_eq(const char *a, const char *b)
+/* Copy a C string into a fixed buffer, always NUL-terminating. */
+static void menu_copy_str(char *dst, u32 cap, const char *src)
 {
     u32 i = 0u;
 
-    while (a[i] != '\0' && b[i] != '\0') {
-        if (a[i] != b[i]) {
-            return false;
-        }
-        i++;
+    if (dst == NULL || cap == 0u) {
+        return;
     }
-    return a[i] == b[i];
+    if (src != NULL) {
+        while (src[i] != '\0' && i + 1u < cap) {
+            dst[i] = src[i];
+            i++;
+        }
+    }
+    dst[i] = '\0';
 }
 
-/* Linear search of the mounted root directory for an exact 8.3 name. */
-static bool menu_find_root_file(fat_volume_t *vol, const char *name,
-                                fat_file_entry_t *out)
+/* Build "<prefix><name>" into `dst` (a NULL prefix is treated as empty). */
+static void menu_join_path(char *dst, u32 cap, const char *prefix,
+                           const char *name)
 {
-    fat_dir_iter_t it;
-    fat_file_entry_t e;
+    u32 n = 0u;
 
-    fat_dir_iter_init(vol, &it, false);
-    while (fat_dir_next(&it, &e)) {
-        if (menu_name_eq(e.name, name)) {
-            *out = e;
-            return true;
+    if (dst == NULL || cap == 0u) {
+        return;
+    }
+    if (prefix != NULL) {
+        u32 i = 0u;
+
+        while (prefix[i] != '\0' && n + 1u < cap) {
+            dst[n++] = prefix[i];
+            i++;
         }
     }
-    return false;
+    if (name != NULL) {
+        u32 i = 0u;
+
+        while (name[i] != '\0' && n + 1u < cap) {
+            dst[n++] = name[i];
+            i++;
+        }
+    }
+    dst[n] = '\0';
+}
+
+/* BOOT.CFG read buffer; lives in .bss (shared Main RAM), never DTCM. */
+static u8 s_boot_cfg_buf[BOOT_CFG_READ_LEN];
+
+/*
+ * Read up to one sector of BOOT.CFG from the SD root (if present) and parse it.
+ * On any failure the built-in defaults remain in effect. Results are cached in
+ * s_boot_cfg / s_boot_cfg_present.
+ */
+static void menu_load_boot_cfg(menu_diag_t *d)
+{
+    fat_file_entry_t cfg;
+    u32 got = 0u;
+    fat_chain_status_t chain = FAT_CHAIN_ERR_ARG;
+
+    boot_cfg_defaults(&s_boot_cfg);
+    s_boot_cfg_present = false;
+    d->boot_cfg_present = false;
+
+    diag_query_sd(d);
+    if ((d->sd_flags & IPC_SD_FLAG_UNAVAILABLE) != 0u ||
+        (d->sd_flags & IPC_SD_FLAG_PRESENT) == 0u) {
+        return;
+    }
+    if (!arm9_storage_mount(&s_fat_vol, IPC_STORAGE_DEV_SD)) {
+        return;
+    }
+    if (!fat_find_path(&s_fat_vol, "BOOT.CFG", &cfg) || cfg.is_dir) {
+        return;
+    }
+
+    /*
+     * A short file is read in full (fat_read_file_range() clamps to the file
+     * size); a longer one yields the first sector. A partial read still leaves
+     * a usable prefix in the buffer.
+     */
+    (void)fat_read_file_range(&s_fat_vol, &cfg, 0u, s_boot_cfg_buf,
+                              sizeof(s_boot_cfg_buf), &got, &chain);
+    if (got == 0u) {
+        return;
+    }
+
+    (void)boot_cfg_parse(s_boot_cfg_buf, got, &s_boot_cfg);
+    s_boot_cfg_present = true;
+    d->boot_cfg_present = true;
 }
 
 /*
- * Resolve the startup policy and, when autobooting, probe the SD root for
- * BOOT.NDS (falling back to HELLO.NDS for the deterministic test image).
- * Pure policy decision; only the discovery touches the card.
+ * Resolve the startup target and, when autobooting, locate it on the mounted SD
+ * volume. The pure policy decision is `boot_resolve_target()`; only the file
+ * discovery touches the card.
  */
-static void menu_probe_autoboot(menu_diag_t *d, boot_policy_t policy)
+static void menu_probe_autoboot(menu_diag_t *d, const boot_target_t *target)
 {
+    const char *picked = NULL;
+
     d->autoboot_checked = false;
     d->autoboot_ready = false;
     d->autoboot_key_held = false;
     d->autoboot_name[0] = '\0';
+    d->autoboot_sel[0] = '\0';
     s_autoboot_entry_valid = false;
+    s_autoboot_path[0] = '\0';
 
-    if (policy == BOOT_POLICY_MENU) {
+    if (target != NULL && target->policy == BOOT_POLICY_MENU) {
         d->autoboot_key_held = true;
         d->last_action = "MENU (KEY HELD)";
         return;
@@ -373,15 +449,35 @@ static void menu_probe_autoboot(menu_diag_t *d, boot_policy_t policy)
         return;
     }
 
-    if (menu_find_root_file(&s_fat_vol, BOOT_DEFAULT_NDS_NAME,
-                            &s_autoboot_entry) ||
-        menu_find_root_file(&s_fat_vol, BOOT_FALLBACK_NDS_NAME,
-                            &s_autoboot_entry)) {
+    /*
+     * Prefer the resolved (possibly subdirectory) target; fall back to the
+     * classic HELLO.NDS so the deterministic test image still autoboots.
+     */
+    if (target != NULL && target->target != NULL &&
+        fat_find_path(&s_fat_vol, target->target, &s_autoboot_entry) &&
+        !s_autoboot_entry.is_dir) {
+        picked = target->target;
+    } else if (fat_find_path(&s_fat_vol, BOOT_FALLBACK_NDS_NAME,
+                             &s_autoboot_entry) &&
+               !s_autoboot_entry.is_dir) {
+        picked = BOOT_FALLBACK_NDS_NAME;
+    }
+
+    if (picked != NULL) {
         s_autoboot_entry_valid = true;
         d->autoboot_ready = true;
-        dsi_memcpy(d->autoboot_name, s_autoboot_entry.name,
-                   sizeof(d->autoboot_name));
-        d->autoboot_name[sizeof(d->autoboot_name) - 1u] = '\0';
+        menu_copy_str(s_autoboot_path, sizeof(s_autoboot_path), picked);
+        menu_copy_str(d->autoboot_name, sizeof(d->autoboot_name), picked);
+
+        if (target != NULL && picked == target->target) {
+            if (target->has_key && target->label != NULL) {
+                menu_copy_str(d->autoboot_sel, sizeof(d->autoboot_sel),
+                              target->label);
+            } else if (s_boot_cfg_present) {
+                menu_copy_str(d->autoboot_sel, sizeof(d->autoboot_sel), "CFG");
+            }
+        }
+        d->last_action = "Autoboot target resolved";
     }
     d->autoboot_checked = true;
 }
@@ -509,11 +605,17 @@ static void render_telemetry(const menu_diag_t *d)
     if (d->autoboot_key_held) {
         console_puts(0, 15, CONSOLE_PAL_YELLOW, "BOOT : MENU (KEY HELD)");
     } else if (d->autoboot_checked) {
-        console_printf(0, 15,
-                       d->autoboot_ready ? CONSOLE_PAL_GREEN
-                                         : CONSOLE_PAL_YELLOW,
-                       "BOOT : %s",
-                       d->autoboot_ready ? "BOOT.NDS READY" : "NO BOOT.NDS");
+        if (d->autoboot_ready) {
+            if (d->autoboot_sel[0] != '\0') {
+                console_printf(0, 15, CONSOLE_PAL_GREEN, "BOOT : %s [%s]",
+                               d->autoboot_name, d->autoboot_sel);
+            } else {
+                console_printf(0, 15, CONSOLE_PAL_GREEN, "BOOT : %s",
+                               d->autoboot_name);
+            }
+        } else {
+            console_puts(0, 15, CONSOLE_PAL_YELLOW, "BOOT : NO BOOT.NDS");
+        }
     } else if (d->boot_loaded) {
         console_printf(0, 15,
                        d->boot_crc_ok ? CONSOLE_PAL_GREEN : CONSOLE_PAL_RED,
@@ -687,9 +789,13 @@ static void loader_inspect(menu_diag_t *d, fat_volume_t *vol,
  * disarmed (the default) this performs the complete staging + IPC preparation
  * and returns; with it armed the ARM9 jumps into the new image and never
  * returns.
+ *
+ * `path` is the launch path published through `__system_argv`; pass NULL to
+ * fall back to `entry->name`.
  */
 static void loader_boot_selected(menu_diag_t *d, fat_volume_t *vol,
-                                 const fat_file_entry_t *entry)
+                                 const fat_file_entry_t *entry,
+                                 const char *path)
 {
     loader_result_t res;
 
@@ -703,7 +809,7 @@ static void loader_boot_selected(menu_diag_t *d, fat_volume_t *vol,
         return;
     }
 
-    (void)loader_stage_and_boot(vol, entry, d->extended_ram, &res);
+    (void)loader_stage_and_boot_path(vol, entry, path, d->extended_ram, &res);
 
     if (res.status != NDS_LOAD_OK) {
         d->loader_status = (u8)res.status;
@@ -716,9 +822,10 @@ static void loader_boot_selected(menu_diag_t *d, fat_volume_t *vol,
 }
 
 /*
- * Menu item [8]: locate BOOT.NDS (or the HELLO.NDS fallback) on the SD root,
- * validate it and stage the dual-CPU handoff. Discovery runs on demand if the
- * startup probe has not already populated the target.
+ * Menu item [8]: locate the resolved autoboot target (from BOOT.CFG, or the
+ * classic BOOT.NDS/HELLO.NDS fallback) on the SD root, validate it and stage
+ * the dual-CPU handoff. Discovery runs on demand if the startup probe has not
+ * already populated the target.
  */
 static void menu_autoboot(menu_diag_t *d)
 {
@@ -727,14 +834,19 @@ static void menu_autoboot(menu_diag_t *d)
     d->last_action = "Autoboot";
 
     if (!s_autoboot_entry_valid) {
-        menu_probe_autoboot(d, BOOT_POLICY_AUTOBOOT);
+        /*
+         * Re-discovery uses the target captured at startup, not the button held
+         * now (the A press that selected this menu item must not be misread as
+         * a startup hotkey).
+         */
+        menu_probe_autoboot(d, &s_boot_target);
     }
     if (!s_autoboot_entry_valid) {
         d->last_action = "Autoboot: no BOOT.NDS";
         return;
     }
 
-    loader_boot_selected(d, &s_fat_vol, &s_autoboot_entry);
+    loader_boot_selected(d, &s_fat_vol, &s_autoboot_entry, s_autoboot_path);
     if (d->boot_staged) {
         d->last_action = d->boot_dry_run ? "Autoboot dry-run OK"
                                          : "Autoboot handoff";
@@ -743,9 +855,57 @@ static void menu_autoboot(menu_diag_t *d)
     }
 }
 
+/* Scratch list used to filter the /NDS subdirectory before display. */
+static fat_file_entry_t s_dir_list[MENU_BROWSE_MAX];
+
+/* Append the mounted root's .nds/.srl files (path = plain 8.3 name). */
+static void menu_browse_collect_root(fat_volume_t *vol, u32 *count)
+{
+    fat_dir_iter_t it;
+    fat_file_entry_t e;
+
+    fat_dir_iter_init(vol, &it, true);
+    while (*count < MENU_BROWSE_MAX && fat_dir_next(&it, &e)) {
+        dsi_memcpy(&s_fat_files[*count], &e, sizeof(e));
+        menu_join_path(s_fat_paths[*count], BOOT_CFG_PATH_MAX, NULL, e.name);
+        (*count)++;
+    }
+}
+
+/*
+ * Append the /NDS subdirectory's .nds/.srl files, prefixed as "NDS/<NAME>".
+ * Missing directory, file-as-directory and empty directories are all no-ops.
+ */
+static void menu_browse_collect_subdir(fat_volume_t *vol, u32 *count)
+{
+    fat_file_entry_t dir_entry;
+    u32 n = 0u;
+    u32 i;
+
+    if (*count >= MENU_BROWSE_MAX) {
+        return;
+    }
+    if (!fat_find_path(vol, MENU_SUBDIR_NAME, &dir_entry) || !dir_entry.is_dir) {
+        return;
+    }
+
+    (void)fat_list_dir_cluster(vol, dir_entry.start_cluster, s_dir_list,
+                               MENU_BROWSE_MAX, &n);
+
+    for (i = 0u; i < n && *count < MENU_BROWSE_MAX; i++) {
+        if (s_dir_list[i].is_dir || !fat_is_nds_entry(&s_dir_list[i])) {
+            continue;
+        }
+        dsi_memcpy(&s_fat_files[*count], &s_dir_list[i], sizeof(s_dir_list[i]));
+        menu_join_path(s_fat_paths[*count], BOOT_CFG_PATH_MAX,
+                       MENU_SUBDIR_PREFIX, s_dir_list[i].name);
+        (*count)++;
+    }
+}
+
 /*
  * Mount the SD card's FAT volume and browse the .nds / .srl files in its root
- * directory.
+ * directory plus inside the optional one-level /NDS subdirectory.
  *
  *   UP/DOWN  move the selection
  *   Y or SELECT  verify / dry-run inspect the highlighted image
@@ -784,13 +944,8 @@ static void menu_browse_view(menu_diag_t *d)
     }
 
     if (mounted) {
-        fat_dir_iter_t it;
-
-        fat_dir_iter_init(&s_fat_vol, &it, true);
-        while (count < MENU_BROWSE_MAX &&
-               fat_dir_next(&it, &s_fat_files[count])) {
-            count++;
-        }
+        menu_browse_collect_root(&s_fat_vol, &count);
+        menu_browse_collect_subdir(&s_fat_vol, &count);
         d->fat_ok = true;
         d->sd_fs_type = (u8)s_fat_vol.type;
         d->sd_total_sectors = s_fat_vol.total_sectors;
@@ -820,7 +975,7 @@ static void menu_browse_view(menu_diag_t *d)
                 char line[CONSOLE_COLS + 1];
 
                 console_format(line, sizeof(line), "%c%s",
-                               (i == cursor) ? '>' : ' ', s_fat_files[i].name);
+                               (i == cursor) ? '>' : ' ', s_fat_paths[i]);
                 console_puts(0, 2 + (int)i,
                              (i == cursor) ? CONSOLE_PAL_YELLOW
                                            : CONSOLE_PAL_WHITE,
@@ -854,7 +1009,8 @@ static void menu_browse_view(menu_diag_t *d)
             d->last_action = "Verify .nds";
         }
         if (input_pressed(&keys, INPUT_A)) {
-            loader_boot_selected(d, &s_fat_vol, &s_fat_files[cursor]);
+            loader_boot_selected(d, &s_fat_vol, &s_fat_files[cursor],
+                                 s_fat_paths[cursor]);
             d->last_action = d->boot_staged ? (d->boot_dry_run
                                                    ? "Boot dry-run OK"
                                                    : "Boot handoff")
@@ -925,21 +1081,27 @@ void menu_run(void)
     diag.last_action = "Boot self-test";
 
     /*
-     * Unlaunch-style hotkey policy: read the buttons held at startup. B or
-     * SELECT forces the interactive menu; otherwise probe the SD root for a
-     * BOOT.NDS autoboot image. With ENABLE_AUTOBOOT the probe result is acted
-     * on immediately.
+     * Unlaunch-style hotkey policy: read BOOT.CFG (if present) and the buttons
+     * held at startup. B or SELECT forces the interactive menu; otherwise the
+     * mapped target (or DEFAULT) is probed. With ENABLE_AUTOBOOT the probe
+     * result is acted on immediately.
      */
-    {
-        boot_policy_t policy = boot_resolve_policy(REG16(KEYINPUT));
+    menu_load_boot_cfg(&diag);
 
-        menu_probe_autoboot(&diag, policy);
+    /*
+     * Capture the startup hotkeys: the ARM7-forwarded EXTKEYIN bits (X/Y) are
+     * queried once, then input_poll() merges them with KEYINPUT so the
+     * BOOT.CFG X/Y mappings are visible to the resolver.
+     */
+    diag_poll_extkey();
+    input_poll(&keys);
+    boot_resolve_target(keys.held, &s_boot_cfg, &s_boot_target);
+    menu_probe_autoboot(&diag, &s_boot_target);
 #ifdef ENABLE_AUTOBOOT
-        if (policy == BOOT_POLICY_AUTOBOOT && s_autoboot_entry_valid) {
-            menu_autoboot(&diag);
-        }
-#endif
+    if (s_boot_target.policy == BOOT_POLICY_AUTOBOOT && s_autoboot_entry_valid) {
+        menu_autoboot(&diag);
     }
+#endif
 
     for (;;) {
         diag_poll_extkey();

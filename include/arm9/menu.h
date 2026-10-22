@@ -10,6 +10,7 @@
 
 #include "../common/types.h"
 #include "../common/dsi_hw.h"
+#include "boot_cfg.h"
 #include "input.h"
 
 /* Menu entries, in display order. */
@@ -87,11 +88,13 @@ typedef struct {
     bool boot_staged;       /* A staged the image (dry run or real)      */
     bool boot_dry_run;      /* staging ran but no CPU handoff happened   */
 
-    /* Unlaunch-style BOOT.NDS autoboot policy / discovery state. */
-    bool autoboot_checked;  /* the SD root was probed for BOOT.NDS       */
-    bool autoboot_ready;    /* a BOOT.NDS (or fallback) target was found */
-    bool autoboot_key_held; /* B/SELECT forced the menu at startup       */
-    char autoboot_name[13]; /* the discovered file name (or "")          */
+    /* Unlaunch-style BOOT.NDS / BOOT.CFG autoboot policy / discovery state. */
+    bool autoboot_checked;  /* the SD root was probed for the target       */
+    bool autoboot_ready;    /* the resolved target was found               */
+    bool autoboot_key_held; /* B/SELECT forced the menu at startup         */
+    bool boot_cfg_present;  /* a BOOT.CFG was found on the SD root         */
+    char autoboot_name[BOOT_CFG_PATH_MAX]; /* the resolved target path     */
+    char autoboot_sel[8];   /* "[...]" tag: "CFG", "A", "X", ... or ""     */
 
     const char *last_action;
 } menu_diag_t;

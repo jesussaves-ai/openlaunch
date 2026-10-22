@@ -16,16 +16,20 @@ disassembled from `asm/UNLAUNCH.DSI` into readable, strictly typed C99. See
 * **Read-only storage** — an ARM7 TMIO SD/MMC driver (CMD0/CMD8/ACMD41/CMD2/
   CMD3/CMD9/CMD7/CMD16/CMD17) reached from the ARM9 only through IPC, plus a
   zero-allocation FAT16/FAT32 parser.
-* **SD browser + chainloader** — a menu item that lists `.nds`/`.srl` files,
-  validates their header CRC16 and load ranges, stages the payloads (including
-  optional TWL `ARM9i`/`ARM7i` segments) in RAM and (optionally) hands off to
-  the new image; the canonical `__system_argv` launch path (`sd:/<NAME>`) is
-  published for the loaded homebrew.
-* **Unlaunch-style autoboot** — a startup hotkey policy (**B**/**SELECT** force
-  the menu, otherwise `BOOT.NDS` is probed) plus menu item `[8] Autoboot
-  BOOT.NDS` and an optional `make AUTOBOOT=1` automatic-boot build.
+* **SD browser + chainloader** — a menu item that lists `.nds`/`.srl` files in
+  the root and in the one-level `/NDS` subdirectory, validates their header
+  CRC16 and load ranges, stages the payloads (including optional TWL
+  `ARM9i`/`ARM7i` segments) in RAM and (optionally) hands off to the new image;
+  the canonical `__system_argv` launch path (`sd:/<NAME>` or `sd:/NDS/<NAME>`)
+  is published for the loaded homebrew.
+* **Unlaunch-style autoboot** — a startup hotkey policy driven by an optional
+  `BOOT.CFG` (**B**/**SELECT** always force the menu, otherwise `DEFAULT` / `A`
+  / `X` / `Y` / `L` / `R` / `START` select the target and `BOOT.NDS` is probed)
+  plus menu item `[8] Autoboot BOOT.CFG` and an optional `make AUTOBOOT=1`
+  automatic-boot build.
 * **Deterministic test image** — `make sd-image` builds a FAT16 SD card with
-  real, loadable and negative-test payloads for emulator and CI verification.
+  real, loadable and negative-test payloads (including `NDS/SUBAPP.NDS` and a
+  root `BOOT.CFG`) for emulator and CI verification.
 
 No eMMC/NAND write path exists outside the `ENABLE_NAND_WRITE_DANGER` build
 (AGENTS.md §5); the storage pipeline is read-only by default.
@@ -77,6 +81,8 @@ ld/           linker scripts for the bootloader
 | :------------ | :------ |
 | `HELLO.NDS`   | the loadable chainload payload (title `CHAINLOAD OK`, code `TSTL`), fragmented across 16 clusters |
 | `BOOT.NDS`    | the autoboot variant of the payload (title `AUTOBOOT OK`, code `TSTL`) |
+| `NDS/SUBAPP.NDS` | a loadable payload inside the one-level `/NDS` subdirectory (title `SUBDIR PAYLOAD`) |
+| `BOOT.CFG`    | the startup hotkey map (`DEFAULT=BOOT.NDS`, `A=HELLO.NDS`, `X=NDS/SUBAPP.NDS`) |
 | `BADCRC.NDS`  | rejected with `NDS_ERR_BAD_CRC` |
 | `OVERLAP.NDS` | rejected with `NDS_ERR_OVERLAP_BOOTLOADER` |
 | `README.TXT`  | hidden by the `.nds`/`.srl` browser filter |
@@ -89,12 +95,17 @@ ld/           linker scripts for the bootloader
    `build/sdcard.img` and enable the SD card.
 4. Provide the DSi BIOS/NAND (or use melonDS' direct-boot path).
 5. In the ROM's bottom-screen menu choose `[6] Browse SD Card (.nds)`, select
-   `HELLO.NDS`, press `Y` to verify (`LOADABLE: YES`) and `A` to stage.
+   `HELLO.NDS` (or `NDS/SUBAPP.NDS`), press `Y` to verify (`LOADABLE: YES`) and
+   `A` to stage.
    * Without `ENABLE_CHAINLOAD_BOOT` the UI reports `STAGE: DRY-RUN OK`.
    * With it, the payload takes over: **top screen green, bottom screen blue**.
 
 Selecting `BADCRC.NDS` or `OVERLAP.NDS` shows the specific rejection reason
 instead of staging.
+
+At startup the top screen's `BOOT :` line reflects the `BOOT.CFG` resolution
+(`BOOT : BOOT.NDS [CFG]`), and holding a mapped button (e.g. `X`) selects that
+target (`BOOT : NDS/SUBAPP.NDS [X]`). `B` or `SELECT` always force the menu.
 
 ## Verification
 

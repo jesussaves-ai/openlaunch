@@ -28,6 +28,7 @@
 
 #include "common/fat_ro.h"
 #include "common/nds_header.h"
+#include "arm9/boot_cfg.h"
 #include "arm9/loader.h"
 
 /* ------------------------------------------------------------------ */
@@ -321,6 +322,95 @@ static void test_boot_nds(void)
 
 /* ------------------------------------------------------------------ */
 
+/*
+ * One-level subdirectory + BOOT.CFG discovery: NDS/SUBAPP.NDS resolves through
+ * fat_find_path() and the root BOOT.CFG is readable and maps DEFAULT/A/X.
+ */
+static void test_subdir_and_bootcfg(void)
+{
+    fat_volume_t vol;
+    fat_file_entry_t e;
+    u8 buf[BOOT_CFG_READ_LEN];
+    u32 got = 0u;
+    fat_chain_status_t chain = FAT_CHAIN_ERR_ARG;
+
+    assert(fat_mount(&vol, img_read, NULL));
+
+    /* Root file, with and without a leading slash. */
+    assert(fat_find_path(&vol, "BOOT.NDS", &e));
+    assert(!e.is_dir);
+    assert(fat_find_path(&vol, "/HELLO.NDS", &e));
+
+    /* The NDS directory and its subdirectory file. */
+    assert(fat_find_path(&vol, "NDS", &e));
+    assert(e.is_dir);
+    assert(fat_find_path(&vol, "NDS/SUBAPP.NDS", &e));
+    assert(!e.is_dir && e.file_size > 0x4000u);
+    assert(fat_find_path(&vol, "/NDS/SUBAPP.NDS", &e));
+
+    /* Negative cases. */
+    assert(!fat_find_path(&vol, "NOPE/SUBAPP.NDS", &e));
+    assert(!fat_find_path(&vol, "NDS/MISSING.NDS", &e));
+    assert(!fat_find_path(&vol, "HELLO.NDS/SUBAPP.NDS", &e));
+    assert(!fat_find_path(&vol, "A/B/C.NDS", &e));
+
+    /* BOOT.CFG is a root file and parses into the expected map. */
+    {
+        boot_cfg_t cfg;
+        fat_file_entry_t cfg_entry;
+
+        assert(fat_find_path(&vol, "BOOT.CFG", &cfg_entry));
+        assert(!cfg_entry.is_dir);
+        assert(fat_read_file_range(&vol, &cfg_entry, 0u, buf, sizeof(buf),
+                                   &got, &chain));
+        assert(got > 0u && got < sizeof(buf));
+        assert(boot_cfg_parse(buf, got, &cfg));
+        assert(strcmp(cfg.target[BOOT_CFG_KEY_DEFAULT], "BOOT.NDS") == 0);
+        assert(strcmp(cfg.target[BOOT_CFG_KEY_A], "HELLO.NDS") == 0);
+        assert(strcmp(cfg.target[BOOT_CFG_KEY_X], "NDS/SUBAPP.NDS") == 0);
+    }
+}
+
+/*
+ * End-to-end staging of NDS/SUBAPP.NDS: validate, stage and confirm the
+ * published __system_argv carries "sd:/NDS/SUBAPP.NDS".
+ */
+static void test_subapp_stages(void)
+{
+    fat_volume_t vol;
+    fat_file_entry_t sub;
+    nds_header_t hdr;
+    loader_result_t res;
+    const char *path = "NDS/SUBAPP.NDS";
+
+    assert(fat_mount(&vol, img_read, NULL));
+    assert(fat_find_path(&vol, path, &sub));
+    assert(!sub.is_dir);
+
+    assert(loader_validate_file(&vol, &sub, true, &hdr) == NDS_LOAD_OK);
+    assert(hdr.crc_ok);
+    assert(strncmp(hdr.title, "SUBDIR", 6u) == 0);
+    assert(strcmp(hdr.gamecode, "TSTL") == 0);
+    assert(hdr.unit_code == NDS_UNIT_CODE_NDS_DSI);
+
+    s_handoff_calls = 0u;
+    assert(loader_stage_and_boot_path(&vol, &sub, path, true, &res)
+           == NDS_LOAD_OK);
+    assert(res.staged);
+    assert(res.dry_run);
+    assert(s_handoff_calls == 1u);
+    assert(res.argv_len == 18u);   /* "sd:/NDS/SUBAPP.NDS" */
+    assert(strcmp((char *)s_cmdline_arena, "sd:/NDS/SUBAPP.NDS") == 0);
+    {
+        const u8 *av = s_header_arena + NDS_ARGV_OFFSET;
+
+        assert(le32(av + NDS_ARGV_MAGIC_OFF) == NDS_ARGV_MAGIC);
+        assert(le32(av + NDS_ARGV_LEN_OFF) == 18u);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+
 static int load_image(const char *path)
 {
     FILE *fh;
@@ -374,6 +464,8 @@ int main(int argc, char **argv)
     test_hello_validates_and_stages();
     test_negative_images();
     test_boot_nds();
+    test_subdir_and_bootcfg();
+    test_subapp_stages();
 
     free(g_img);
     puts("test_sd_image: all assertions passed");

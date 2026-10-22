@@ -103,6 +103,14 @@ u32 loader_format_command_line(char *cmdline, u32 cmdline_cap, const char *name)
         return 0u;
     }
 
+    /* A leading slash is redundant: "sd:/" is always prepended. */
+    while (*name == '/') {
+        name++;
+    }
+    if (name[0] == '\0') {
+        return 0u;
+    }
+
     name_len = (u32)dsi_strlen(name);
     /* Need room for "sd:/" + name + NUL. */
     if (cmdline_cap <= prefix_len + 1u ||
@@ -252,15 +260,18 @@ static void loader_jump_arm9(u32 entry)
 }
 #endif /* ENABLE_CHAINLOAD_BOOT */
 
-nds_load_status_t loader_stage_and_boot(fat_volume_t *vol,
-                                        const fat_file_entry_t *entry,
-                                        bool extended_ram,
-                                        loader_result_t *out)
+nds_load_status_t loader_stage_and_boot_path(fat_volume_t *vol,
+                                             const fat_file_entry_t *entry,
+                                             const char *path,
+                                             bool extended_ram,
+                                             loader_result_t *out)
 {
     nds_header_t hdr;
     nds_load_status_t status;
     u32 got = 0u;
     fat_chain_status_t chain = FAT_CHAIN_ERR_ARG;
+    const char *launch_name = (path != NULL && path[0] != '\0')
+                                  ? path : entry ? entry->name : NULL;
 
     if (out != NULL) {
         dsi_memset(out, 0, sizeof(*out));
@@ -368,9 +379,9 @@ nds_load_status_t loader_stage_and_boot(fat_volume_t *vol,
      *     homebrew learns its launch path ("sd:/<NAME>").
      */
     if (out != NULL) {
-        out->argv_len = loader_stage_argv(entry->name, extended_ram);
+        out->argv_len = loader_stage_argv(launch_name, extended_ram);
     } else {
-        (void)loader_stage_argv(entry->name, extended_ram);
+        (void)loader_stage_argv(launch_name, extended_ram);
     }
 
     dc_flush_range((const void *)(uintptr_t)hdr.arm9_ram_addr, hdr.arm9_size);
@@ -421,4 +432,12 @@ nds_load_status_t loader_stage_and_boot(fat_volume_t *vol,
         out->dry_run = true;
     }
     return NDS_LOAD_OK;
+}
+
+nds_load_status_t loader_stage_and_boot(fat_volume_t *vol,
+                                        const fat_file_entry_t *entry,
+                                        bool extended_ram,
+                                        loader_result_t *out)
+{
+    return loader_stage_and_boot_path(vol, entry, NULL, extended_ram, out);
 }

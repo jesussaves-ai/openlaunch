@@ -28,9 +28,15 @@ packer, the font table bounds, and the bounded `console_format` /
 
 `tests/test_menu.c` covers the menu state machine (wrapping, action mapping for
 all eight items, degenerate inputs), the keypad edge detector
-(`input_normalize_*`, `input_edge_*`) and the Unlaunch-style startup policy
+(`input_normalize_*`, `input_edge_*`), the Unlaunch-style startup policy
 `boot_resolve_policy()` (`KEY_B`/`KEY_SELECT` force the menu, `KEY_A`/no key
-probes `BOOT.NDS`). Built as `build/host_test_menu`.
+probes `BOOT.NDS`), the zero-allocation `BOOT.CFG` parser `boot_cfg_parse()`
+(LF/CRLF line endings, `#` comments, every supported key, truncated prefixes,
+unknown keys, `B`/`SELECT` override immunity, invalid characters, over-long
+targets, whitespace and duplicate handling) and the `boot_resolve_target()`
+hotkey resolver (default, `A`/`X`/`Y`, deterministic priority, the menu
+override, parsed-config overrides and NULL handling). Built as
+`build/host_test_menu`.
 
 ## 5. Host unit tests — TMIO SD/MMC engine
 
@@ -49,9 +55,13 @@ FAT tables, root directory, data clusters) and exercises `fat_mount()`, the
 volume geometry, `fat_get_next_cluster()`, root-directory listing and the
 `.nds`/`.srl` filter, single- and multi-cluster reads, truncated chains, mount
 failures, the pure MBR partition scan (`fat_mbr_find_fat_partition()`), FAT12
-and malformed-BPB rejection, and the NDS header unit code + CRC16
-(`src/common/nds_header.c`, including the CRC-16/MODBUS known-answer vector
-`0x4B37`). Built as `build/host_test_fat`.
+and malformed-BPB rejection, the one-level subdirectory support
+(`fat_list_dir_cluster()` on the root and a subdirectory, `max_entries`
+capping, the self-loop / bad-cluster guards, and `fat_find_path()` across root
+files, leading slashes, case-insensitive names, `SUBDIR/NESTED.NDS`, missing
+directories, file-as-directory and over-deep/malformed paths), and the NDS
+header unit code + CRC16 (`src/common/nds_header.c`, including the
+CRC-16/MODBUS known-answer vector `0x4B37`). Built as `build/host_test_fat`.
 
 ## 6b. Host unit tests — SCFG / MBK decoders
 
@@ -78,9 +88,10 @@ write-protect field layout. Built as `build/host_test_scfg`.
 * `loader_validate_file()` end to end over a synthetic volume.
 * the homebrew `argv` protocol: `loader_format_command_line()` /
   `loader_build_argv()` byte layout (`argvMagic 0x5F617267`, pointers, length,
-  `argc`, terminator), the `"sd:/HELLO.NDS"` path formatting and the bounds
-  failures (undersized buffer, NULL/empty inputs, failed build leaving the
-  header untouched).
+  `argc`, terminator), the `"sd:/HELLO.NDS"` / `"sd:/BOOT.NDS"` path
+  formatting, the one-level subdirectory path `"sd:/NDS/HELLO.NDS"` (including
+  leading-slash normalisation) and the bounds failures (undersized buffer,
+  NULL/empty inputs, failed build leaving the header untouched).
 * `nds_header_validate_twl_segments()` for valid `ARM9i`/`ARM7i` segments
   (Main RAM and NWRAM), out-of-bounds/un-aligned addresses, truncated files and
   bootloader-reservation overlap.
@@ -104,13 +115,16 @@ cleanly (both payloads copied and exactly one `IPC_CMD_BOOT_HANDOFF` request),
 that the published `__system_argv` holds the `"sd:/HELLO.NDS"` command line and
 a `0x5F617267` magic, that the `BOOT.NDS` autoboot target is discovered,
 validated (title `AUTOBOOT OK`) and staged with `"sd:/BOOT.NDS"`, that
-`BADCRC.NDS` is rejected with `NDS_ERR_BAD_CRC`, that `OVERLAP.NDS` is rejected
-with `NDS_ERR_OVERLAP_BOOTLOADER`, and that `README.TXT` is hidden by the
-`.nds`/`.srl` filter. It also streams the whole multi-cluster `HELLO.NDS` back
-and compares the staged payloads against their ROM offsets. Built as
-`build/host_test_sd_image` with `-DLOADER_HOST_TEST`, which redirects the
-absolute-address staging writes into a scratch arena (the target build is
-unaffected).
+`NDS/SUBAPP.NDS` resolves inside the one-level `/NDS` subdirectory (title
+`SUBDIR PAYLOAD`), validates, stages with `"sd:/NDS/SUBAPP.NDS"` and that the
+root `BOOT.CFG` parses to the `DEFAULT=BOOT.NDS` / `A=HELLO.NDS` /
+`X=NDS/SUBAPP.NDS` map, that `BADCRC.NDS` is rejected with `NDS_ERR_BAD_CRC`,
+that `OVERLAP.NDS` is rejected with `NDS_ERR_OVERLAP_BOOTLOADER`, and that
+`README.TXT` is hidden by the `.nds`/`.srl` filter. It also streams the whole
+multi-cluster `HELLO.NDS` back and compares the staged payloads against their
+ROM offsets. Built as `build/host_test_sd_image` with `-DLOADER_HOST_TEST`,
+which redirects the absolute-address staging writes into a scratch arena (the
+target build is unaffected).
 
 `make host-test` builds `build/sdcard.img` first, so this suite always runs
 against the real generated artefact.
@@ -140,10 +154,12 @@ and `build/hello_payload.nds`), which asserts:
 It then runs `scripts/verify_sd_image.py`, which independently re-checks the
 generated `build/sdcard.img`: the MBR signature and FAT16 partition entry, the
 BPB geometry, the root-directory entries (`HELLO.NDS`, `BOOT.NDS`,
-`BADCRC.NDS`, `OVERLAP.NDS`, `README.TXT`), the fragmented multi-cluster
-`HELLO.NDS` chain, the `BOOT.NDS` autoboot variant (title `AUTOBOOT OK`, valid
-CRC16), and the two negative-test headers (`BADCRC.NDS` bad CRC16,
-`OVERLAP.NDS` ARM9 range inside the bootloader reservation).
+`BADCRC.NDS`, `OVERLAP.NDS`, `README.TXT`, `BOOT.CFG`) and the `NDS`
+subdirectory, the one-level `NDS/SUBAPP.NDS` payload (title `SUBDIR PAYLOAD`,
+valid CRC16), the `BOOT.CFG` `DEFAULT`/`A`/`X` mappings, the fragmented
+multi-cluster `HELLO.NDS` chain, the `BOOT.NDS` autoboot variant (title
+`AUTOBOOT OK`, valid CRC16), and the two negative-test headers (`BADCRC.NDS`
+bad CRC16, `OVERLAP.NDS` ARM9 range inside the bootloader reservation).
 
 ## 8. melonDS smoke test
 
@@ -167,9 +183,9 @@ loads `build/dsi_bootloader.nds`. The ROM now renders a text console:
   | `[3]`| Probe SD/TMIO read-only status                       |
   | `[4]`| Decompress the embedded LZ77 vector                  |
   | `[5]`| Halt the CPU safely                                  |
-  | `[6]`| Browse the SD card's FAT volume, verify (`Y`/`SELECT`) and chainload (`A`) a `.nds` image |
+  | `[6]`| Browse the SD card's FAT volume (root + `/NDS`), verify (`Y`/`SELECT`) and chainload (`A`) a `.nds` image |
   | `[7]`| Unlock and initialise SCFG / NWRAM (MBK1-9)          |
-  | `[8]`| Autoboot `BOOT.NDS` from the SD root                 |
+  | `[8]`| Autoboot the `BOOT.CFG`-resolved target              |
 
   Inside `[6]`, the top screen shows the mounted FAT type and, after a
   verify/dry-run, the NDS title, game code, unit code, ARM9/ARM7

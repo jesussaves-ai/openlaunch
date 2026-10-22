@@ -113,6 +113,19 @@ def compute_fat_size(total_sectors: int, reserved: int, nfats: int,
 # Title written into the BOOT.NDS autoboot variant (12-byte header field).
 BOOT_NDS_TITLE = b"AUTOBOOT OK"
 
+# Title for the /NDS/SUBAPP.NDS payload. The NDS title field is exactly 12 bytes,
+# so "SUBDIR PAYLOAD" is stored truncated to "SUBDIR PAYLO" (see
+# make_boot_variant); the full string documents the intended identity.
+SUBDIR_PAYLOAD_TITLE = b"SUBDIR PAYLOAD"
+
+# Root BOOT.CFG contents (CRLF endings, a leading comment and the hotkey map).
+BOOT_CFG_CONTENT = (
+    b"# OPENUNLAUNCH autoboot configuration\r\n"
+    b"DEFAULT=BOOT.NDS\r\n"
+    b"A=HELLO.NDS\r\n"
+    b"X=NDS/SUBAPP.NDS\r\n"
+)
+
 
 def make_boot_variant(hello: bytes, title: bytes = BOOT_NDS_TITLE) -> bytes:
     """Return a copy of ``hello`` retitled and with its header CRC16 fixed up.
@@ -252,11 +265,38 @@ class Fat16Writer:
                  data: bytes, chain: list[int]) -> None:
         """Write `data` across `chain` (starting at `cluster`) and add the
         root-directory entry."""
+        self._write_chain(cluster, data, chain)
+        idx = self._next_root_index()
+        self._write_dir_entry(self.root_start, idx, name8, ext3, 0x20,
+                              cluster, size)
+
+    def add_dir(self, name8: bytes, cluster: int) -> None:
+        """Create a one-cluster subdirectory (with `.` and `..`) and its
+        root-directory entry (attribute 0x10)."""
+        if cluster < 2 or cluster > self.cluster_count + 1:
+            raise ValueError("directory cluster %d out of range" % cluster)
+        self.set_fat16(cluster, 0xFFFF)
+        lba = self._cluster_lba(cluster)
+        self._write_dir_entry(lba, 0, b".", b"", 0x10, cluster, 0)
+        self._write_dir_entry(lba, 1, b"..", b"", 0x10, 0, 0)
+        idx = self._next_root_index()
+        self._write_dir_entry(self.root_start, idx, name8, b"", 0x10, cluster, 0)
+
+    def add_file_in_dir(self, dir_cluster: int, idx: int, name8: bytes,
+                        ext3: bytes, cluster: int, size: int, data: bytes,
+                        chain: list[int]) -> None:
+        """Write a regular file and its entry inside directory `dir_cluster`."""
+        self._write_chain(cluster, data, chain)
+        self._write_dir_entry(self._cluster_lba(dir_cluster), idx, name8, ext3,
+                              0x20, cluster, size)
+
+    def _write_chain(self, cluster: int, data: bytes,
+                     chain: list[int]) -> None:
         cluster_bytes = SECTORS_PER_CLUSTER * SECTOR
         if chain[0] != cluster:
             raise ValueError("chain does not start at the entry cluster")
         if len(data) > len(chain) * cluster_bytes:
-            raise ValueError("%s does not fit its cluster chain" % name8)
+            raise ValueError("cluster chain is too short for the data")
 
         for i, cl in enumerate(chain):
             if cl < 2 or cl > self.cluster_count + 1:
@@ -267,12 +307,12 @@ class Fat16Writer:
             nxt = chain[i + 1] if i + 1 < len(chain) else 0xFFFF
             self.set_fat16(cl, nxt)
 
-        # Root-directory entry (short 8.3 name).
-        idx = self._next_root_index()
-        e = self._sector(self.root_start) + idx * DIR_ENTRY
-        self.img[e + 0:e + 8] = name8.ljust(8, b" ")
-        self.img[e + 8:e + 11] = ext3.ljust(3, b" ")
-        self.img[e + 11] = 0x20                          # archive
+    def _write_dir_entry(self, lba: int, idx: int, name8: bytes, ext3: bytes,
+                         attr: int, cluster: int, size: int) -> None:
+        e = self._sector(lba) + idx * DIR_ENTRY
+        self.img[e + 0:e + 8] = name8.ljust(8, b" ")[:8]
+        self.img[e + 8:e + 11] = ext3.ljust(3, b" ")[:3]
+        self.img[e + 11] = attr
         put16(self.img, e + 26, cluster & 0xFFFF)
         put32(self.img, e + 28, size)
 
@@ -306,6 +346,10 @@ def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
     boot_clusters = max(1, (len(boot_bytes) + cluster_bytes - 1) // cluster_bytes)
     boot_chain = [2 + 2 * hello_clusters + 2 * i for i in range(boot_clusters)]
 
+    # /NDS/SUBAPP.NDS: a second loadable payload inside the one-level subdir.
+    subapp_bytes = make_boot_variant(hello_bytes, title=SUBDIR_PAYLOAD_TITLE)
+    subapp_clusters = max(1, (len(subapp_bytes) + cluster_bytes - 1) // cluster_bytes)
+
     badcrc_bytes = build_nds_stub(
         arm9_off=0x200, arm9_entry=0x02000000, arm9_ram=0x02000000,
         arm9_size=0x400,
@@ -325,6 +369,8 @@ def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
         b"\r\n"
         b"HELLO.NDS    valid, loadable chainload payload (CHAINLOAD OK)\r\n"
         b"BOOT.NDS     default autoboot target (AUTOBOOT OK)\r\n"
+        b"NDS/SUBAPP.NDS  one-level subdirectory payload (SUBDIR PAYLOAD)\r\n"
+        b"BOOT.CFG     hotkey map: DEFAULT/A/X\r\n"
         b"BADCRC.NDS   rejected: bad header CRC16\r\n"
         b"OVERLAP.NDS  rejected: ARM9 range hits the bootloader\r\n"
         b"\r\n"
@@ -335,6 +381,9 @@ def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
     badcrc_chain = [cursor, cursor + 2]
     overlap_chain = [cursor + 4, cursor + 6]
     readme_chain = [cursor + 8]
+    nds_dir_cluster = cursor + 10
+    subapp_chain = [cursor + 12 + 2 * i for i in range(subapp_clusters)]
+    bootcfg_chain = [cursor + 12 + 2 * subapp_clusters]
 
     w.add_file(b"HELLO", b"NDS", hello_chain[0], len(hello_bytes),
                hello_bytes, hello_chain)
@@ -346,6 +395,12 @@ def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
                overlap_bytes, overlap_chain)
     w.add_file(b"README", b"TXT", readme_chain[0], len(readme_bytes),
                readme_bytes, readme_chain)
+    w.add_dir(b"NDS", nds_dir_cluster)
+    w.add_file_in_dir(nds_dir_cluster, 2, b"SUBAPP", b"NDS",
+                      subapp_chain[0], len(subapp_bytes), subapp_bytes,
+                      subapp_chain)
+    w.add_file(b"BOOT", b"CFG", bootcfg_chain[0], len(BOOT_CFG_CONTENT),
+               BOOT_CFG_CONTENT, bootcfg_chain)
     return w.finish()
 
 
@@ -388,6 +443,10 @@ def main(argv) -> int:
     print("    BOOT.NDS    %6d bytes over %d clusters (AUTOBOOT OK)"
           % (len(boot_bytes),
              (len(boot_bytes) + cluster_bytes - 1) // cluster_bytes))
+    print("    NDS/SUBAPP.NDS %6d bytes (title SUBDIR PAYLOAD)"
+          % (len(hello_bytes)))
+    print("    BOOT.CFG    %6d bytes (DEFAULT/A/X hotkey map)"
+          % len(BOOT_CFG_CONTENT))
     print("    BADCRC.NDS  0x1000 bytes (header CRC16 corrupted)")
     print("    OVERLAP.NDS 0x1000 bytes (ARM9 load 0x%08X)"
           % OVERLAP_ARM9_ADDR)

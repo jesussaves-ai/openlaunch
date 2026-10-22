@@ -131,13 +131,15 @@ static void build_fat16(u8 *img, u32 base)
     put16(fat, 8, 0xFFFF);       /* cluster 4 EOC   */
     put16(fat, 10, 0xFFFF);      /* cluster 5 EOC   */
     put16(fat, 12, 0xFFFF);      /* cluster 6 EOC   */
+    put16(fat, 16, 0xFFFF);      /* cluster 8 (SUBDIR) EOC   */
+    put16(fat, 18, 0xFFFF);      /* cluster 9 (NESTED) EOC   */
 
     memset(root, 0, FAT_SECTOR_SIZE);
     set_entry(root, 0, "GAME", "NDS", 0x20, 2, 100);
     set_entry(root, 1, "BIG", "NDS", 0x20, 3, 600);
     root[2 * FAT_DIR_ENTRY_SIZE + 0] = 0x41;                 /* LFN entry   */
     root[2 * FAT_DIR_ENTRY_SIZE + 11] = 0x0F;
-    set_entry(root, 3, "SUBDIR", "", 0x10, 0, 0);            /* directory   */
+    set_entry(root, 3, "SUBDIR", "", 0x10, 8, 0);            /* directory   */
     set_entry(root, 4, "SAVE", "TXT", 0x20, 5, 10);
     root[5 * FAT_DIR_ENTRY_SIZE + 0] = 0xE5;                 /* deleted     */
     set_entry(root, 6, "VOLLABEL", "", 0x08, 0, 0);          /* volume id   */
@@ -149,6 +151,20 @@ static void build_fat16(u8 *img, u32 base)
         for (j = 0u; j < FAT_SECTOR_SIZE; j++) {
             cl[j] = cluster_byte(i + 2u, j);
         }
+    }
+
+    /*
+     * Populate the SUBDIR directory cluster (8) with the standard `.` / `..`
+     * entries and one nested .nds file (cluster 9). This must run after the
+     * data-cluster fill loop above, which would otherwise overwrite it.
+     */
+    {
+        u8 *sub = img + (base + F16_DATA_START + (8u - 2u)) * FAT_SECTOR_SIZE;
+
+        memset(sub, 0, FAT_SECTOR_SIZE);
+        set_entry(sub, 0, ".", "", 0x10, 8, 0);
+        set_entry(sub, 1, "..", "", 0x10, 0, 0);
+        set_entry(sub, 2, "NESTED", "NDS", 0x20, 9, 10);
     }
 }
 
@@ -449,6 +465,143 @@ static void test_nds_filter(void)
     assert(!fat_is_nds_entry(NULL));
 }
 
+/* ---- Bounded directory listing + one-level path resolution ---------- */
+
+static void test_fat_list_dir(void)
+{
+    fat_volume_t vol;
+    fat_file_entry_t list[8];
+    fat_file_entry_t e;
+    u32 n = 0u;
+    u32 i;
+    bool subdir_seen = false;
+
+    memset(g_img, 0, sizeof(g_img));
+    build_fat16(g_img, 0u);
+    g_img_sectors = F16_TOTAL;
+    assert(fat_mount(&vol, test_read, NULL));
+
+    /* Root listing includes the SUBDIR directory entry (is_dir set). */
+    assert(fat_list_dir_cluster(&vol, 0u, list, 8u, &n) == FAT_DIR_OK);
+    assert(n == 5u);   /* GAME, BIG, SUBDIR, SAVE, SECOND */
+    for (i = 0u; i < n; i++) {
+        if (strcmp(list[i].name, "SUBDIR") == 0) {
+            subdir_seen = true;
+            assert(list[i].is_dir);
+            assert(list[i].start_cluster == 8u);
+        }
+    }
+    assert(subdir_seen);
+
+    /* Subdirectory listing: `.`, `..` and NESTED.NDS. */
+    assert(fat_list_dir_cluster(&vol, 8u, list, 8u, &n) == FAT_DIR_OK);
+    assert(n == 3u);
+    assert(strcmp(list[0].name, ".") == 0 && list[0].is_dir);
+    assert(strcmp(list[1].name, "..") == 0 && list[1].is_dir);
+    assert(strcmp(list[2].name, "NESTED.NDS") == 0);
+    assert(!list[2].is_dir);
+    assert(list[2].start_cluster == 9u && list[2].file_size == 10u);
+
+    /* max_entries caps the result; a NULL count out-param is accepted. */
+    assert(fat_list_dir_cluster(&vol, 0u, list, 2u, &n) == FAT_DIR_OK);
+    assert(n == 2u);
+    assert(fat_list_dir_cluster(&vol, 0u, list, 1u, &n) == FAT_DIR_OK);
+    assert(n == 1u);
+    assert(fat_list_dir_cluster(&vol, 0u, list, 8u, NULL) == FAT_DIR_OK);
+
+    /* Invalid arguments fail closed. */
+    assert(fat_list_dir_cluster(&vol, 0u, list, 0u, &n) == FAT_DIR_ERR_ARG);
+    assert(fat_list_dir_cluster(NULL, 0u, list, 8u, &n) == FAT_DIR_ERR_ARG);
+    assert(fat_list_dir_cluster(&vol, 0u, NULL, 8u, &n) == FAT_DIR_ERR_ARG);
+
+    /* The nested file is reachable through the path finder. */
+    assert(fat_find_path(&vol, "SUBDIR/NESTED.NDS", &e));
+    assert(e.start_cluster == 9u && !e.is_dir);
+}
+
+static void test_fat_find_path(void)
+{
+    fat_volume_t vol;
+    fat_file_entry_t e;
+
+    memset(g_img, 0, sizeof(g_img));
+    build_fat16(g_img, 0u);
+    g_img_sectors = F16_TOTAL;
+    assert(fat_mount(&vol, test_read, NULL));
+
+    /* Root files, with and without a leading slash, case-insensitively. */
+    assert(fat_find_path(&vol, "GAME.NDS", &e));
+    assert(!e.is_dir && e.start_cluster == 2u && e.file_size == 100u);
+    assert(strcmp(e.name, "GAME.NDS") == 0);
+    assert(fat_find_path(&vol, "/GAME.NDS", &e));
+    assert(fat_find_path(&vol, "game.nds", &e));
+    assert(fat_find_path(&vol, "/SECOND.SRL", &e));
+    assert(e.start_cluster == 6u);
+
+    /* One-level subdirectory. */
+    assert(fat_find_path(&vol, "SUBDIR/NESTED.NDS", &e));
+    assert(!e.is_dir && e.start_cluster == 9u && e.file_size == 10u);
+    assert(fat_find_path(&vol, "/SUBDIR/NESTED.NDS", &e));
+    assert(fat_find_path(&vol, "subdir/nested.nds", &e));
+    assert(fat_find_path(&vol, "SUBDIR", &e));
+    assert(e.is_dir && e.start_cluster == 8u);
+
+    /* Missing components. */
+    assert(!fat_find_path(&vol, "NOPE.NDS", &e));
+    assert(!fat_find_path(&vol, "NODIR/NESTED.NDS", &e));
+    assert(!fat_find_path(&vol, "SUBDIR/MISSING.NDS", &e));
+
+    /* A file used as a directory. */
+    assert(!fat_find_path(&vol, "GAME.NDS/NESTED.NDS", &e));
+
+    /* Deeper than one level / malformed. */
+    assert(!fat_find_path(&vol, "A/B/C.NDS", &e));
+    assert(!fat_find_path(&vol, "SUBDIR/", &e));
+    assert(!fat_find_path(&vol, "/", &e));
+    assert(!fat_find_path(&vol, "//", &e));
+    assert(!fat_find_path(&vol, "", &e));
+    assert(!fat_find_path(&vol, "/SUBDIR//NESTED.NDS", &e));
+
+    /* Degenerate arguments. */
+    assert(!fat_find_path(NULL, "GAME.NDS", &e));
+    assert(!fat_find_path(&vol, NULL, &e));
+    assert(!fat_find_path(&vol, "GAME.NDS", NULL));
+}
+
+static void test_fat_dir_guards(void)
+{
+    fat_volume_t vol;
+    fat_file_entry_t list[32];
+    u32 n = 0u;
+
+    memset(g_img, 0, sizeof(g_img));
+    build_fat16(g_img, 0u);
+    g_img_sectors = F16_TOTAL;
+
+    /*
+     * Make cluster 8 a full directory sector (no 0x00 terminator) whose FAT
+     * entry points at itself, so the bounded walker must detect the self loop
+     * rather than spin.
+     */
+    {
+        u8 *sub = g_img + (F16_DATA_START + (8u - 2u)) * FAT_SECTOR_SIZE;
+        u8 *fat = g_img + F16_RESERVED * FAT_SECTOR_SIZE;
+        u32 i;
+
+        for (i = 0u; i < FAT_DIR_ENTRIES_PER_SECTOR; i++) {
+            set_entry(sub, i, "FILE", "NDS", 0x20, 8, 1);
+        }
+        put16(fat, 8u * 2u, 8u);
+    }
+
+    assert(fat_mount(&vol, test_read, NULL));
+    assert(fat_list_dir_cluster(&vol, 8u, list, 32u, &n) == FAT_DIR_ERR_LOOP);
+
+    /* An out-of-range start cluster is rejected as bad. */
+    assert(fat_list_dir_cluster(&vol, 50u, list, 32u, &n)
+           == FAT_DIR_ERR_BAD_CLUSTER);
+}
+
 static void test_nds_header(void)
 {
     u8 hdr[512];
@@ -586,6 +739,9 @@ int main(void)
     test_fat32();
     test_mount_failures();
     test_nds_filter();
+    test_fat_list_dir();
+    test_fat_find_path();
+    test_fat_dir_guards();
     test_nds_header();
     test_mbr_partition_scan();
     test_fat12_rejected();

@@ -7,7 +7,10 @@ the chainloader safety gate perform, so a regression in either side is caught:
   1. MBR signature + FAT16 partition entry at the expected LBA.
   2. FAT16 BPB geometry (512-byte sectors, power-of-two cluster, FATs, root).
   3. Root-directory entries for HELLO.NDS / BOOT.NDS / BADCRC.NDS /
-     OVERLAP.NDS / README.TXT, and that README.TXT is not a .nds/.srl file.
+     OVERLAP.NDS / README.TXT / BOOT.CFG plus the NDS subdirectory, and that
+     README.TXT is not a .nds/.srl file.
+  3b. The /NDS one-level subdirectory contains SUBAPP.NDS (title
+     ``SUBDIR PAYLOAD``, valid CRC16) and BOOT.CFG binds DEFAULT/A/X.
   4. HELLO.NDS follows a multi-cluster (fragmented) chain whose total size
      matches the directory entry and (when ``--hello`` is given) the payload.
   4b. BOOT.NDS is the autoboot variant with title ``AUTOBOOT OK`` and a valid
@@ -177,6 +180,7 @@ def main(argv) -> int:
 
     # ---- root directory -------------------------------------------------
     entries = {}
+    dirs = {}
     for idx in range(root_entries):
         e = img[(root_start * SECTOR) + idx * DIR_ENTRY:
                 (root_start * SECTOR) + (idx + 1) * DIR_ENTRY]
@@ -185,23 +189,89 @@ def main(argv) -> int:
         if e[0] == 0xE5:
             continue
         attr = e[11]
-        if (attr & 0x0F) == 0x0F or (attr & 0x08) or (attr & 0x10):
+        if (attr & 0x0F) == 0x0F or (attr & 0x08):
             continue
         name = short_name(e)
-        entries[name] = {
+        rec = {
             "cluster": u16(e, 26),
             "size": u32(e, 28),
             "attr": attr,
         }
+        if attr & 0x10:
+            dirs[name] = rec
+        else:
+            entries[name] = rec
+
+    def read_directory(start: int):
+        """Return the entries of the directory whose chain starts at `start`."""
+        d = {}
+        cl = start
+        seen = 0
+        limit = cluster_count + 4
+        while cl >= 2 and cl <= cluster_count + 1 and seen < limit:
+            seen += 1
+            base = cluster_lba(cl) * SECTOR
+            for i in range(spc * (SECTOR // DIR_ENTRY)):
+                e = img[base + i * DIR_ENTRY:base + (i + 1) * DIR_ENTRY]
+                if e[0] == 0x00:
+                    return d
+                if e[0] == 0xE5:
+                    continue
+                attr = e[11]
+                if (attr & 0x0F) == 0x0F or (attr & 0x08):
+                    continue
+                nm = short_name(e)
+                if nm in (".", ".."):
+                    continue
+                d[nm] = {"cluster": u16(e, 26), "size": u32(e, 28),
+                         "attr": attr}
+            nxt = fat16(cl)
+            if nxt >= 0xFFF8 or nxt == 0:
+                break
+            cl = nxt
+        return d
 
     for name in ("HELLO.NDS", "BOOT.NDS", "BADCRC.NDS", "OVERLAP.NDS",
-                 "README.TXT"):
+                 "README.TXT", "BOOT.CFG"):
         c.check(name in entries, "root entry present: %s" % name)
+    c.check("NDS" in dirs, "root directory entry present: NDS (subdirectory)")
     c.check(is_nds_name("HELLO.NDS") and is_nds_name("BOOT.NDS")
             and is_nds_name("BADCRC.NDS") and is_nds_name("OVERLAP.NDS"),
-            "the four .nds files pass the browser filter")
+            "the four root .nds files pass the browser filter")
     c.check(not is_nds_name("README.TXT"),
             "README.TXT is filtered out by the .nds/.srl browser filter")
+    c.check(not is_nds_name("BOOT.CFG"),
+            "BOOT.CFG is filtered out by the .nds/.srl browser filter")
+
+    # ---- /NDS subdirectory + BOOT.CFG -----------------------------------
+    if "NDS" in dirs:
+        nds_entries = read_directory(dirs["NDS"]["cluster"])
+        c.check("SUBAPP.NDS" in nds_entries, "NDS/SUBAPP.NDS present")
+        if "SUBAPP.NDS" in nds_entries:
+            _, sub_data = read_chain(nds_entries["SUBAPP.NDS"]["cluster"])
+            sub = sub_data[:nds_entries["SUBAPP.NDS"]["size"]]
+            c.check(len(sub) >= SECTOR, "NDS/SUBAPP.NDS holds a header sector")
+            if len(sub) >= SECTOR:
+                stored = u16(sub, NDS_HEADER_CRC_OFF)
+                computed = crc16(sub[:NDS_HEADER_CRC_LEN])
+                c.check(stored == computed,
+                        "NDS/SUBAPP.NDS header CRC16 is valid",
+                        "stored 0x%04X computed 0x%04X" % (stored, computed))
+                c.check(sub[0x12] == 0x02,
+                        "NDS/SUBAPP.NDS unit code is the NDS+DSi hybrid (0x02)",
+                        "got 0x%02X" % sub[0x12])
+                c.check(sub[0:12].decode("ascii", "replace").rstrip()
+                        .startswith("SUBDIR"),
+                        "NDS/SUBAPP.NDS title is SUBDIR PAYLOAD",
+                        "got %r" % sub[0:12])
+
+    if "BOOT.CFG" in entries:
+        _, cfg_data = read_chain(entries["BOOT.CFG"]["cluster"])
+        cfg = cfg_data[:entries["BOOT.CFG"]["size"]].decode("ascii", "replace")
+        c.check("DEFAULT=BOOT.NDS" in cfg, "BOOT.CFG maps DEFAULT=BOOT.NDS")
+        c.check("A=HELLO.NDS" in cfg, "BOOT.CFG maps A=HELLO.NDS")
+        c.check("X=NDS/SUBAPP.NDS" in cfg, "BOOT.CFG maps X=NDS/SUBAPP.NDS")
+
 
     if "HELLO.NDS" not in entries:
         print("[*] %d checks, %d failures" % (c.checks, c.failures))

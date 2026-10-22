@@ -74,10 +74,12 @@ nds_load_status_t loader_validate_file(fat_volume_t *vol,
  * Build the canonical command line "sd:/<name>" (NUL-terminated) into
  * `cmdline` (capacity `cmdline_cap`).
  *
- * Returns the command-line length excluding the NUL, or 0 when the inputs are
- * invalid (NULL destination, empty name) or the path does not fit `cmdline_cap`
- * including its terminator. `cmdline` is left NUL-terminated when capacity
- * permits even on failure.
+ * `name` may be a root 8.3 name ("BOOT.NDS") or a one-level path
+ * ("NDS/HELLO.NDS"); a leading slash is ignored so "/BOOT.NDS" and "BOOT.NDS"
+ * format identically. Returns the command-line length excluding the NUL, or 0
+ * when the inputs are invalid (NULL destination, empty name) or the path does
+ * not fit `cmdline_cap` including its terminator. `cmdline` is left
+ * NUL-terminated when capacity permits even on failure.
  */
 u32 loader_format_command_line(char *cmdline, u32 cmdline_cap, const char *name);
 
@@ -113,7 +115,17 @@ u32 loader_stage_argv(const char *name, bool extended_ram);
  * ENABLE_CHAINLOAD_BOOT defined and NDS_LOAD_OK this does not return (the ARM9
  * jumps into the new image); otherwise it performs all staging/IPC work and
  * returns with `out->dry_run` set.
+ *
+ * `path` is the launch path published through `__system_argv` (e.g.
+ * "BOOT.NDS" or "NDS/HELLO.NDS"); pass NULL to fall back to `entry->name`.
+ * `loader_stage_and_boot()` is the same thing with `entry->name`.
  */
+nds_load_status_t loader_stage_and_boot_path(fat_volume_t *vol,
+                                             const fat_file_entry_t *entry,
+                                             const char *path,
+                                             bool extended_ram,
+                                             loader_result_t *out);
+
 nds_load_status_t loader_stage_and_boot(fat_volume_t *vol,
                                         const fat_file_entry_t *entry,
                                         bool extended_ram,

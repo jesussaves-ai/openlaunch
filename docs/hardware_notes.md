@@ -1163,3 +1163,127 @@ its presence, chain, header CRC16 and title.
 * `tests/test_menu.c` covers `boot_resolve_policy()` for `KEY_B`, `KEY_SELECT`,
   `KEY_A` and the no-key case.
 
+## 28. Unlaunch-style `BOOT.CFG` hotkey map + one-level `/NDS` subdirectory
+
+This section covers the two usability features that round out the autoboot
+path: a deterministic, zero-allocation `BOOT.CFG` text parser that binds the
+buttons held at startup to specific images, and a one-level subdirectory
+(`/NDS/<FILE>.NDS`) resolution path in both the FAT driver and the browser.
+
+### 28.1 One-level subdirectory support (`src/common/fat_ro.c`)
+
+`fat_file_entry_t` gained an `is_dir` flag decoded from FAT attribute bit `0x10`
+(`FAT_ATTR_DIRECTORY`). Two new entry points expose it:
+
+| Function | Behaviour |
+| :--- | :--- |
+| `fat_list_dir_cluster(vol, start_cluster, entries, max_entries, &count)` | Bounded listing of a directory's cluster chain. `start_cluster == 0` selects the root (the FAT16 fixed area or the FAT32 root cluster chain). Reports files *and* directories; skips LFN, volume-label and deleted entries. |
+| `fat_find_path(vol, path, &entry)` | Resolves a root 8.3 name (`"BOOT.NDS"`, `"/BOOT.NDS"`) or a one-level path (`"NDS/HELLO.NDS"`, `"/NDS/HELLO.NDS"`), matching both components case-insensitively. |
+
+`fat_list_dir_cluster()` is hardened exactly like `fat_read_file_range()`: the
+chain walk is capped at `cluster_count + 2` hops, a self-loop or two-cluster
+ping-pong is reported as `FAT_DIR_ERR_LOOP`, free/bad/out-of-range clusters as
+`FAT_DIR_ERR_BAD_CLUSTER`, and a failed sector read as `FAT_DIR_ERR_IO`.
+`FAT_DIR_OK == 0`, so a truthy return value always means "not OK".
+
+`fat_find_path()` fails closed on a missing directory, a file used as a
+directory (`"HELLO.NDS/SUBAPP.NDS"`), a path deeper than one level
+(`"A/B/C.NDS"`) and empty components (a trailing or doubled slash). The
+existing `fat_dir_next()` iterator still hides subdirectories, so the root
+browser list is unchanged.
+
+`loader_format_command_line()` normalises a leading slash away (because
+`"sd:/"` is always prepended), so a subdirectory target formats as
+`"sd:/NDS/HELLO.NDS\0"` while a root file stays `"sd:/BOOT.NDS\0"`.
+`loader_stage_and_boot_path()` publishes that exact string through
+`__system_argv` (see §27.1).
+
+### 28.2 The `BOOT.CFG` hotkey map (`src/arm9/boot_cfg.c`)
+
+`BOOT.CFG` is an optional, read-only text file in the SD root:
+
+```
+# OPENUNLAUNCH autoboot configuration
+DEFAULT=BOOT.NDS
+A=HELLO.NDS
+X=NDS/SUBAPP.NDS
+```
+
+Supported keys are `DEFAULT`, `A`, `X`, `Y`, `L`, `R` and `START`. `boot_cfg_parse()`
+is a pure, bounds-checked pass over a single 512-byte sector:
+
+* it resets `out` to the built-in defaults (`DEFAULT = BOOT.NDS`,
+  `A = HELLO.NDS`, `X = NDS/HELLO.NDS`, `Y`/`L`/`R`/`START` unbound) and then
+  applies every recognised `KEY=PATH` line (last duplicate wins);
+* blank lines, whole-line and trailing `#` comments, CR/LF/CRLF endings and a
+  final line without a newline are all accepted;
+* malformed lines (no `=`), unknown keys, invalid path characters, empty
+  values and over-long targets are dropped without disturbing the rest of the
+  map and without ever reading past the buffer;
+* **`B` and `SELECT` are not recognised keys**: they can never be overridden
+  and always force the interactive diagnostic menu.
+
+`boot_resolve_target(held_keys, cfg, &out)` is the pure resolver. `held_keys`
+is the active-high logical key mask (`input_state_t.held`: `KEYINPUT` merged
+with the ARM7-forwarded `EXTKEYIN` bits, so `X`/`Y` are visible once
+`input_update_ext()` has run). `B`/`SELECT` yield `BOOT_POLICY_MENU`; otherwise
+the held mapped button is looked up in the fixed priority order `A`, `X`, `Y`,
+`L`, `R`, `START`, and failing that the `DEFAULT` target is used. An unbound
+button falls back to `DEFAULT` with `has_key == false`.
+
+### 28.3 Boot-flow integration (`src/arm9/menu.c`)
+
+On startup `menu_load_boot_cfg()` mounts the SD volume, reads up to one sector
+of `BOOT.CFG` through the delegated FAT reader (`fat_find_path()` +
+`fat_read_file_range()`; the read buffer lives in `.bss`, i.e. shared Main
+RAM) and parses it. With no `BOOT.CFG` the built-in defaults apply. The menu
+then polls `EXTKEYIN` once, resolves the target from the held buttons and
+probes the resolved path.
+
+The top-screen telemetry line shows the resolution:
+
+| Situation | `BOOT :` line |
+| :--- | :--- |
+| `B`/`SELECT` held | `BOOT : MENU (KEY HELD)` |
+| config present, no hotkey | `BOOT : BOOT.NDS [CFG]` |
+| `X` held (mapped) | `BOOT : NDS/HELLO.NDS [X]` |
+| target found by fallback | `BOOT : HELLO.NDS` |
+| not found | `BOOT : NO BOOT.NDS` |
+
+Menu item `[6] Browse SD Card (.nds)` now lists the root `.nds`/`.srl` files
+**and** the `.nds`/`.srl` files inside `/NDS/`, the latter prefixed as
+`NDS/<NAME>`. Item `[8] Autoboot BOOT.CFG` stages the resolved target through
+the normal chainloader, publishing the correct (possibly subdirectory)
+`__system_argv` path.
+
+### 28.4 Deterministic SD image
+
+`scripts/make_sd_image.py` now also creates:
+
+* a `/NDS` subdirectory containing `NDS/SUBAPP.NDS` — a retitled, CRC-fixed
+  copy of the payload. The NDS title field is exactly 12 bytes, so
+  `SUBDIR PAYLOAD` is stored as `SUBDIR PAYLO`;
+* a root `BOOT.CFG` (CRLF endings) mapping `DEFAULT=BOOT.NDS`, `A=HELLO.NDS`
+  and `X=NDS/SUBAPP.NDS`.
+
+`scripts/verify_sd_image.py` independently re-checks the subdirectory entry,
+the `NDS/SUBAPP.NDS` chain/CRC/title and the `BOOT.CFG` contents.
+
+### 28.5 Verification
+
+* `tests/test_fat_ro.c` grew `fat_list_dir_cluster()` (root + subdirectory,
+  `max_entries` capping, self-loop and bad-cluster guards) and `fat_find_path()`
+  (root/leading-slash/case-insensitive, one-level subdirectory, missing
+  directory, file-as-directory, over-deep and malformed paths) coverage.
+* `tests/test_menu.c` covers `boot_cfg_parse()` (LF/CRLF, comments, every
+  supported key, truncated prefixes, unknown keys, `B`/`SELECT` immunity,
+  invalid characters, over-long targets, whitespace, duplicates) and
+  `boot_resolve_target()` (default, A/X/Y, priority, menu override, parsed
+  config, NULL handling).
+* `tests/test_loader.c` checks the `"sd:/NDS/HELLO.NDS"` path formatting and
+  the leading-slash normalisation.
+* `tests/test_sd_image.c` resolves `NDS/SUBAPP.NDS` on `build/sdcard.img`,
+  validates and stages it, and asserts the published `"sd:/NDS/SUBAPP.NDS"`
+  command line, plus the parsed `BOOT.CFG` map.
+
+

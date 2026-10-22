@@ -477,6 +477,7 @@ bool fat_dir_next(fat_dir_iter_t *it, fat_file_entry_t *out)
 
         parse_short_name(e, out->name);
         out->attributes = attr;
+        out->is_dir = false;   /* fat_dir_next() skips subdirectories */
         out->start_cluster = (u32)dsi_read_le16(e + 26u);
         if (it->vol->type == FAT_TYPE_FAT32) {
             out->start_cluster |=
@@ -520,6 +521,299 @@ bool fat_is_nds_entry(const fat_file_entry_t *entry)
         return (a == 'N' && b == 'D' && c == 'S') ||
                (a == 'S' && b == 'R' && c == 'L');
     }
+}
+
+/* ---- Bounded directory-cluster listing / path resolution -------------- */
+
+/* Visitor over one directory entry; returning false stops the walk. */
+typedef bool (*fat_dir_visit_fn)(void *ctx, const fat_file_entry_t *entry);
+
+/*
+ * Walk the directory whose cluster chain starts at `start_cluster`
+ * (0 = root), invoking `visit` for every regular file and subdirectory entry.
+ * Long-file-name, volume-label and deleted entries are skipped and the 0x00
+ * end-of-directory marker stops the walk. The chain is capped at
+ * `cluster_count + 2` hops and self-loops / two-cluster ping-pong chains are
+ * rejected, mirroring fat_read_file_range().
+ */
+static fat_dir_status_t fat_dir_walk(fat_volume_t *vol, u32 start_cluster,
+                                     fat_dir_visit_fn visit, void *ctx)
+{
+    bool root_fixed;
+    u32 cluster = 0u;
+    u32 lba;
+    u32 sectors_left;
+    u32 prev_cluster = 0u;
+    u32 hops = 0u;
+    u32 max_hops;
+
+    if (vol == NULL || vol->type == FAT_TYPE_NONE || visit == NULL) {
+        return FAT_DIR_ERR_ARG;
+    }
+
+    if (vol->type == FAT_TYPE_FAT16 && start_cluster == 0u) {
+        root_fixed = true;
+        sectors_left = vol->root_sectors;
+        lba = vol->root_start_lba;
+        max_hops = 0u;   /* unused: the FAT16 fixed root has no chain */
+    } else {
+        root_fixed = false;
+        cluster = (start_cluster == 0u) ? vol->root_cluster : start_cluster;
+        if (!cluster_in_use(vol, cluster) || cluster_is_bad(vol, cluster)) {
+            return FAT_DIR_ERR_BAD_CLUSTER;
+        }
+        sectors_left = vol->sectors_per_cluster;
+        lba = cluster_lba(vol, cluster);
+        max_hops = vol->cluster_count + 2u;
+    }
+
+    if (sectors_left == 0u) {
+        return FAT_DIR_OK;   /* empty directory */
+    }
+
+    for (;;) {
+        u32 idx;
+
+        /* Advance to the next cluster when the current one is exhausted. */
+        if (sectors_left == 0u) {
+            u32 next;
+
+            if (root_fixed) {
+                return FAT_DIR_OK;
+            }
+            next = fat_get_next_cluster(vol, cluster);
+            if (vol->io_error) {
+                return FAT_DIR_ERR_IO;
+            }
+            if (fat_is_eoc(vol, next)) {
+                return FAT_DIR_OK;
+            }
+            if (next == 0u || cluster_is_bad(vol, next) ||
+                !cluster_in_use(vol, next)) {
+                return FAT_DIR_ERR_BAD_CLUSTER;
+            }
+            if (next == cluster || next == prev_cluster) {
+                return FAT_DIR_ERR_LOOP;
+            }
+            if (++hops > max_hops) {
+                return FAT_DIR_ERR_LOOP;
+            }
+            prev_cluster = cluster;
+            cluster = next;
+            sectors_left = vol->sectors_per_cluster;
+            lba = cluster_lba(vol, cluster);
+        }
+
+        if (!vol_read_sector(vol, lba, vol->sector_buf)) {
+            return FAT_DIR_ERR_IO;
+        }
+        lba++;
+        sectors_left--;
+
+        for (idx = 0u; idx < FAT_DIR_ENTRIES_PER_SECTOR; idx++) {
+            const u8 *e = vol->sector_buf + idx * FAT_DIR_ENTRY_SIZE;
+            fat_file_entry_t entry;
+            u8 attr;
+
+            if (e[0] == 0x00u) {
+                return FAT_DIR_OK;   /* end of directory */
+            }
+            if (e[0] == 0xE5u) {
+                continue;            /* deleted */
+            }
+
+            attr = e[11];
+            if ((attr & FAT_ATTR_LFN) == FAT_ATTR_LFN) {
+                continue;            /* long file name */
+            }
+            if ((attr & FAT_ATTR_VOLUME_ID) != 0u) {
+                continue;            /* volume label */
+            }
+
+            dsi_memset(&entry, 0, sizeof(entry));
+            parse_short_name(e, entry.name);
+            entry.attributes = attr;
+            entry.is_dir = (attr & FAT_ATTR_DIRECTORY) != 0u;
+            entry.start_cluster = (u32)dsi_read_le16(e + 26u);
+            if (vol->type == FAT_TYPE_FAT32) {
+                entry.start_cluster |=
+                    (u32)dsi_read_le16(e + 20u) << 16;
+            }
+            entry.file_size = dsi_read_le32(e + 28u);
+
+            if (!visit(ctx, &entry)) {
+                return FAT_DIR_OK;
+            }
+        }
+    }
+}
+
+typedef struct {
+    fat_file_entry_t *entries;
+    u32 max;
+    u32 count;
+} fat_dir_collect_t;
+
+static bool fat_dir_collect_visit(void *ctx, const fat_file_entry_t *entry)
+{
+    fat_dir_collect_t *c = (fat_dir_collect_t *)ctx;
+
+    if (c->count >= c->max) {
+        return false;
+    }
+    c->entries[c->count] = *entry;
+    c->count++;
+    return true;
+}
+
+fat_dir_status_t fat_list_dir_cluster(fat_volume_t *vol, u32 start_cluster,
+                                      fat_file_entry_t *entries,
+                                      u32 max_entries, u32 *out_count)
+{
+    fat_dir_collect_t c;
+    fat_dir_status_t st;
+
+    if (out_count != NULL) {
+        *out_count = 0u;
+    }
+    if (vol == NULL || entries == NULL || max_entries == 0u ||
+        vol->type == FAT_TYPE_NONE) {
+        return FAT_DIR_ERR_ARG;
+    }
+
+    vol->io_error = false;
+    c.entries = entries;
+    c.max = max_entries;
+    c.count = 0u;
+
+    st = fat_dir_walk(vol, start_cluster, fat_dir_collect_visit, &c);
+
+    if (out_count != NULL) {
+        *out_count = c.count;
+    }
+    return st;
+}
+
+/* ASCII case-insensitive equality of two NUL-terminated names. */
+static bool fat_name_equals_ci(const char *a, const char *b)
+{
+    u32 i = 0u;
+
+    for (;;) {
+        char ca = a[i];
+        char cb = b[i];
+
+        if (ca >= 'a' && ca <= 'z') { ca = (char)(ca - ('a' - 'A')); }
+        if (cb >= 'a' && cb <= 'z') { cb = (char)(cb - ('a' - 'A')); }
+        if (ca != cb) {
+            return false;
+        }
+        if (ca == '\0') {
+            return true;
+        }
+        i++;
+    }
+}
+
+typedef struct {
+    const char *name;
+    bool require_dir;
+    fat_file_entry_t *out;
+    bool found;
+} fat_dir_find_t;
+
+static bool fat_dir_find_visit(void *ctx, const fat_file_entry_t *entry)
+{
+    fat_dir_find_t *f = (fat_dir_find_t *)ctx;
+
+    if (fat_name_equals_ci(entry->name, f->name) &&
+        (!f->require_dir || entry->is_dir)) {
+        *f->out = *entry;
+        f->found = true;
+        return false;
+    }
+    return true;
+}
+
+static bool fat_dir_find(fat_volume_t *vol, u32 start_cluster,
+                         const char *name, bool require_dir,
+                         fat_file_entry_t *out)
+{
+    fat_dir_find_t f;
+
+    f.name = name;
+    f.require_dir = require_dir;
+    f.out = out;
+    f.found = false;
+    (void)fat_dir_walk(vol, start_cluster, fat_dir_find_visit, &f);
+    return f.found;
+}
+
+bool fat_find_path(fat_volume_t *vol, const char *path_str,
+                   fat_file_entry_t *out_entry)
+{
+    const char *p;
+    const char *slash = NULL;
+    const char *q;
+    char dir[FAT_NAME_MAX];
+    u32 dir_len;
+    fat_file_entry_t dir_entry;
+
+    if (vol == NULL || path_str == NULL || out_entry == NULL ||
+        vol->type == FAT_TYPE_NONE) {
+        return false;
+    }
+    vol->io_error = false;
+
+    /* "/BOOT.NDS" and "BOOT.NDS" are equivalent. */
+    p = path_str;
+    while (*p == '/') {
+        p++;
+    }
+    if (*p == '\0') {
+        return false;
+    }
+
+    for (q = p; *q != '\0'; q++) {
+        if (*q == '/') {
+            slash = q;
+            break;
+        }
+    }
+
+    if (slash == NULL) {
+        return fat_dir_find(vol, 0u, p, false, out_entry);
+    }
+
+    /* Only a single directory level is supported. */
+    for (q = slash + 1u; *q != '\0'; q++) {
+        if (*q == '/') {
+            return false;
+        }
+    }
+    if (slash[1] == '\0') {
+        return false;   /* trailing slash: no file name */
+    }
+
+    dir_len = (u32)(slash - p);
+    if (dir_len == 0u || dir_len >= FAT_NAME_MAX) {
+        return false;
+    }
+    dsi_memcpy(dir, p, dir_len);
+    dir[dir_len] = '\0';
+
+    if (!fat_dir_find(vol, 0u, dir, true, &dir_entry)) {
+        return false;
+    }
+    if (!dir_entry.is_dir) {
+        return false;   /* a file used as a directory */
+    }
+    if (dir_entry.start_cluster < 2u) {
+        return false;   /* FAT16 empty directory (start cluster 0) */
+    }
+
+    return fat_dir_find(vol, dir_entry.start_cluster, slash + 1u, false,
+                        out_entry);
 }
 
 /* ---- File data --------------------------------------------------------- */

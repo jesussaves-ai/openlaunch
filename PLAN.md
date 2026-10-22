@@ -86,6 +86,8 @@ Consequences:
 | NDS load validator   | clean-room (CRC16 + ARM9/ARM7 range safety)         | `src/common/nds_header.c` | **new**       |
 | Chainload stager     | clean-room (bounded cluster stream + handoff)       | `src/arm9/loader.c`       | **new**       |
 | Dual-CPU handoff     | clean-room (`IPC_CMD_BOOT_HANDOFF`)                 | `src/arm7/ipc.c`          | **new**       |
+| BOOT.CFG hotkey map  | clean-room (zero-allocation text parser)            | `src/arm9/boot_cfg.c`     | **new**       |
+| 1-level subdir FAT   | clean-room (`fat_find_path`/`fat_list_dir_cluster`) | `src/common/fat_ro.c`     | **new**       |
 
 ## 2. Next steps
 
@@ -195,3 +197,16 @@ Consequences:
   `ENABLE_CHAINLOAD_BOOT` (dry run by default). `ld/arm7.ld`/`ld/arm9.ld` now
   align the IWRAM/ITCM/DTCM load addresses for the word-copy crt0 relocation.
   Covered by `tests/test_loader.c` (docs §25).
+* **`BOOT.CFG` hotkey map + one-level `/NDS` subdirectory** —
+  `boot_cfg_parse()` (`src/arm9/boot_cfg.c`) is a pure, bounds-checked parser
+  over one 512-byte sector: `DEFAULT`/`A`/`X`/`Y`/`L`/`R`/`START` bind the
+  buttons held at startup to targets, while `B`/`SELECT` can never be overridden
+  and always force the interactive menu. `boot_resolve_target()` resolves the
+  active (KEYINPUT + EXTKEYIN) mask to a path. `fat_find_path()` and
+  `fat_list_dir_cluster()` (`src/common/fat_ro.c`) add a bounded, loop-guarded
+  one-level subdirectory lookup (`/NDS/<FILE>.NDS`); the browser lists
+  `NDS/<NAME>` entries and `loader_stage_and_boot_path()` publishes the correct
+  `"sd:/NDS/<NAME>"` `__system_argv`. `make sd-image` now installs
+  `NDS/SUBAPP.NDS` (title `SUBDIR PAYLOAD`) and a root `BOOT.CFG`. Covered by
+  `tests/test_fat_ro.c`, `tests/test_menu.c`, `tests/test_loader.c` and
+  `tests/test_sd_image.c` (docs §28).

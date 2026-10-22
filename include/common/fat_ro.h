@@ -79,10 +79,20 @@ typedef struct fat_volume {
     u8  sector_buf[FAT_SECTOR_SIZE];
 } fat_volume_t;
 
+/* Directory-entry attribute bits (the classic FAT attribute byte). */
+#define FAT_ATTR_READONLY  0x01u
+#define FAT_ATTR_HIDDEN    0x02u
+#define FAT_ATTR_SYSTEM    0x04u
+#define FAT_ATTR_VOLUME_ID 0x08u
+#define FAT_ATTR_DIRECTORY 0x10u
+#define FAT_ATTR_ARCHIVE   0x20u
+#define FAT_ATTR_LFN       0x0Fu   /* all four low bits set: long-file name */
+
 /* One parsed directory entry (short 8.3 name only). */
 typedef struct fat_file_entry {
     char name[FAT_NAME_MAX];   /* upper-case "NAME.EXT", NUL-terminated    */
     u8   attributes;
+    bool is_dir;               /* FAT_ATTR_DIRECTORY was set               */
     u32  start_cluster;
     u32  file_size;
 } fat_file_entry_t;
@@ -160,6 +170,51 @@ bool fat_dir_next(fat_dir_iter_t *it, fat_file_entry_t *out);
 
 /* True when the entry name ends in .NDS or .SRL (case-insensitive). */
 bool fat_is_nds_entry(const fat_file_entry_t *entry);
+
+/* ---- Bounded directory-cluster listing / path resolution -------------- */
+
+/*
+ * Bounded directory walk status. FAT_DIR_OK == 0 so a truthy return value
+ * always means "not OK" (same convention as fat_chain_status_t).
+ */
+typedef enum {
+    FAT_DIR_OK = 0,
+    FAT_DIR_ERR_ARG,          /* invalid argument / unmounted volume       */
+    FAT_DIR_ERR_IO,           /* a sector read failed                      */
+    FAT_DIR_ERR_BAD_CLUSTER,  /* free / bad / out-of-range cluster         */
+    FAT_DIR_ERR_LOOP          /* chain hop cap exceeded / self loop        */
+} fat_dir_status_t;
+
+/*
+ * List up to `max_entries` entries of the directory whose cluster chain starts
+ * at `start_cluster`, writing them to `entries` and the count to `*out_count`.
+ *
+ * `start_cluster` == 0 selects the volume's root directory (the FAT16 fixed
+ * area or the FAT32 root cluster chain), which lets a caller enumerate the root
+ * and a subdirectory through the same bounded code path.
+ *
+ * Unlike fat_dir_next() this reports directory entries too (`is_dir` is set
+ * from FAT_ATTR_DIRECTORY); long-file-name entries, volume labels, deleted
+ * entries and the 0x00 end-of-directory marker are still handled/skipped. The
+ * walk is capped at `cluster_count + 2` hops and rejects self-loops and
+ * two-cluster ping-pong chains, mirroring fat_read_file_range().
+ */
+fat_dir_status_t fat_list_dir_cluster(fat_volume_t *vol, u32 start_cluster,
+                                      fat_file_entry_t *entries,
+                                      u32 max_entries, u32 *out_count);
+
+/*
+ * Resolve `path_str` against the mounted volume and fill `*out_entry`.
+ *
+ * Accepts either a root 8.3 file name ("BOOT.NDS" or "/BOOT.NDS") or a
+ * one-level path ("NDS/HELLO.NDS" or "/NDS/HELLO.NDS"). The directory and file
+ * components are matched case-insensitively. A missing directory, a file used
+ * as if it were a directory, a path deeper than one level, and empty
+ * components all fail closed and return false. The directory component found
+ * in the root is reported as-is in the returned entry's `is_dir`.
+ */
+bool fat_find_path(fat_volume_t *vol, const char *path_str,
+                   fat_file_entry_t *out_entry);
 
 /* ---- File data --------------------------------------------------------- */
 

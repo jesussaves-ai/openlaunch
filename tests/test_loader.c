@@ -804,6 +804,24 @@ static void test_argv_build(void)
     assert(strcmp(cmdline, "sd:/BOOT.NDS") == 0);
     assert(get32(argv, NDS_ARGV_CMD_OFF) == NDS_ARGV_CMDLINE_ADDR_DS);
 
+    /* ---- One-level subdirectory paths ------------------------------ */
+    len = loader_build_argv(argv, cmdline, sizeof(cmdline), cmd_addr,
+                            "NDS/HELLO.NDS");
+    assert(len == 17u);                       /* "sd:/NDS/HELLO.NDS" */
+    assert(strcmp(cmdline, "sd:/NDS/HELLO.NDS") == 0);
+    assert(get32(argv, NDS_ARGV_LEN_OFF) == 17u);
+    /* A leading slash is normalised away ("sd:/" is always prepended). */
+    assert(loader_format_command_line(cmdline, sizeof(cmdline),
+                                      "/NDS/HELLO.NDS") == 17u);
+    assert(strcmp(cmdline, "sd:/NDS/HELLO.NDS") == 0);
+    assert(loader_format_command_line(cmdline, sizeof(cmdline),
+                                      "///BOOT.NDS") == 12u);
+    assert(strcmp(cmdline, "sd:/BOOT.NDS") == 0);
+    /* A subdirectory path that cannot fit fails cleanly. */
+    assert(loader_format_command_line(cmdline, 17u, "NDS/HELLO.NDS") == 0u);
+    assert(cmdline[0] == '\0');
+    assert(loader_format_command_line(cmdline, 18u, "NDS/HELLO.NDS") == 17u);
+
     /* ---- Bounds safety --------------------------------------------- */
     /* A command line that cannot fit (including its NUL) fails cleanly. */
     cmdline[0] = 'X';
