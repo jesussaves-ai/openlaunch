@@ -1,4 +1,4 @@
-# Makefile — Nintendo DSi low-level bootloader (ARM9 + ARM7)
+# Makefile — OpenLaunch: Nintendo DSi low-level bootloader (ARM9 + ARM7)
 #
 # Toolchain: BlocksDS / devkitARM. Override CROSS to point at another
 # arm-none-eabi toolchain, e.g.:
@@ -9,13 +9,14 @@
 # vectors / CP15 (see AGENTS.md §2).
 #
 # Targets:
-#   make            build the runnable ROM (build/dsi_bootloader.nds)
-#   make rom        alias for the above
+#   make            build the runnable ROM (build/openlaunch.nds)
+#   make rom        alias for the above (also stages build/dsi_bootloader.nds)
 #   make sd-image   build build/hello_payload.nds + build/sdcard.img
 #   make check      strict cross-compile of every object (-Werror)
-#   make verify     validate the packaged ROM (CRCs, offsets, no NAND writes)
+#   make verify     validate the packaged ROM (CRCs, offsets, size budgets)
 #   make host-test  host unit tests for the hardware-independent logic
 #   make release    build build/release/ (all variants + SD template + SHA256SUMS)
+#   make smoke-test isolated melonDS startup smoke test (skips if unavailable)
 #   make size       arm-none-eabi-size for both ELFs
 #   make clean
 
@@ -34,7 +35,9 @@ BUILD      := build
 LD_DIR     := ld
 INCLUDES   := -Iinclude
 
-ROM        := $(BUILD)/dsi_bootloader.nds
+ROM        := $(BUILD)/openlaunch.nds
+# Legacy alias so existing scripts and muscle-memory commands keep working.
+LEGACY_ROM := $(BUILD)/dsi_bootloader.nds
 ARM9_ELF   := $(BUILD)/arm9.elf
 ARM7_ELF   := $(BUILD)/arm7.elf
 ARM9_BIN   := $(BUILD)/arm9.bin
@@ -97,14 +100,19 @@ OBJS_ARM7 := $(patsubst %.c,$(BUILD)/arm7/%.o,$(SRCS_ARM7)) \
 OBJS_ARM9 := $(patsubst %.c,$(BUILD)/arm9/%.o,$(SRCS_ARM9)) \
              $(patsubst %.s,$(BUILD)/arm9/%.o,$(ASM_ARM9))
 
-.PHONY: all rom run check verify size clean host-test arm9-decompile sd-image release
+.PHONY: all rom run check verify size clean host-test arm9-decompile sd-image release smoke-test
 
 all: rom
 
-rom: $(ROM)
+rom: $(ROM) $(LEGACY_ROM)
 
 run: $(ROM)
 	./scripts/run_melonds.sh $(ROM)
+
+# Isolated, non-destructive melonDS startup smoke test. Skips cleanly when
+# melonDS or a display helper is unavailable (e.g. headless CI).
+smoke-test: $(ROM) $(SD_IMAGE)
+	python3 scripts/smoke_test_emu.py --rom $(ROM) --sd $(SD_IMAGE)
 
 # Object compilation / strict verification target.
 check: all
@@ -147,7 +155,13 @@ $(ROM): $(ARM9_BIN) $(ARM7_BIN) scripts/pack_nds.py
 	python3 scripts/pack_nds.py \
 		--arm9 $(ARM9_BIN) --arm9-elf $(ARM9_ELF) \
 		--arm7 $(ARM7_BIN) --arm7-elf $(ARM7_ELF) \
+		--title "OPENLAUNCH" \
+		--banner-title "OpenLaunch\nClean-Room TWL Bootloader" \
 		--twl --out $@
+
+# Legacy alias (build/dsi_bootloader.nds) kept as a relative symlink.
+$(LEGACY_ROM): $(ROM)
+	ln -sf $(notdir $(ROM)) $@
 
 # ---- Chainload test payload (build/hello_payload.nds) --------------------
 # A tiny bare-metal ARM9/ARM7 stub linked outside the bootloader reservation
@@ -182,7 +196,8 @@ $(HELLO_ROM): $(PAYLOAD_ARM9_BIN) $(PAYLOAD_ARM7_BIN) scripts/pack_nds.py
 		--arm9 $(PAYLOAD_ARM9_BIN) --arm9-elf $(PAYLOAD_ARM9_ELF) \
 		--arm7 $(PAYLOAD_ARM7_BIN) --arm7-elf $(PAYLOAD_ARM7_ELF) \
 		--arm9-ram 0x02004000 --arm7-ram 0x02380000 \
-		--title "CHAINLOAD OK" --gamecode TSTL --twl --out $@
+		--title "CHAINLOAD OK" --banner-title "CHAINLOAD OK" \
+		--gamecode TSTL --twl --out $@
 
 # ---- Deterministic MBR + FAT16 SD image (build/sdcard.img) ---------------
 $(SD_IMAGE): $(HELLO_ROM) scripts/make_sd_image.py
@@ -201,6 +216,8 @@ release:
 # ---- Verification harness ------------------------------------------------
 verify: $(ROM) $(HELLO_ROM) $(SD_IMAGE)
 	python3 scripts/verify_rom.py --rom $(ROM) \
+		--expect-title OPENLAUNCH \
+		--expect-banner-title "OpenLaunch / Clean-Room TWL Bootloader" \
 		--arm9-elf $(ARM9_ELF) --arm7-elf $(ARM7_ELF) \
 		--arm9-bin $(ARM9_BIN) --arm7-bin $(ARM7_BIN) \
 		--arm7-map $(BUILD)/arm7.map --arm9-map $(BUILD)/arm9.map

@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+# Needed only so a tag push can attach artifacts to the GitHub Release.
+permissions:
+  contents: write
+
+jobs:
+  build-and-test:
+    name: Build, test and release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc python3 gcc-arm-none-eabi binutils-arm-none-eabi
+
+      - name: Host unit tests
+        run: make host-test
+
+      - name: Build ROM and SD image
+        run: make rom sd-image
+
+      - name: Verify ROM, payload and SD image
+        run: make verify
+
+      - name: Reproducibility gate
+        run: |
+          set -euo pipefail
+          make release
+          cp build/release/SHA256SUMS.txt /tmp/SHA256SUMS.txt.first
+          cp build/openlaunch_release.tar.gz /tmp/openlaunch_release.tar.gz.first
+          make release
+          cmp /tmp/SHA256SUMS.txt.first build/release/SHA256SUMS.txt
+          cmp /tmp/openlaunch_release.tar.gz.first build/openlaunch_release.tar.gz
+          echo "release bundle is byte-for-byte reproducible"
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openlaunch-release
+          path: |
+            build/release/
+            build/openlaunch_release.tar.gz
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/openlaunch_release.tar.gz
+            build/release/SHA256SUMS.txt

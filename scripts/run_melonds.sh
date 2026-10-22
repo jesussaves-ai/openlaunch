@@ -15,7 +15,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ROM="${1:-$ROOT/build/dsi_bootloader.nds}"
+ROM="${1:-$ROOT/build/openlaunch.nds}"
 
 if [ ! -f "$ROM" ]; then
     echo "run_melonds: ROM not found: $ROM" >&2
@@ -47,7 +47,7 @@ Install one of:
   * the Flatpak:  flatpak install flathub net.kuribo64.melonDS
   * a build from https://github.com/melonDS-emu/melonDS
 
-Then re-run this script, or open build/dsi_bootloader.nds manually.
+Then re-run this script, or open build/openlaunch.nds manually.
 See tests/README.md for the recommended BIOS/DSi-firmware settings.
 EOF
 exit 127

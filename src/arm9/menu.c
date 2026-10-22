@@ -516,7 +516,7 @@ static void render_telemetry(const menu_diag_t *d)
     console_select(CONSOLE_MAIN);
     console_clear();
 
-    console_puts(0, 0, CONSOLE_PAL_CYAN, "OPENUNLAUNCH C99 BOOTLOADER");
+    console_puts(0, 0, CONSOLE_PAL_CYAN, "OPENLAUNCH TWL BOOTLOADER");
     console_puts(0, 1, CONSOLE_PAL_GREY, "CLEAN-ROOM TWL DIAGNOSTICS");
 
     if (d->scfg_accessible) {

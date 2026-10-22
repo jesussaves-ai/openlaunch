@@ -30,9 +30,14 @@ import sys
 # Header constants
 # --------------------------------------------------------------------------
 HEADER_SIZE = 0x4000
-TITLE = b"OPENUNLAUNCH"
+TITLE = b"OPENLAUNCH"
 GAME_CODE = b"HNAA"
 MAKER_CODE = b"01"
+
+# Default banner title used when --banner-title is not supplied. The literal
+# "\n" is honoured as a line break by build_banner()/decode and renders as
+# "OpenLaunch / Clean-Room TWL Bootloader" in the decoded summary.
+BANNER_TITLE = "OpenLaunch\nClean-Room TWL Bootloader"
 
 NINTENDO_LOGO_OFF = 0x0C0
 NINTENDO_LOGO_LEN = 0x09C      # 156 bytes
@@ -291,8 +296,8 @@ def main(argv) -> int:
                     help="2-byte maker code (default: %s)"
                          % MAKER_CODE.decode("ascii"))
     ap.add_argument("--banner-title", default=None,
-                    help="UTF-16LE banner title at 0x840+0x240 (default: the "
-                         "ROM title). Literal '\\n' separators become ' / '.")
+                    help="UTF-16LE banner title at 0x840+0x240 (default: %r). "
+                         "Literal '\\n' separators become ' / '." % BANNER_TITLE)
     ap.add_argument("--no-banner", dest="banner", action="store_false",
                     default=True,
                     help="omit the 0x840-byte banner block (banner_offset 0)")
@@ -339,13 +344,14 @@ def main(argv) -> int:
     if len(maker_code) != 2:
         ap.error("--maker must be exactly 2 bytes (got %d)" % len(maker_code))
 
-    # Banner title defaults to the ROM title. A literal "\n" in the argument is
-    # honoured as a line break so the decoded summary exercises " / ".
+    # Banner title defaults to the OpenLaunch identity. A literal "\n" in the
+    # argument is honoured as a line break so the decoded summary reads
+    # "OpenLaunch / Clean-Room TWL Bootloader".
     if args.banner:
         if args.banner_title is not None:
             banner_title = args.banner_title.replace("\\n", "\n")
         else:
-            banner_title = title.decode("ascii", "replace")
+            banner_title = BANNER_TITLE
     else:
         banner_title = None
 

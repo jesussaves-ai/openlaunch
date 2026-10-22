@@ -1,10 +1,12 @@
-# PLAN.md — Translation Roadmap
+# PLAN.md — OpenLaunch Translation Roadmap
 
 ## 0. Current Status
 
-Reference material: `asm/decompiled/*.c` (ARM7) and `asm/decompiled/arm9/*.c`
-(ARM9, 271 functions). Extraction pipeline: `scripts/run_ghidra.sh`.
-Rules of engagement: see `AGENTS.md`.
+**OpenLaunch** (`https://github.com/jesussaves-ai/openlaunch`) is the
+clean-room, open-source C99 alternative to Unlaunch. Reference material:
+`asm/decompiled/*.c` (ARM7) and `asm/decompiled/arm9/*.c` (ARM9, 271
+functions). Extraction pipeline: `scripts/run_ghidra.sh`. Rules of engagement:
+see `AGENTS.md`.
 
 ### What the reference dump actually is
 
@@ -242,6 +244,17 @@ Consequences:
   live-chainload and autoboot variants in isolated build directories, stages
   `build/release/` with a `BOOT.CFG` template, `NDS/HELLO.NDS` and
   `sdcard.img`, and writes/verifies a deterministic `SHA256SUMS.txt` plus a
-  deterministic `build/dsi_bootloader_release.tar.gz`. Covered by
+  deterministic `build/openlaunch_release.tar.gz`. Covered by
   `tests/test_loader.c`, `tests/test_sd_image.c`, `scripts/verify_rom.py` and
   `scripts/verify_sd_image.py` (docs §30).
+* **OpenLaunch rebrand + release hardening** — the ROM title/banner defaults,
+  primary artifact (`build/openlaunch.nds`, with a legacy
+  `build/dsi_bootloader.nds` symlink), release bundle
+  (`openlaunch_diag.nds` / `openlaunch.nds` / `BOOT.NDS` /
+  `build/openlaunch_release.tar.gz`) and UI headers now use the **OpenLaunch**
+  identity. `scripts/verify_rom.py` enforces the ARM9 `< 64 KiB` / ARM7
+  `< 32 KiB` binary size budgets and asserts the OpenLaunch title/banner;
+  `scripts/smoke_test_emu.py` (`make smoke-test`) boots the ROM in melonDS under
+  an isolated config and skips cleanly when melonDS or a display is absent; and
+  `.github/workflows/ci.yml` runs the host tests, builds/verifies all variants,
+  gates on byte-for-byte release reproducibility and publishes tagged releases.

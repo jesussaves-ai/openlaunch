@@ -1,8 +1,10 @@
 # Hardware & Reverse-Engineering Notes
 
-This document records the raw evidence extracted from `asm/UNLAUNCH.DSI`
-(the reference low-level DSi bootloader). Every claim here is reproducible from
-the file; nothing is invented.
+**OpenLaunch** (`https://github.com/jesussaves-ai/openlaunch`) is a clean-room,
+open-source C99 alternative to Unlaunch for the Nintendo DSi. This document
+records the raw evidence extracted from `asm/UNLAUNCH.DSI` (the reference
+low-level DSi bootloader). Every claim here is reproducible from the file;
+nothing is invented.
 
 ---
 
@@ -988,8 +990,9 @@ backdrop bright green (`BGR555 0x03E0`) and Engine B's bright blue
 clear) and then idles in a VCOUNT-synchronised loop. The ARM7 stub is a bare
 loop. There is no crt0, no stack and no MMIO outside the documented GBATEK map.
 
-`pack_nds.py` gained `--title`, `--gamecode` and `--maker` options (the previous
-`OPENUNLAUNCH` / `HNAA` defaults are unchanged).
+`pack_nds.py` gained `--title`, `--gamecode`, `--maker` and `--banner-title`
+options. The OpenLaunch defaults are title `OPENLAUNCH` (game code `HNAA`) and
+banner title `OpenLaunch\nClean-Room TWL Bootloader`.
 
 ### 26.2 The FAT16 image (`scripts/make_sd_image.py`)
 
@@ -1203,7 +1206,7 @@ browser list is unchanged.
 `BOOT.CFG` is an optional, read-only text file in the SD root:
 
 ```
-# OPENUNLAUNCH autoboot configuration
+# OpenLaunch autoboot configuration
 DEFAULT=BOOT.NDS
 A=HELLO.NDS
 X=NDS/SUBAPP.NDS
@@ -1461,8 +1464,8 @@ default `build/` tree is untouched — and stages `build/release/`:
 
 | Artifact | Build |
 | :--- | :--- |
-| `dsi_bootloader_diag.nds` | default (safe dry-run / diagnostic) |
-| `dsi_bootloader.nds` | `CHAINLOAD_BOOT=1` (live chainload on `A` / `[8]`) |
+| `openlaunch_diag.nds` | default (safe dry-run / diagnostic) |
+| `openlaunch.nds` | `CHAINLOAD_BOOT=1` (live chainload on `A` / `[8]`) |
 | `BOOT.NDS` | `CHAINLOAD_BOOT=1 AUTOBOOT=1` (drop-in autoboot) |
 | `BOOT.CFG` | sample SD-root hotkey map (`DEFAULT=NDS/HELLO.NDS`) |
 | `NDS/HELLO.NDS` | the standalone chainload test payload |
@@ -1473,7 +1476,7 @@ The `BOOT.CFG` sample deliberately targets `NDS/HELLO.NDS`, never `BOOT.NDS`
 itself (that is the autoboot bootloader), so the drop-in `BOOT.NDS` cannot
 recursively boot itself. `SHA256SUMS.txt` is written in sorted order and then
 re-read and re-hashed; the script reports the verified digest count before
-producing a deterministic `build/dsi_bootloader_release.tar.gz` (zeroed owner
+producing a deterministic `build/openlaunch_release.tar.gz` (zeroed owner
 and timestamp metadata, fixed `mtime`).
 
 ### 30.3 Verification

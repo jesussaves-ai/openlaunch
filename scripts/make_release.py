@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Build the reproducible OPENUNLAUNCH release bundle.
+"""Build the reproducible OpenLaunch release bundle.
 
 This script produces ``build/release/`` with every production variant of the
 bootloader plus a ready-to-copy SD card template, a deterministic
-``SHA256SUMS.txt`` and a deterministic ``build/dsi_bootloader_release.tar.gz``:
+``SHA256SUMS.txt`` and a deterministic ``build/openlaunch_release.tar.gz``:
 
   ==========================  ===============================================
   Artifact                    Build
   ==========================  ===============================================
-  dsi_bootloader_diag.nds     default (safe dry-run / diagnostic)
-  dsi_bootloader.nds          CHAINLOAD_BOOT=1 (live chainload on A / [8])
+  openlaunch_diag.nds         default (safe dry-run / diagnostic)
+  openlaunch.nds              CHAINLOAD_BOOT=1 (live chainload on A / [8])
   BOOT.NDS                    CHAINLOAD_BOOT=1 AUTOBOOT=1 (drop-in autoboot)
   BOOT.CFG                    sample SD-root hotkey map (DEFAULT target)
   NDS/HELLO.NDS               the standalone chainload test payload
@@ -44,22 +44,22 @@ import tarfile
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RELEASE_DIR = os.path.join(REPO_ROOT, "build", "release")
 WORK_DIR = os.path.join(REPO_ROOT, "build", "_release_work")
-TARBALL = os.path.join(REPO_ROOT, "build", "dsi_bootloader_release.tar.gz")
-TARBALL_PREFIX = "dsi_bootloader_release"
+TARBALL = os.path.join(REPO_ROOT, "build", "openlaunch_release.tar.gz")
+TARBALL_PREFIX = "openlaunch_release"
 
 SUMS_NAME = "SHA256SUMS.txt"
 
 # name -> (make variables, staging file name)
 VARIANTS = (
-    ("diag", (), "dsi_bootloader_diag.nds"),
-    ("chainload", ("CHAINLOAD_BOOT=1",), "dsi_bootloader.nds"),
+    ("diag", (), "openlaunch_diag.nds"),
+    ("chainload", ("CHAINLOAD_BOOT=1",), "openlaunch.nds"),
     ("autoboot", ("CHAINLOAD_BOOT=1", "AUTOBOOT=1"), "BOOT.NDS"),
 )
 
 # Sample BOOT.CFG written to the SD-card root. It must not point at BOOT.NDS
 # (that is the bootloader itself); it targets the bundled test payload instead.
 RELEASE_BOOT_CFG = (
-    b"# OPENUNLAUNCH release configuration (SD card root)\r\n"
+    b"# OpenLaunch release configuration (SD card root)\r\n"
     b"#\r\n"
     b"# Hold a mapped button at startup to select a target; B or SELECT always\r\n"
     b"# forces the interactive menu. Point DEFAULT at your own .nds image.\r\n"
@@ -163,7 +163,7 @@ def build(release_dir: str, work_dir: str) -> None:
         build_dir = os.path.join(work_dir, key)
         shutil.rmtree(build_dir, ignore_errors=True)
         run_make(build_dir, "rom", *vars_)
-        shutil.copy2(os.path.join(build_dir, "dsi_bootloader.nds"),
+        shutil.copy2(os.path.join(build_dir, "openlaunch.nds"),
                      os.path.join(release_dir, staged_name))
         log("staged %s" % staged_name)
 

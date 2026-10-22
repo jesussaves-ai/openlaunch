@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify a packaged ``build/dsi_bootloader.nds`` ROM.
+"""Verify a packaged ``build/openlaunch.nds`` ROM.
 
 Checks performed:
 
@@ -9,11 +9,17 @@ Checks performed:
   3. ARM9/ARM7 ROM offsets, byte sizes and RAM load addresses are consistent,
      and the entry points match the ``_start`` symbols in the ELF images
      (read with ``arm-none-eabi-nm``); the load addresses match ``__rom_start__``.
-  4. No dangerous eMMC/NAND write symbols (``sdmmc_write`` etc.) are linked into
+  4. The ARM9 payload is < 64 KiB and the ARM7 payload is < 32 KiB (the OpenLaunch
+     binary size budget; both fit SD chainloading and the NAND .tmd stage-2 /
+     ARM7 WRAM constraints). A size telemetry summary is printed.
+  5. No dangerous eMMC/NAND write symbols (``sdmmc_write`` etc.) are linked into
      the ARM7 image (AGENTS.md §5); checked against the linker map files.
-  5. The banner block referenced by offset 0x068 carries a supported version
+  6. The banner block referenced by offset 0x068 carries a supported version
      (0x0001/0x0002/0x0003/0x0103), a valid CRC16 over 0x020..0x83F and a
      decodable UTF-16LE title at 0x240.
+
+``--expect-title`` / ``--expect-banner-title`` optionally assert the OpenLaunch
+identity (12-byte ROM title and the decoded single-line banner title).
 
 Exit status is non-zero if any check fails.
 """
@@ -53,6 +59,15 @@ FORBIDDEN_SYMBOLS = (
     "emmc_write",
 )
 
+# Binary size budget (OpenLaunch must stay lightweight enough for both SD
+# chainloading and the NAND .tmd stage-2 / ARM7 WRAM constraints).
+ARM9_SIZE_BUDGET = 64 * 1024    # < 64 KiB
+ARM7_SIZE_BUDGET = 32 * 1024    # < 32 KiB
+
+# NDS ROM title field (12 bytes, NUL- or space-padded).
+ROM_TITLE_OFF = 0x00
+ROM_TITLE_LEN = 12
+
 
 def crc16(data: bytes) -> int:
     crc = 0xFFFF
@@ -72,6 +87,15 @@ def u32(buf, off):
 
 def u16(buf, off):
     return struct.unpack_from("<H", buf, off)[0]
+
+
+def decode_rom_title(rom: bytes) -> str:
+    """Decode the 12-byte NDS ROM title (NUL/space padded) to a clean string."""
+    raw = rom[ROM_TITLE_OFF:ROM_TITLE_OFF + ROM_TITLE_LEN]
+    nul = raw.find(b"\x00")
+    if nul >= 0:
+        raw = raw[:nul]
+    return raw.decode("ascii", "replace").rstrip(" ")
 
 
 def decode_banner_title(banner: bytes) -> str:
@@ -132,6 +156,10 @@ def main(argv) -> int:
     ap.add_argument("--arm7-bin")
     ap.add_argument("--arm7-map")
     ap.add_argument("--arm9-map")
+    ap.add_argument("--expect-title",
+                    help="assert the 12-byte ROM title (e.g. OPENLAUNCH)")
+    ap.add_argument("--expect-banner-title",
+                    help="assert the decoded single-line banner title")
     ap.add_argument("--nm", default=os.environ.get("NM", "arm-none-eabi-nm"))
     args = ap.parse_args(argv)
 
@@ -167,6 +195,18 @@ def main(argv) -> int:
     c.check(arm9_off == 0x4000, "ARM9 ROM offset is 0x4000", "got 0x%X" % arm9_off)
     c.check((arm7_off % 0x200) == 0, "ARM7 ROM offset is 0x200-aligned")
     c.check(arm9_off + arm9_size <= arm7_off, "ARM9 and ARM7 do not overlap")
+
+    # ---- binary size / section budget -----------------------------------
+    print("  ARM9: %d B (%.1f%% of 64 KiB budget)"
+          % (arm9_size, 100.0 * arm9_size / ARM9_SIZE_BUDGET))
+    print("  ARM7: %d B (%.1f%% of 32 KiB budget)"
+          % (arm7_size, 100.0 * arm7_size / ARM7_SIZE_BUDGET))
+    c.check(arm9_size < ARM9_SIZE_BUDGET,
+            "ARM9 payload is under the 64 KiB budget",
+            "%d B (0x%X) >= %d B" % (arm9_size, arm9_size, ARM9_SIZE_BUDGET))
+    c.check(arm7_size < ARM7_SIZE_BUDGET,
+            "ARM7 payload is under the 32 KiB budget",
+            "%d B (0x%X) >= %d B" % (arm7_size, arm7_size, ARM7_SIZE_BUDGET))
 
     # ---- ROM size / device capacity (check #22+) ------------------------
     MIN_ROM_SIZE = 0x8000
@@ -226,6 +266,16 @@ def main(argv) -> int:
                 "TWL region mask is non-zero (not a 'bad dump')",
                 "got 0x%08X" % region_mask)
 
+    # ---- ROM title -------------------------------------------------------
+    rom_title = decode_rom_title(rom)
+    c.check(len(rom_title) > 0, "ROM title decodes to a non-empty string",
+            "got %r" % rom_title)
+    if args.expect_title is not None:
+        c.check(rom_title == args.expect_title,
+                "ROM title is %r" % args.expect_title,
+                "got %r" % rom_title)
+    print("  title %r" % rom_title)
+
     # ---- NDS banner ------------------------------------------------------
     banner_off = u32(rom, BANNER_OFF_OFF)
     c.check(banner_off != 0, "banner offset (0x068) is non-zero",
@@ -249,6 +299,10 @@ def main(argv) -> int:
         title = decode_banner_title(banner)
         c.check(len(title) > 0, "banner title decodes to a non-empty string",
                 "got %r" % title)
+        if args.expect_banner_title is not None:
+            c.check(title == args.expect_banner_title,
+                    "banner title is %r" % args.expect_banner_title,
+                    "got %r" % title)
         print("  banner off 0x%05X v%04X title %r" % (banner_off, version, title))
 
     # ---- ELF cross-check -------------------------------------------------

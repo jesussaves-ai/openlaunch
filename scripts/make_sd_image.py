@@ -161,7 +161,7 @@ SUBDIR_PAYLOAD_TITLE = b"SUBDIR PAYLOAD"
 
 # Root BOOT.CFG contents (CRLF endings, a leading comment and the hotkey map).
 BOOT_CFG_CONTENT = (
-    b"# OPENUNLAUNCH autoboot configuration\r\n"
+    b"# OpenLaunch autoboot configuration\r\n"
     b"DEFAULT=BOOT.NDS\r\n"
     b"A=HELLO.NDS\r\n"
     b"X=NDS/SUBAPP.NDS\r\n"
@@ -408,7 +408,7 @@ def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
         title=b"OVERLAP", gamecode=b"TSTL", corrupt_crc=False,
     )
     readme_bytes = (
-        b"OPENUNLAUNCH chainload SD image\r\n"
+        b"OpenLaunch chainload SD image\r\n"
         b"\r\n"
         b"HELLO.NDS    valid, loadable chainload payload (CHAINLOAD OK)\r\n"
         b"BOOT.NDS     default autoboot target (AUTOBOOT OK)\r\n"

@@ -1,6 +1,7 @@
-# OPENUNLAUNCH — Nintendo DSi low-level bootloader (C99)
+# OpenLaunch — Nintendo DSi low-level bootloader (C99)
 
-A clean-room, open-source C99 implementation of a low-level bootloader, hardware
+[OpenLaunch](https://github.com/jesussaves-ai/openlaunch) is a clean-room,
+open-source C99 alternative to Unlaunch: a low-level bootloader, hardware
 initializer and homebrew menu for the **Nintendo DSi (TWL)**, targeting the
 dual-core ARM946E-S (ARM9) and ARM7TDMI (ARM7).
 
@@ -42,7 +43,7 @@ disassembled from `asm/UNLAUNCH.DSI` into readable, strictly typed C99. See
 * **Reproducible release** — `make release` builds the diagnostic,
   live-chainload and autoboot variants (plus a ready-to-copy SD card template)
   into `build/release/` with a deterministic `SHA256SUMS.txt` and
-  `build/dsi_bootloader_release.tar.gz`.
+  `build/openlaunch_release.tar.gz`.
 * **Deterministic test image** — `make sd-image` builds a FAT16 SD card with
   real, loadable and negative-test payloads (including `NDS/SUBAPP.NDS` and a
   root `BOOT.CFG`) for emulator and CI verification.
@@ -60,12 +61,13 @@ No eMMC/NAND write path exists outside the `ENABLE_NAND_WRITE_DANGER` build
 ## Building
 
 ```sh
-make            # build build/dsi_bootloader.nds
+make            # build build/openlaunch.nds (+ the legacy dsi_bootloader.nds alias)
 make rom        # alias for the above
 make sd-image   # build build/hello_payload.nds + build/sdcard.img
 make verify     # validate the ROM, the payload and the SD image
 make host-test  # host unit/integration tests
-make release    # build build/release/ + build/dsi_bootloader_release.tar.gz
+make release    # build build/release/ + build/openlaunch_release.tar.gz
+make smoke-test # isolated melonDS startup smoke test (skips if unavailable)
 make size       # arm-none-eabi-size for both ELFs
 make clean
 ```
@@ -97,8 +99,8 @@ ld/           linker scripts for the bootloader
 
 | Artifact | Build / purpose |
 | :--- | :--- |
-| `dsi_bootloader_diag.nds` | default: safe dry-run / diagnostic |
-| `dsi_bootloader.nds` | `CHAINLOAD_BOOT=1`: interactive menu + live chainload (`A` / `[8]`) |
+| `openlaunch_diag.nds` | default: safe dry-run / diagnostic |
+| `openlaunch.nds` | `CHAINLOAD_BOOT=1`: interactive menu + live chainload (`A` / `[8]`) |
 | `BOOT.NDS` | `CHAINLOAD_BOOT=1 AUTOBOOT=1`: drop-in autoboot bootloader (B/SELECT forces the menu) |
 | `BOOT.CFG` | sample SD-root hotkey map (`DEFAULT=NDS/HELLO.NDS`) |
 | `NDS/HELLO.NDS` | the standalone chainload test payload |
@@ -106,7 +108,7 @@ ld/           linker scripts for the bootloader
 | `SHA256SUMS.txt` | deterministic SHA-256 of every artifact above |
 
 The script writes `SHA256SUMS.txt`, re-reads and re-hashes every entry to verify
-it, and then produces a deterministic `build/dsi_bootloader_release.tar.gz`. The
+it, and then produces a deterministic `build/openlaunch_release.tar.gz`. The
 `BOOT.CFG` sample never points at `BOOT.NDS` itself (that is the bootloader), so
 the drop-in build cannot recursively boot itself.
 
@@ -151,13 +153,17 @@ target (`BOOT : NDS/SUBAPP.NDS [X]`). `B` or `SELECT` always force the menu.
 ## Verification
 
 * `make verify` runs `scripts/verify_rom.py` (CRC16s, ROM size/device capacity,
-  ELF entry/load cross-checks, unit code, no NAND-write symbols, and the
-  `0x068` banner version/CRC16/title) on both `build/dsi_bootloader.nds` and
+  the OpenLaunch title/banner, the ARM9 `< 64 KiB` / ARM7 `< 32 KiB` binary size
+  budgets, ELF entry/load cross-checks, unit code, no NAND-write symbols, and
+  the `0x068` banner version/CRC16/title) on `build/openlaunch.nds` and
   `build/hello_payload.nds`, then `scripts/verify_sd_image.py` on
   `build/sdcard.img` (which also re-checks the banner of `HELLO.NDS`,
   `BOOT.NDS` and `NDS/SUBAPP.NDS`).
 * `make release` builds `build/release/` and verifies its `SHA256SUMS.txt`
   before producing the `.tar.gz` bundle.
+* `make smoke-test` boots `build/openlaunch.nds` in melonDS (with
+  `build/sdcard.img` as the emulated DSi SD card) under an isolated temporary
+  config, and skips cleanly when melonDS or a display is unavailable.
 * `make host-test` builds and runs the host suites, including
   `tests/test_sd_image.c`, which mounts `build/sdcard.img` through
   `fat_mbr_find_fat_partition()` → `fat_mount()` → the root iterator →

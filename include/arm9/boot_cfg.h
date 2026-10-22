@@ -7,7 +7,7 @@
  * BOOT.CFG is an optional, read-only text file in the SD-card root that binds
  * the buttons held at startup to specific .nds/.srl images:
  *
- *     # OPENUNLAUNCH autoboot configuration
+ *     # OpenLaunch autoboot configuration
  *     DEFAULT=BOOT.NDS
  *     A=HELLO.NDS
  *     X=NDS/SUBAPP.NDS

@@ -167,22 +167,28 @@ Run all of them with `make host-test`.
 ## 7. ROM packaging + static verification
 
 ```
-make              # link build/arm{9,7}.elf -> .bin -> build/dsi_bootloader.nds
+make              # link build/arm{9,7}.elf -> .bin -> build/openlaunch.nds
 make sd-image     # build build/hello_payload.nds + build/sdcard.img
 make verify       # validate the packaged ROM, the payload and the SD image
-make release      # stage build/release/ + build/dsi_bootloader_release.tar.gz
+make release      # stage build/release/ + build/openlaunch_release.tar.gz
+make smoke-test   # isolated melonDS startup smoke test (or a clean skip)
 ```
 
-`make verify` runs `scripts/verify_rom.py` (on both `build/dsi_bootloader.nds`
+`make verify` runs `scripts/verify_rom.py` (on both `build/openlaunch.nds`
 and `build/hello_payload.nds`), which asserts:
 
 * the Nintendo-logo CRC16 (`0x15C`) and header CRC16 (`0x15E`) recompute;
 * ARM9/ARM7 ROM offsets, sizes and RAM load addresses are consistent and match
   the ELF symbol tables (`_start`, `__rom_start__` via `arm-none-eabi-nm`);
+* the ARM9 payload is `< 64 KiB` and the ARM7 payload is `< 32 KiB` (the
+  OpenLaunch size budget; a telemetry summary is printed);
 * the ROM is a power of two of at least 32 KiB, the `0x014` device capacity
   covers it, the `0x080` total-used size is consistent and the padding is `0xFF`;
 * the `0x012` unit code is a valid value and, when DSi-capable, is the
   NDS+DSi hybrid `0x02` with a non-zero TWL region mask;
+* the primary ROM title is `OPENLAUNCH` and its banner decodes to
+  `OpenLaunch / Clean-Room TWL Bootloader` (`--expect-title` /
+  `--expect-banner-title`);
 * the `0x068` banner offset resolves to a block with a supported version, a
   correct CRC16 over `0x020..0x83F` and a decodable UTF-16LE title;
 * no eMMC/NAND write symbols (AGENTS.md §5) are present in the linker maps.
@@ -203,21 +209,32 @@ inside the bootloader reservation). It additionally verifies the banner
 
 `make release` (`scripts/make_release.py`) builds the diagnostic, chainload and
 autoboot variants in isolated build directories, stages `build/release/`
-(`dsi_bootloader_diag.nds`, `dsi_bootloader.nds`, `BOOT.NDS`, `BOOT.CFG`,
+(`openlaunch_diag.nds`, `openlaunch.nds`, `BOOT.NDS`, `BOOT.CFG`,
 `NDS/HELLO.NDS`, `sdcard.img`), writes a deterministic `SHA256SUMS.txt`,
 re-hashes every entry to verify it and then emits a deterministic
-`build/dsi_bootloader_release.tar.gz`.
+`build/openlaunch_release.tar.gz`.
 
 ## 8. melonDS smoke test
 
 ```
 make run                          # or: ./scripts/run_melonds.sh
+make smoke-test                   # isolated, non-destructive startup check
 ```
 
 `scripts/run_melonds.sh` finds a native `melonds`/`melonDS` or the Flatpak and
-loads `build/dsi_bootloader.nds`. The ROM now renders a text console:
+loads `build/openlaunch.nds`.
 
-* **Top screen** — the header `OPENUNLAUNCH C99 BOOTLOADER` and a live telemetry
+`scripts/smoke_test_emu.py` (`make smoke-test`) boots `build/openlaunch.nds`
+(with `build/sdcard.img` as the emulated DSi SD card) for a short window under a
+temporary `XDG_CONFIG_HOME`, never touching the user's
+`~/.config/melonDS/melonDS.toml`. If melonDS or a display helper
+(`WAYLAND_DISPLAY`/`DISPLAY`/`xvfb-run`) is unavailable it prints
+`[SKIP] melonDS or display environment not available` and exits `0`; a premature
+non-zero emulator exit is reported as `[FAIL]`.
+
+The ROM now renders a text console:
+
+* **Top screen** — the header `OPENLAUNCH TWL BOOTLOADER` and a live telemetry
   table (CPU mode, DTCM base, MPU control, ARM7 IPC link, SD/MMC status, RTC
   readout, firmware ID, NAND write-protection guard, LZ77 self-test).
 * **Bottom screen** — a D-Pad navigable menu (`A` runs, `B` re-runs the

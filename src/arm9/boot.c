@@ -199,7 +199,7 @@ void arm9_main(void)
     /* 6. Text console + interactive diagnostics menu (never returns). */
     console_init();
     console_select(CONSOLE_MAIN);
-    console_puts(0, 0, CONSOLE_PAL_CYAN, "OPENUNLAUNCH C99 BOOTLOADER");
+    console_puts(0, 0, CONSOLE_PAL_CYAN, "OPENLAUNCH TWL BOOTLOADER");
     console_puts(0, 1, CONSOLE_PAL_WHITE, "Starting diagnostics...");
 
     menu_run();
