@@ -7,8 +7,11 @@
  * layer (32x24 visible 8x8 cells). The 8x8 1bpp font from src/arm9/font8x8.c
  * is expanded to 4bpp tiles and installed into BG VRAM:
  *
- *   Engine A (top screen)     tiles 0x06000000, map 0x06001000, palette 0x05000000
+ *   Engine A (top screen)     tiles 0x06000000, map 0x06008000, palette 0x05000000
  *   Engine B (bottom screen)  tiles 0x06200000, map 0x06201000, palette 0x05000400
+ *
+ * Engine A's map sits at screen base block 16 so tiles 96..495 stay free for
+ * the graphical overlay (see include/arm9/ui_font.h).
  *
  * A palette bank is selected per string via console_puts(); bank 0 is white on
  * the black backdrop, then cyan, green, yellow, red, grey and blue.
@@ -64,6 +67,13 @@ void console_clear_all(void);
 
 /* Draw a NUL-terminated string at cell (x, y) using palette bank `pal`. */
 void console_puts(int x, int y, u8 pal, const char *str);
+
+/*
+ * The active engine's 32x32 BG map as a `vu16` array (row-major, 32 entries
+ * per row). Used by the graphical overlay renderer (src/arm9/ui_font.c) so it
+ * can address the same text layer as the console.
+ */
+vu16 *console_map(void);
 
 /*
  * Pure text-map renderer backing console_puts(). Writes `str` into a

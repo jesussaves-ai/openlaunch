@@ -46,6 +46,7 @@ static u8 s_dldi_scan_buf[LOADER_DLDI_SCAN_MAX];
  * over IPC. Never DTCM.
  */
 static u8 s_banner_buf[NDS_BANNER_SIZE];
+static bool s_banner_valid;
 
 #ifdef LOADER_HOST_TEST
 /*
@@ -271,11 +272,18 @@ bool loader_detect_dldi(fat_volume_t *vol, const fat_file_entry_t *entry,
     return dldi_scan(s_dldi_scan_buf, got, out, NULL);
 }
 
+const u8 *loader_banner_raw(void)
+{
+    return s_banner_valid ? s_banner_buf : NULL;
+}
+
 bool loader_read_banner(fat_volume_t *vol, const fat_file_entry_t *entry,
                         const nds_header_t *hdr, nds_banner_info_t *out)
 {
     u32 got = 0u;
     fat_chain_status_t chain = FAT_CHAIN_ERR_ARG;
+
+    s_banner_valid = false;
 
     if (out != NULL) {
         dsi_memset(out, 0, sizeof(*out));
@@ -296,6 +304,7 @@ bool loader_read_banner(fat_volume_t *vol, const fat_file_entry_t *entry,
         got != NDS_BANNER_SIZE) {
         return false;
     }
+    s_banner_valid = true;
     return nds_banner_parse(s_banner_buf, NDS_BANNER_SIZE, out);
 }
 

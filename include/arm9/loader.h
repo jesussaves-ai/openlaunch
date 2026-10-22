@@ -171,4 +171,13 @@ bool loader_detect_dldi(fat_volume_t *vol, const fat_file_entry_t *entry,
 bool loader_read_banner(fat_volume_t *vol, const fat_file_entry_t *entry,
                         const nds_header_t *hdr, nds_banner_info_t *out);
 
+/*
+ * Pointer to the raw 0x840-byte banner block read by the last successful
+ * loader_read_banner() call, or NULL when none has been read. The buffer is
+ * internal and reused, so the pointer is only valid until the next banner read.
+ * Used by the graphical overlay to decode the banner icon (0x020) and palette
+ * (0x220) without a second FAT read.
+ */
+const u8 *loader_banner_raw(void);
+
 #endif /* DSI_ARM9_LOADER_H */

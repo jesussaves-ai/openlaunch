@@ -1494,4 +1494,118 @@ and timestamp metadata, fixed `mtime`).
   decoded title; `scripts/verify_sd_image.py` does the same for all three
   payloads inside `build/sdcard.img`.
 
+---
+
+## 31. Graphical bitmap font & banner-icon renderer (`src/arm9/ui_font.c`)
+
+The text console (`src/arm9/console.c`) is augmented by a zero-allocation
+graphical renderer. Everything lives on **Engine A BG0**, so no extra layer,
+window or blend is required.
+
+### 31.1 Engine A BG0 layout
+
+`console_init()` maps bank A (128 KiB) to Engine A BG at `0x06000000`. To leave
+room for the overlay tiles the Engine A screen base block was moved to 16 (the
+Engine B map is unchanged at block 2):
+
+| Region | Address | Contents |
+| :--- | :--- | :--- |
+| tiles 0..95 | `0x06000000` | the 8x8 console font (96 ASCII glyphs) |
+| tiles 96..479 | `0x06000C00` | the 16x16 title font (4 tiles per glyph) |
+| tiles 480..495 | `0x06003C00` | the 32x32 banner icon (4x4 tiles) |
+| map 32x32 | `0x06008000` | the text map (screen base block 16) |
+
+`BG0CNT` is therefore `0x1000` on Engine A (`0x0200` on Engine B); the register
+is now per-engine in the `console_engine_t` table.
+
+### 31.2 The 16x16 double-size font
+
+`ui_font_init()` expands each 1bpp 8x8 glyph from `font8x8.c` into four 8x8 4bpp
+tiles (`ui_font_expand_glyph16()`: 2x2 pixel replication), storing 384 tiles in
+VRAM. No second font table is linked, so the ROM stays small. `ui_font_
+render_line16()` writes a 2x2 cell block per character with full clipping
+against the visible rows/columns and the physical map stride.
+
+### 31.3 The banner icon
+
+The NDS banner block (`0x068`) carries a 32x32 icon at `0x020` and a 16-colour
+BGR555 palette at `0x220`. `ui_font_decode_icon()` de-tiles the 4x4 tile grid
+row-major into 1024 palette indices; both 4bpp (two pixels/byte, low nibble
+first) and 8bpp (one byte/pixel) layouts are supported. The ARM9 draws it with
+`ui_font_draw_icon()`, which installs the tiles at 480..495 and the palette in
+BG palette **bank 7** (unused by the console); icon palette entry 0 is forced to
+black so the thumbnail matches the AMOLED-friendly black backdrop. The
+verify/dry-run inspector decodes and shows the icon and the double-size title
+when a `.nds` file is highlighted in menu `[6]`. The raw banner block is exposed
+by `loader_banner_raw()` so no second FAT read is needed.
+
+### 31.4 Verification
+
+`tests/test_ui_font.c` covers the 4bpp/8bpp tile decoders, the full icon
+de-tiler for both depths, the 4bpp pack round-trip, the 16x16 glyph expander
+(including the top-left and bottom-right corner pixels), the palette reader, the
+UTF-16 title sanitizer (line breaks, non-ASCII, truncation, NULL safety) and the
+bounded 16x16 line renderer (right-edge, bottom-row, negative-x and off-screen
+clipping).
+
+---
+
+## 32. NAND partition tables & HiyaCFW redirect (`src/common/nand.c`)
+
+### 32.1 Read-only NAND access
+
+The DSi uses a 240 MB Samsung eMMC whose first sector is a PC-style MBR (GBATEK
+"DSi SD/MMC Internal NAND Layout"). The eMMC controller is the same TMIO block
+as the SD card (port 1), which is reachable only from the ARM7, so every NAND
+read is delegated over IPC with `IPC_STORAGE_DEV_EMMC` — exactly like the SD
+reader. `src/arm9/nand_boot.c` provides `arm9_nand_read_sectors()`,
+`arm9_nand_probe()`, `arm9_nand_mount_fat()` and `arm9_nand_find_launcher()`.
+
+No NAND write command exists: the module is strictly read-only, preserving the
+anti-brick guard (AGENTS.md §5). `IPC_CMD_WRITE_SECTOR` remains unimplemented.
+
+### 32.2 Two partition-table layouts (`src/common/nand.c`)
+
+* **PC-style MBR** (`NAND_TABLE_PC_MBR`): signature `0x55AA` at `0x1FE`, four
+  16-byte entries at `0x1BE` with the standard `type` (`+4`), `lba` (`+8`) and
+  `sector_count` (`+12`) little-endian fields. FAT16/FAT32 types are `0x04`,
+  `0x06`, `0x0B`, `0x0C`, `0x0E`.
+* **TWL / HiyaCFW** (`NAND_TABLE_TWL`): the same signature and table offset, but
+  each entry stores `{offset, size}` little-endian 32-bit sector numbers at
+  `+0`/`+4` and carries no type byte. The first (main) partition is the FAT
+  volume; the caller confirms it with a mount.
+
+`nand_parse_table()` auto-detects: a PC MBR with a recognised FAT entry wins,
+then a non-empty TWL table, then any PC entries. `nand_find_fat_partition()`
+and `nand_find_largest_fat()` pick the first / largest FAT volume. The deep
+resolver `nand_resolve_path()` walks an absolute FAT path component by
+component (case-insensitive, bounded by `NAND_PATH_MAX_DEPTH`).
+
+### 32.3 Boot redirect policy (`boot_resolve_nand_target()`)
+
+The pure policy mirrors Unlaunch/HiyaCFW precedence:
+
+1. **B/SELECT held** → keep the interactive menu (`BOOT_POLICY_MENU`).
+2. **SD target found** (`BOOT.NDS` / a `BOOT.CFG` binding) → boot from SD.
+3. **No SD target, NAND FAT volume present** → redirect to the DSi System Menu.
+4. Otherwise → nothing to boot.
+
+The DSi System Menu is TWL title `00030004`-`484E4C41` ("HNLA"); the launcher is
+`/title/00030004/484e4c41/content/00000000.app`. HiyaCFW's redirected root is
+searched as `/rootfs/title/00030004/484e4c41/content/00000000.app`. The menu
+`[8] Autoboot BOOT.CFG` action attempts the redirect when no SD target is found
+and reports `NAND System Menu located` (the launcher is only located and
+reported — never written — so the anti-brick guard is preserved).
+
+The top-screen telemetry gains a `NAND : DETECTED` / `NAND : ABSENT` row (the
+SD capacity readout moved to row 17).
+
+### 32.4 Verification
+
+`tests/test_nand.c` synthesizes PC-style MBR and TWL `{offset,size}` sectors and
+asserts the decoded tables (counts, FAT classification, largest partition, total
+size, auto-detection and signature/NULL rejection), the boot-redirect policy for
+every input combination, and the deep FAT resolver against
+`build/sdcard.img`.
+
 

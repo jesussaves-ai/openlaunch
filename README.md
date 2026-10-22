@@ -40,6 +40,14 @@ disassembled from `asm/UNLAUNCH.DSI` into readable, strictly typed C99. See
 * **NDS banner decoder** — the 0x840-byte banner referenced by header offset
   `0x068` is CRC-16/MODBUS verified and its UTF-16LE English title decoded into
   a clean single-line ASCII summary for the file inspector.
+* **Graphical bitmap UI** — a zero-allocation 16x16 double-size font (generated
+  at runtime from the 8x8 font, so no extra font table is linked) and a 32x32
+  NDS banner-icon decoder (4bpp and 8bpp) render the highlighted `.nds`
+  thumbnail and title on the top screen while browsing.
+* **NAND / HiyaCFW redirect** — a read-only DSi NAND partition-table parser
+  (PC-style MBR and HiyaCFW TWL `{offset,size}`), reached through the
+  ARM7-gated eMMC IPC, plus a boot policy that falls back to the DSi System
+  Menu (`00030004`/`484e4c41`) when no SD boot target is present.
 * **Reproducible release** — `make release` builds the diagnostic,
   live-chainload and autoboot variants (plus a ready-to-copy SD card template)
   into `build/release/` with a deterministic `SHA256SUMS.txt` and

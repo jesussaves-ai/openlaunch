@@ -10,8 +10,9 @@
  *   VRAMCNT_C = 0x84  -> bank C (128 KiB) as Engine B BG at 0x06200000
  *
  * Each engine runs BG mode 0 with BG0 as a text layer. BG0CNT selects character
- * base block 0 (tiles at the bank base) and screen base block 2 (map at
- * base + 0x1000), 4bpp colour depth, 256x256 px.
+ * base block 0 (tiles at the bank base) and a per-engine screen base block
+ * (Engine A: 16 -> map at base + 0x8000, leaving room for the overlay tiles;
+ * Engine B: 2 -> map at base + 0x1000), 4bpp colour depth, 256x256 px.
  *
  * NOTE: VRAM and palette RAM only accept 16- and 32-bit stores on the DS, so
  * every write below goes through REG16().
@@ -31,16 +32,24 @@ typedef struct {
     u32 tile_base;   /* BG character (tile) VRAM base       */
     u32 map_base;    /* BG screen (map) VRAM base           */
     u32 pal_base;    /* BG palette base                     */
+    u16 bgcnt_value; /* BG0CNT value (char/screen base block) */
 } console_engine_t;
 
+/*
+ * Engine A carries the console plus the graphical overlay (ui_font): its map
+ * is placed at screen base block 16 (0x06008000) so tile indices 96..495 are
+ * free for the 16x16 title font and the 32x32 banner icon before the map.
+ * Engine B keeps the compact original layout (map at block 2, 0x06201000).
+ */
 static const console_engine_t s_engines[CONSOLE_COUNT] = {
     {
         DISPCNT,
         BG0CNT,
         BG0HOFS,
         0x06000000u,   /* Engine A tiles */
-        0x06001000u,   /* Engine A map   */
-        PALETTE_MAIN
+        0x06008000u,   /* Engine A map   */
+        PALETTE_MAIN,
+        0x1000u        /* priority 0, char base 0, 4bpp, screen base 16 */
     },
     {
         DISPCNT_SUB,
@@ -48,7 +57,8 @@ static const console_engine_t s_engines[CONSOLE_COUNT] = {
         BG0HOFS_SUB,
         0x06200000u,   /* Engine B tiles */
         0x06201000u,   /* Engine B map   */
-        PALETTE_SUB
+        PALETTE_SUB,
+        0x0200u        /* priority 0, char base 0, 4bpp, screen base 2 */
     },
 };
 
@@ -294,6 +304,11 @@ static const console_engine_t *active_engine(void)
     return &s_engines[(s_active < CONSOLE_COUNT) ? (u32)s_active : 0u];
 }
 
+vu16 *console_map(void)
+{
+    return (vu16 *)(uintptr_t)active_engine()->map_base;
+}
+
 void console_select(console_id_t id)
 {
     if ((u32)id < (u32)CONSOLE_COUNT) {
@@ -409,8 +424,8 @@ static void console_engine_init(const console_engine_t *eng)
     console_load_palette(eng->pal_base);
     console_clear_engine(eng);
 
-    /* BG0CNT: priority 0, char base block 0, 4bpp, screen base block 2. */
-    REG16(eng->bgcnt) = 0x0200u;
+    /* BG0CNT: priority 0, char base block 0, 4bpp, per-engine screen base. */
+    REG16(eng->bgcnt) = eng->bgcnt_value;
 
     /* No scrolling. */
     REG16(eng->scroll + 0u) = 0u;

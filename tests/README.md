@@ -162,6 +162,44 @@ against the real generated artefact.
 
 Built as `build/host_test_dldi`.
 
+## 6f. Host unit tests — graphical font / banner icon (suite 11)
+
+`tests/test_ui_font.c` covers the pure half of the graphical renderer
+(`src/arm9/ui_font.c`):
+
+* the 4bpp (two pixels/byte, low nibble first) and 8bpp tile decoders;
+* the full 32x32 icon de-tiler for both depths (`ui_font_decode_icon()`);
+* the 4bpp tile packer round-trip (`ui_font_pack_tile4()` ↔ `ui_font_decode_tile4()`);
+* the 16x16 glyph expander (`ui_font_expand_glyph16()`), including the top-left
+  and bottom-right corner pixels and the untouched neighbouring tiles;
+* the BGR555 palette reader (`ui_font_read_palette()`, masking + capacity);
+* the UTF-16 title sanitizer (`ui_font_sanitize_utf16()`: simple, multi-line
+  `"L1 / L2"`, CRLF collapsing, non-ASCII `'?'`, leading-break and truncation
+  handling, NULL safety);
+* the bounded 16x16 line renderer (`ui_font_render_line16()`: right-edge clip,
+  last-row clip, off-screen/negative-x rejection and NULL safety).
+
+Built as `build/host_test_ui_font`.
+
+## 6g. Host unit tests — NAND partition table + redirect (suite 12)
+
+`tests/test_nand.c` covers the pure half of the NAND support
+(`src/common/nand.c`):
+
+* `nand_partition_is_fat()` for every FAT16/FAT32 MBR type and the non-FAT
+  rejects;
+* `nand_parse_mbr_pc()` on a synthetic PC-style MBR (entry count, FAT
+  classification, per-partition lba/size, total size, largest FAT);
+* `nand_parse_mbr_twl()` / `nand_parse_table()` on a synthetic HiyaCFW/TWL
+  `{offset,size}` table, including auto-detection and the signature/NULL/empty
+  rejects;
+* `boot_resolve_nand_target()` (`menu forced`, `SD target wins`,
+  `NAND redirect`, `nothing to boot`, NULL safety);
+* `nand_resolve_path()` against the generated `build/sdcard.img` (root file,
+  two-level `/NDS` path, directory component, deep missing path fails closed).
+
+Built as `build/host_test_nand`.
+
 Run all of them with `make host-test`.
 
 ## 7. ROM packaging + static verification

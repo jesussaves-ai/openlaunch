@@ -252,13 +252,13 @@ HOST_SRCS_MEM  := tests/test_mem.c src/common/mem.c
 HOST_SRCS_ARM9 := tests/test_arm9.c \
                   src/common/mem.c src/common/lz77.c src/common/cache.c \
                   src/common/fat_ro.c src/common/nds_header.c \
-                  src/common/dldi.c \
+                  src/common/dldi.c src/common/nand.c \
                   src/arm9/mpu.c src/arm9/irq.c src/arm9/ipc.c \
                   src/arm9/video.c src/arm9/dma.c src/arm9/scfg.c \
                   src/arm9/boot.c src/arm9/boot_cfg.c \
-                  src/arm9/console.c src/arm9/font8x8.c \
+                  src/arm9/console.c src/arm9/font8x8.c src/arm9/ui_font.c \
                   src/arm9/input.c src/arm9/menu.c src/arm9/storage.c \
-                  src/arm9/loader.c
+                  src/arm9/nand_boot.c src/arm9/loader.c
 # Console tile/glyph packer + bounded formatters.
 HOST_SRCS_CONSOLE := tests/test_console.c \
                      src/arm9/console.c src/arm9/font8x8.c src/common/mem.c
@@ -266,12 +266,13 @@ HOST_SRCS_CONSOLE := tests/test_console.c \
 HOST_SRCS_MENU := tests/test_menu.c \
                   src/arm9/menu.c src/arm9/boot.c src/arm9/boot_cfg.c \
                   src/arm9/input.c \
-                  src/arm9/console.c src/arm9/font8x8.c \
+                  src/arm9/console.c src/arm9/font8x8.c src/arm9/ui_font.c \
                   src/arm9/ipc.c src/arm9/scfg.c src/arm9/mpu.c \
                   src/arm9/irq.c src/arm9/video.c src/arm9/dma.c \
-                  src/arm9/storage.c src/arm9/loader.c \
+                  src/arm9/storage.c src/arm9/nand_boot.c src/arm9/loader.c \
                   src/common/mem.c src/common/lz77.c src/common/cache.c \
-                  src/common/fat_ro.c src/common/nds_header.c src/common/dldi.c
+                  src/common/fat_ro.c src/common/nds_header.c src/common/dldi.c \
+                  src/common/nand.c
 # ARM7 TMIO SD/MMC engine, with the register accesses mocked out.
 HOST_SRCS_SDMMC := tests/test_sdmmc.c src/arm7/sdmmc.c
 HOST_CFLAGS_SDMMC := $(HOST_CFLAGS) -DSDMMC_IO_HOOKS
@@ -297,6 +298,14 @@ HOST_CFLAGS_SDIMG := $(HOST_CFLAGS) -DLOADER_HOST_TEST
 
 # Clean-room DLDI scanner / in-RAM patcher + built-in read-only stub driver.
 HOST_SRCS_DLDI := tests/test_dldi.c src/common/dldi.c src/common/mem.c
+# Graphical bitmap font / banner-icon renderer (decoders, packers, 16x16 text).
+HOST_SRCS_UI_FONT := tests/test_ui_font.c \
+                     src/arm9/ui_font.c src/arm9/console.c \
+                     src/arm9/font8x8.c src/common/mem.c
+# NAND partition-table parser + boot-redirect policy + deep FAT path resolver.
+HOST_SRCS_NAND := tests/test_nand.c \
+                  src/common/nand.c src/common/fat_ro.c \
+                  src/common/nds_header.c src/common/mem.c
 
 host-test: $(SD_IMAGE)
 	@mkdir -p $(BUILD)
@@ -310,6 +319,8 @@ host-test: $(SD_IMAGE)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_scfg $(HOST_SRCS_SCFG)
 	$(HOST_CC) $(HOST_CFLAGS_SDIMG) -o $(BUILD)/host_test_sd_image $(HOST_SRCS_SDIMG)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_dldi $(HOST_SRCS_DLDI)
+	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_ui_font $(HOST_SRCS_UI_FONT)
+	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_nand $(HOST_SRCS_NAND)
 	$(BUILD)/host_test_mem
 	$(BUILD)/host_test_arm9
 	$(BUILD)/host_test_console
@@ -320,3 +331,5 @@ host-test: $(SD_IMAGE)
 	$(BUILD)/host_test_scfg
 	$(BUILD)/host_test_sd_image $(SD_IMAGE)
 	$(BUILD)/host_test_dldi
+	$(BUILD)/host_test_ui_font
+	$(BUILD)/host_test_nand $(SD_IMAGE)

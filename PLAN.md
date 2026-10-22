@@ -93,6 +93,9 @@ Consequences:
 | DLDI scan / patch    | clean-room (Chishm DLDI format)                     | `src/common/dldi.c`       | **new**       |
 | BOOT.CFG inspector   | clean-room (menu item [9])                          | `src/arm9/menu.c`         | **new**       |
 | NDS banner decoder   | clean-room (0x068 block, CRC16 + UTF-16LE title)    | `src/common/nds_header.c` | **new**       |
+| Graphical UI font    | clean-room (runtime 16x16 font + banner icon)       | `src/arm9/ui_font.c`      | **new**       |
+| NAND partition table | clean-room (PC MBR + TWL {offset,size} parser)      | `src/common/nand.c`       | **new**       |
+| NAND boot redirect   | clean-room (HiyaCFW / System Menu policy)           | `src/arm9/nand_boot.c`    | **new**       |
 | Release packager     | clean-room (variants + SD template + SHA256SUMS)    | `scripts/make_release.py` | **new**       |
 
 ## 2. Next steps
@@ -258,3 +261,13 @@ Consequences:
   an isolated config and skips cleanly when melonDS or a display is absent; and
   `.github/workflows/ci.yml` runs the host tests, builds/verifies all variants,
   gates on byte-for-byte release reproducibility and publishes tagged releases.
+* **Graphical font / banner icon + NAND redirect** — `src/arm9/ui_font.c`
+  generates a 16x16 double-size font at runtime (no extra ROM table) and decodes
+  the 0x020/0x220 NDS banner icon (4bpp and 8bpp) onto Engine A BG0; the SD
+  browser's verify view renders the icon and double-size title over the
+  telemetry. `src/common/nand.c` parses the DSi NAND PC-style MBR and the
+  HiyaCFW TWL `{offset,size}` table (read-only, ARM7 IPC delegation via
+  `IPC_STORAGE_DEV_EMMC`), `boot_resolve_nand_target()` implements the
+  SD-absent fallback to the DSi System Menu (`00030004`/`484e4c41`), and the top
+  screen reports `NAND : DETECTED`/`NAND : ABSENT`. Covered by
+  `tests/test_ui_font.c` and `tests/test_nand.c` (docs §31–§32).

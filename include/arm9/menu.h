@@ -10,6 +10,7 @@
 
 #include "../common/types.h"
 #include "../common/dsi_hw.h"
+#include "../common/nand.h"
 #include "../common/nds_header.h"
 #include "boot_cfg.h"
 #include "input.h"
@@ -108,6 +109,16 @@ typedef struct {
     bool boot_cfg_present;  /* a BOOT.CFG was found on the SD root         */
     char autoboot_name[BOOT_CFG_PATH_MAX]; /* the resolved target path     */
     char autoboot_sel[8];   /* "[...]" tag: "CFG", "A", "X", ... or ""     */
+
+    /* NAND / HiyaCFW redirect state (read-only eMMC probe). */
+    bool nand_ok;            /* the NAND MBR was read and parsed           */
+    bool nand_fat;           /* a FAT partition was located                */
+    bool nand_launcher;      /* the system launcher was resolved on NAND   */
+    u8   nand_format;        /* nand_table_format_t of the decoded table   */
+    u32  nand_partitions;
+    u32  nand_fat_lba;
+    u32  nand_total_sectors;
+    char nand_launcher_path[NAND_LAUNCHER_PATH_MAX];
 
     const char *last_action;
 } menu_diag_t;

@@ -18,8 +18,10 @@
 #include "arm9/ipc.h"
 #include "arm9/loader.h"
 #include "arm9/mpu.h"
+#include "arm9/nand_boot.h"
 #include "arm9/scfg.h"
 #include "arm9/storage.h"
+#include "arm9/ui_font.h"
 #include "arm9/video.h"
 #include "common/dsi_hw.h"
 #include "common/fat_ro.h"
@@ -77,6 +79,7 @@ static u8 s_fw_probe[8];
  * FAT volume's sector buffer is filled directly by the ARM7 over IPC.
  */
 static fat_volume_t   s_fat_vol;
+static fat_volume_t   s_nand_vol;
 static fat_file_entry_t s_fat_files[MENU_BROWSE_MAX];
 static char s_fat_paths[MENU_BROWSE_MAX][BOOT_CFG_PATH_MAX];
 
@@ -292,6 +295,23 @@ static void diag_poll_extkey(void)
     input_update_ext(ext);
 }
 
+/*
+ * Read the internal NAND's LBA-0 partition table through the ARM7 and record
+ * the result. Read-only: no NAND command is ever issued (AGENTS.md §5).
+ */
+static void diag_nand(menu_diag_t *d)
+{
+    arm9_nand_probe_t probe;
+
+    arm9_nand_probe(&probe);
+    d->nand_ok = probe.ok && probe.signature_ok;
+    d->nand_fat = probe.fat_present;
+    d->nand_format = probe.format;
+    d->nand_partitions = probe.partitions;
+    d->nand_fat_lba = probe.fat_lba;
+    d->nand_total_sectors = probe.total_sectors;
+}
+
 static void diag_collect(menu_diag_t *d)
 {
     scfg_state_t scfg;
@@ -323,6 +343,7 @@ static void diag_collect(menu_diag_t *d)
     diag_query_fw(d);
     diag_read_firmware(d);
     diag_lz77(d);
+    diag_nand(d);
 }
 
 /* ---- Unlaunch-style BOOT.CFG / target autoboot ----------------------- */
@@ -619,8 +640,15 @@ static void render_telemetry(const menu_diag_t *d)
         } else {
             console_puts(0, 16, CONSOLE_PAL_GREY, "BANNER: NONE");
         }
-    } else if (d->sd_total_sectors != 0u) {
-        console_printf(0, 16, CONSOLE_PAL_GREY, "SDCAP: %u MiB",
+    } else if (d->nand_ok) {
+        console_puts(0, 16, CONSOLE_PAL_GREEN, "NAND : DETECTED");
+    } else {
+        console_puts(0, 16, CONSOLE_PAL_GREY, "NAND : ABSENT");
+    }
+
+    /* Row 17 carries the SD capacity in the normal view (free otherwise). */
+    if (!d->loader_inspected && d->sd_total_sectors != 0u) {
+        console_printf(0, 17, CONSOLE_PAL_GREY, "SDCAP: %u MiB",
                        (unsigned)((d->sd_total_sectors + 2047u) / 2048u));
     }
 
@@ -981,10 +1009,58 @@ static void loader_boot_selected(menu_diag_t *d, fat_volume_t *vol,
 }
 
 /*
+ * NAND / HiyaCFW fallback: when the SD card yields no boot target, probe the
+ * internal NAND, mount its FAT partition and locate the DSi System Menu
+ * launcher. Read-only: the launcher is only located and reported, never
+ * written, so the anti-brick guard (AGENTS.md §5) is preserved.
+ */
+static bool menu_try_nand_boot(menu_diag_t *d)
+{
+    nand_boot_context_t ctx;
+    nand_boot_target_t tgt;
+    u32 base;
+
+    d->nand_launcher = false;
+    d->nand_launcher_path[0] = '\0';
+
+    diag_nand(d);
+    if (!d->nand_ok) {
+        return false;
+    }
+
+    ctx.sd_card_present = ((d->sd_flags & IPC_SD_FLAG_PRESENT) != 0u);
+    ctx.sd_target_found = false;
+    ctx.menu_forced = false;
+    ctx.nand_present = d->nand_fat;
+
+    boot_resolve_nand_target(&ctx, &tgt);
+    if (!tgt.attempt) {
+        d->last_action = tgt.reason;
+        return false;
+    }
+
+    base = (d->nand_format == NAND_TABLE_TWL) ? d->nand_fat_lba : 0u;
+    if (!arm9_nand_mount_fat(&s_nand_vol, base)) {
+        d->last_action = "NAND: FAT mount failed";
+        return false;
+    }
+    if (!arm9_nand_find_launcher(&s_nand_vol, d->nand_launcher_path,
+                                 sizeof(d->nand_launcher_path))) {
+        d->last_action = "NAND: no System Menu";
+        return false;
+    }
+
+    d->nand_launcher = true;
+    d->last_action = "NAND System Menu located";
+    return true;
+}
+
+/*
  * Menu item [8]: locate the resolved autoboot target (from BOOT.CFG, or the
  * classic BOOT.NDS/HELLO.NDS fallback) on the SD root, validate it and stage
  * the dual-CPU handoff. Discovery runs on demand if the startup probe has not
- * already populated the target.
+ * already populated the target; when no SD target exists the NAND System Menu
+ * redirect is attempted instead.
  */
 static void menu_autoboot(menu_diag_t *d)
 {
@@ -1001,7 +1077,8 @@ static void menu_autoboot(menu_diag_t *d)
         menu_probe_autoboot(d, &s_boot_target);
     }
     if (!s_autoboot_entry_valid) {
-        d->last_action = "Autoboot: no BOOT.NDS";
+        /* No SD target: fall back to the internal NAND System Menu. */
+        (void)menu_try_nand_boot(d);
         return;
     }
 
@@ -1060,6 +1137,44 @@ static void menu_browse_collect_subdir(fat_volume_t *vol, u32 *count)
                        MENU_SUBDIR_PREFIX, s_dir_list[i].name);
         (*count)++;
     }
+}
+
+/* Tracks whether the graphical banner overlay is currently drawn. */
+static bool s_banner_overlay;
+
+/* Remove the graphical banner overlay (icon + double-size title), if present. */
+static void clear_banner_overlay(void)
+{
+    if (!s_banner_overlay) {
+        return;
+    }
+    console_select(CONSOLE_MAIN);
+    ui_font_clear(0, 0, CONSOLE_COLS - UI_FONT_ICON_COLS, 2);
+    ui_font_clear(CONSOLE_COLS - UI_FONT_ICON_COLS, 0,
+                  UI_FONT_ICON_COLS, UI_FONT_ICON_ROWS);
+    s_banner_overlay = false;
+}
+
+/*
+ * Draw the top-screen banner panel for the highlighted .nds: the decoded 32x32
+ * banner icon plus the double-size title. Shares the console's Engine-A BG0
+ * layer, so it is redrawn after render_telemetry() every frame. The title is
+ * drawn first and the icon on top so a long title cannot clip the thumbnail.
+ */
+static void render_banner_overlay(const menu_diag_t *d)
+{
+    const u8 *raw;
+
+    if (d->loader_inspected && d->banner_present && d->banner_crc_ok &&
+        (raw = loader_banner_raw()) != NULL) {
+        console_select(CONSOLE_MAIN);
+        ui_font_draw_title16(0, 0, CONSOLE_PAL_CYAN, d->banner_title);
+        ui_font_draw_icon(CONSOLE_COLS - UI_FONT_ICON_COLS, 0, raw,
+                          UI_FONT_BPP_4);
+        s_banner_overlay = true;
+        return;
+    }
+    clear_banner_overlay();
 }
 
 /*
@@ -1123,6 +1238,7 @@ static void menu_browse_view(menu_diag_t *d)
         u32 i;
 
         render_telemetry(d);
+        render_banner_overlay(d);
 
         console_select(CONSOLE_SUB);
         console_clear();
@@ -1180,6 +1296,7 @@ static void menu_browse_view(menu_diag_t *d)
         }
     }
 
+    clear_banner_overlay();
     d->last_action = "SD browse";
 }
 
@@ -1238,6 +1355,7 @@ void menu_run(void)
 
     menu_state_init(&state, MENU_ITEM_COUNT);
     input_init();
+    ui_font_init();
     keys.held = 0u;
     keys.down = 0u;
     keys.up = 0u;
