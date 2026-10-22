@@ -17,6 +17,7 @@
 #   make host-test  host unit tests for the hardware-independent logic
 #   make release    build build/release/ (all variants + SD template + SHA256SUMS)
 #   make smoke-test isolated melonDS startup smoke test (skips if unavailable)
+#   make configure-emulator  point the local melonDS config at build/sdcard.img
 #   make size       arm-none-eabi-size for both ELFs
 #   make clean
 
@@ -100,18 +101,27 @@ OBJS_ARM7 := $(patsubst %.c,$(BUILD)/arm7/%.o,$(SRCS_ARM7)) \
 OBJS_ARM9 := $(patsubst %.c,$(BUILD)/arm9/%.o,$(SRCS_ARM9)) \
              $(patsubst %.s,$(BUILD)/arm9/%.o,$(ASM_ARM9))
 
-.PHONY: all rom run check verify size clean host-test arm9-decompile sd-image release smoke-test
+.PHONY: all rom run check verify size clean host-test arm9-decompile sd-image release smoke-test configure-emulator
 
 all: rom
 
 rom: $(ROM) $(LEGACY_ROM)
 
-run: $(ROM)
+run: $(ROM) $(SD_IMAGE)
 	./scripts/run_melonds.sh $(ROM)
 
-# Isolated, non-destructive melonDS startup smoke test. Skips cleanly when
-# melonDS or a display helper is unavailable (e.g. headless CI).
+# Provision the local melonDS configuration (native XDG + Flatpak sandbox, TOML
+# or legacy INI) with build/sdcard.img so the DSi SD card is mounted without any
+# manual GUI step. Idempotent; backs up before the first change.
+configure-emulator: $(SD_IMAGE)
+	python3 scripts/configure_emulator.py --sd $(SD_IMAGE)
+
+# Isolated, non-destructive melonDS startup smoke test. The shared injector
+# (scripts/configure_emulator.py) first provisions the real config so `make run`
+# works afterwards, and writes the isolated config the emulator is actually
+# launched with. Skips cleanly when melonDS or a display helper is unavailable.
 smoke-test: $(ROM) $(SD_IMAGE)
+	python3 scripts/configure_emulator.py --sd $(SD_IMAGE) --quiet || true
 	python3 scripts/smoke_test_emu.py --rom $(ROM) --sd $(SD_IMAGE)
 
 # Object compilation / strict verification target.

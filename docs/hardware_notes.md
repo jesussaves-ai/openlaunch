@@ -810,6 +810,13 @@ ARM7 in its `ipc_dispatch_pending` poll (`0x02380500`) rather than in
 `sdmmc_read`. The self-test now reports `SD RD: unavailable` without the
 `NULL DEVICE` command.
 
+To make the *enabled* path the default without manual GUI work,
+`scripts/configure_emulator.py` writes `[DSi.SD] Enable = true` /
+`ImagePath = <repo>/build/sdcard.img` (and DSi console type) into the local
+melonDS config; `make run`/`make smoke-test` invoke it automatically. The smoke
+test also greps the emulator log for the null-device signature so a
+misconfigured card fails loudly.
+
 ## 24. TWL header unit code + the TMIO0 read-only probe/browse pipeline
 
 ### Cartridge unit code (`0x012`)
