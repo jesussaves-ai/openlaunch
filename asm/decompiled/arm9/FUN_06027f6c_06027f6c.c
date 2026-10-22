@@ -1,0 +1,29 @@
+// Function: FUN_06027f6c
+// Address:  06027f6c
+// Signature: undefined FUN_06027f6c()
+
+
+undefined8 FUN_06027f6c(undefined4 param_1,undefined4 param_2)
+
+{
+  undefined4 uVar1;
+  undefined2 *puVar2;
+  uint uVar3;
+  
+  puVar2 = DAT_060283c4;
+  uVar1 = DAT_060283b8;
+  *(undefined4 *)(DAT_060283c4 + 2) = param_1;
+  *(uint *)(puVar2 + 0xe) = *(uint *)(puVar2 + 0xe) & 0x7c80fffa;
+  puVar2[4] = puVar2[4] & 0xfffe;
+  *puVar2 = (short)uVar1;
+  do {
+    if ((*(uint *)(puVar2 + 0xe) & 0x7f0000) != 0) {
+      uVar3 = 0xffffffff;
+      goto LAB_06027fe4;
+    }
+  } while ((*(uint *)(puVar2 + 0xe) & 1) == 0);
+  uVar3 = *(uint *)(puVar2 + 6) & 0xff;
+LAB_06027fe4:
+  return CONCAT44(param_2,uVar3);
+}
+

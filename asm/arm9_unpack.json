@@ -1,0 +1,16 @@
+{
+  "arm9_rom_offset": 16384,
+  "arm9_ram_addr": 35651584,
+  "arm9_size": 44416,
+  "crt0_entry": 35653632,
+  "image_base": 100794368,
+  "image_size": 53164,
+  "gfx_base": 100794368,
+  "gfx_size": 15504,
+  "code_base": 100809872,
+  "code_size": 37660,
+  "entry": 100816684,
+  "cp15_control": 356472,
+  "scfg_ext_addr": 67125256,
+  "scfg_ext_val": 2198335744
+}
