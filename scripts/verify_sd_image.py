@@ -17,6 +17,9 @@ the chainloader safety gate perform, so a regression in either side is caught:
      header CRC16.
   4c. HELLO.NDS / BOOT.NDS / NDS/SUBAPP.NDS ARM9 segments carry the
       canonical unpatched "NONE" DLDI stub with a 1 KiB reserved block.
+  4d. HELLO.NDS / BOOT.NDS / NDS/SUBAPP.NDS carry a valid banner: a supported
+      version, a correct CRC16 over 0x020..0x83F and a decodable UTF-16LE title
+      (CHAINLOAD OK / AUTOBOOT OK / SUBDIR PAYLOAD).
   5. BADCRC.NDS has a corrupted header CRC16 (``NDS_ERR_BAD_CRC``).
   6. OVERLAP.NDS has a valid header CRC16 but an ARM9 load range inside the
      bootloader reservation (``NDS_ERR_OVERLAP_BOOTLOADER``).
@@ -38,6 +41,17 @@ BOOTLOADER_RESERVE_BASE = 0x02100000
 BOOTLOADER_RESERVE_END = 0x02280000
 NDS_HEADER_CRC_OFF = 0x15E
 NDS_HEADER_CRC_LEN = 0x15E
+
+# NDS banner block (header offset 0x068).
+NDS_BANNER_OFF_OFF = 0x068
+NDS_BANNER_SIZE = 0x840
+NDS_BANNER_VERSION_OFF = 0x000
+NDS_BANNER_CRC_OFF = 0x002
+NDS_BANNER_CRC_START = 0x020
+NDS_BANNER_CRC_LEN = 0x820
+NDS_BANNER_TITLE_OFF = 0x240
+NDS_BANNER_TITLE_CHARS = 128
+NDS_BANNER_VERSIONS = (0x0001, 0x0002, 0x0003, 0x0103)
 
 # DLDI header (include/common/dldi.h): 12-byte signature, 1 KiB allocation.
 DLDI_MAGIC = b"\xED\xA5\x8D\xBF Chishm\x00"
@@ -83,6 +97,55 @@ def check_dldi(c, name: str, nds: bytes) -> None:
     c.check(do + (1 << alloc) <= arm9_size,
             "%s DLDI reserved block fits inside the ARM9 segment" % name,
             "offset %d + %d > %d" % (do, 1 << alloc, arm9_size))
+
+
+def decode_banner_title(banner: bytes) -> str:
+    """Decode the UTF-16LE banner title into the C parser's single-line form."""
+    out = []
+    i = 0
+    while i < NDS_BANNER_TITLE_CHARS:
+        ch = struct.unpack_from("<H", banner, NDS_BANNER_TITLE_OFF + i * 2)[0]
+        if ch == 0x0000:
+            break
+        if ch in (0x000A, 0x000D):
+            if (ch == 0x000D and i + 1 < NDS_BANNER_TITLE_CHARS and
+                    struct.unpack_from("<H", banner,
+                                       NDS_BANNER_TITLE_OFF + (i + 1) * 2)[0] == 0x000A):
+                i += 1
+            out.append(" / ")
+        elif 0x20 <= ch <= 0x7E:
+            out.append(chr(ch))
+        else:
+            out.append("?")
+        i += 1
+    return "".join(out).rstrip(" ")
+
+
+def check_banner(c, name: str, nds: bytes, expected_title=None) -> None:
+    """Assert that an .nds carries a valid banner (and optionally its title)."""
+    if len(nds) < SECTOR:
+        return
+    off = u32(nds, NDS_BANNER_OFF_OFF)
+    c.check(off != 0 and off + NDS_BANNER_SIZE <= len(nds),
+            "%s has a banner block" % name,
+            "off 0x%X file %d" % (off, len(nds)))
+    if off == 0 or off + NDS_BANNER_SIZE > len(nds):
+        return
+    banner = nds[off:off + NDS_BANNER_SIZE]
+    version = u16(banner, NDS_BANNER_VERSION_OFF)
+    c.check(version in NDS_BANNER_VERSIONS,
+            "%s banner version is supported" % name,
+            "got 0x%04X" % version)
+    stored = u16(banner, NDS_BANNER_CRC_OFF)
+    computed = crc16(banner[NDS_BANNER_CRC_START:
+                            NDS_BANNER_CRC_START + NDS_BANNER_CRC_LEN])
+    c.check(stored == computed, "%s banner CRC16 is valid" % name,
+            "stored 0x%04X computed 0x%04X" % (stored, computed))
+    title = decode_banner_title(banner)
+    if expected_title is not None:
+        c.check(title == expected_title,
+                "%s banner title is %r" % (name, expected_title),
+                "got %r" % title)
 
 
 def crc16(data: bytes) -> int:
@@ -311,6 +374,7 @@ def main(argv) -> int:
                         .startswith("SUBDIR"),
                         "NDS/SUBAPP.NDS title is SUBDIR PAYLOAD",
                         "got %r" % sub[0:12])
+                check_banner(c, "NDS/SUBAPP.NDS", sub, "SUBDIR PAYLOAD")
                 check_dldi(c, "NDS/SUBAPP.NDS", sub)
 
     if "BOOT.CFG" in entries:
@@ -361,6 +425,7 @@ def main(argv) -> int:
         c.check(hello_bytes[0x0C:0x10] == b"TSTL",
                 "HELLO.NDS game code is TSTL",
                 "got %r" % hello_bytes[0x0C:0x10])
+        check_banner(c, "HELLO.NDS", hello_bytes, "CHAINLOAD OK")
         check_dldi(c, "HELLO.NDS", hello_bytes)
 
     # ---- BOOT.NDS: the autoboot variant ---------------------------------
@@ -382,6 +447,7 @@ def main(argv) -> int:
                     "AUTOBOOT OK",
                     "BOOT.NDS title is AUTOBOOT OK",
                     "got %r" % boot_bytes[0:12])
+            check_banner(c, "BOOT.NDS", boot_bytes, "AUTOBOOT OK")
             check_dldi(c, "BOOT.NDS", boot_bytes)
 
     # ---- BADCRC.NDS -----------------------------------------------------

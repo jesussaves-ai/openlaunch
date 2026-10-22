@@ -609,6 +609,16 @@ static void render_telemetry(const menu_diag_t *d)
                        d->boot_dry_run ? CONSOLE_PAL_YELLOW : CONSOLE_PAL_GREEN,
                        "STAGE: %s",
                        d->boot_dry_run ? "DRY-RUN OK" : "BOOTING...");
+    } else if (d->loader_inspected) {
+        /* Row 16 also carries the decoded banner in the verify/dry-run view. */
+        if (d->banner_present && d->banner_crc_ok) {
+            console_printf(0, 16, CONSOLE_PAL_GREEN, "BANNER: %s",
+                           d->banner_title);
+        } else if (d->banner_present) {
+            console_puts(0, 16, CONSOLE_PAL_RED, "BANNER: BAD CRC");
+        } else {
+            console_puts(0, 16, CONSOLE_PAL_GREY, "BANNER: NONE");
+        }
     } else if (d->sd_total_sectors != 0u) {
         console_printf(0, 16, CONSOLE_PAL_GREY, "SDCAP: %u MiB",
                        (unsigned)((d->sd_total_sectors + 2047u) / 2048u));
@@ -872,6 +882,9 @@ static void loader_inspect(menu_diag_t *d, fat_volume_t *vol,
     d->dldi_patched = false;
     d->dldi_alloc_kb = 0u;
     d->dldi_io_type[0] = '\0';
+    d->banner_present = false;
+    d->banner_crc_ok = false;
+    d->banner_title[0] = '\0';
 
     st = loader_validate_file(vol, entry, d->extended_ram, &h);
 
@@ -904,6 +917,21 @@ static void loader_inspect(menu_diag_t *d, fat_volume_t *vol,
             d->dldi_alloc_kb = dinfo.allocated_size >> 10;
             dsi_memcpy(d->dldi_io_type, dinfo.io_type,
                        sizeof(d->dldi_io_type));
+        }
+    }
+
+    /*
+     * Read and decode the optional 0x840-byte banner. A banner is only
+     * accepted when its version is recognised; a bad CRC16 is reported
+     * separately. Entirely read-only.
+     */
+    {
+        nds_banner_info_t binfo;
+
+        if (loader_read_banner(vol, entry, &h, &binfo) && binfo.version_ok) {
+            d->banner_present = true;
+            d->banner_crc_ok = binfo.crc_ok;
+            dsi_memcpy(d->banner_title, binfo.title, sizeof(d->banner_title));
         }
     }
 
@@ -1057,6 +1085,9 @@ static void menu_browse_view(menu_diag_t *d)
     d->loader_loadable = false;
     d->boot_staged = false;
     d->boot_dry_run = false;
+    d->banner_present = false;
+    d->banner_crc_ok = false;
+    d->banner_title[0] = '\0';
     d->sd_fs_type = FAT_TYPE_NONE;
     d->sd_total_sectors = 0u;
 

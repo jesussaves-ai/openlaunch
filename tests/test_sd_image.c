@@ -185,6 +185,24 @@ static bool find_entry(fat_volume_t *vol, const char *name,
     return false;
 }
 
+/*
+ * Validate `entry`, read its banner through the delegated FAT reader and assert
+ * the decoded title. Also confirms the banner sits at the canonical 0x840.
+ */
+static void assert_banner(fat_volume_t *vol, const fat_file_entry_t *entry,
+                          const char *title)
+{
+    nds_header_t hdr;
+    nds_banner_info_t b;
+
+    assert(loader_validate_file(vol, entry, true, &hdr) == NDS_LOAD_OK);
+    assert(hdr.banner_offset == 0x840u);
+    assert(loader_read_banner(vol, entry, &hdr, &b));
+    assert(b.version_ok);
+    assert(b.crc_ok);
+    assert(strcmp(b.title, title) == 0);
+}
+
 static void test_hello_validates_and_stages(void)
 {
     fat_volume_t vol;
@@ -208,6 +226,9 @@ static void test_hello_validates_and_stages(void)
     assert(hdr.unit_code == NDS_UNIT_CODE_NDS_DSI);
     assert(hdr.arm9_ram_addr == 0x02004000u);
     assert(hdr.arm7_ram_addr == 0x02380000u);
+
+    /* 1b. The banner referenced by 0x068 decodes cleanly. */
+    assert_banner(&vol, &hello, "CHAINLOAD OK");
 
     /* 2. Stage (dry run): both payloads copied, handoff requested once. */
     s_handoff_calls = 0u;
@@ -302,6 +323,14 @@ static void test_negative_images(void)
     assert(!res.staged);
     assert(res.status == NDS_ERR_BAD_CRC);
 
+    /* The synthetic stub carries no banner (banner_offset 0). */
+    assert(hdr.banner_offset == 0u);
+    {
+        nds_banner_info_t binfo;
+
+        assert(!loader_read_banner(&vol, &badcrc, &hdr, &binfo));
+    }
+
     assert(find_entry(&vol, "OVERLAP.NDS", &overlap));
     assert(loader_validate_file(&vol, &overlap, true, &hdr)
            == NDS_ERR_OVERLAP_BOOTLOADER);
@@ -331,6 +360,9 @@ static void test_boot_nds(void)
     assert(strcmp(hdr.title, "AUTOBOOT OK") == 0);
     assert(strcmp(hdr.gamecode, "TSTL") == 0);
     assert(hdr.unit_code == NDS_UNIT_CODE_NDS_DSI);
+
+    /* The banner was retitled in step with the ROM title. */
+    assert_banner(&vol, &boot, "AUTOBOOT OK");
 
     s_handoff_calls = 0u;
     assert(loader_stage_and_boot(&vol, &boot, true, &res) == NDS_LOAD_OK);
@@ -416,6 +448,9 @@ static void test_subapp_stages(void)
     assert(strncmp(hdr.title, "SUBDIR", 6u) == 0);
     assert(strcmp(hdr.gamecode, "TSTL") == 0);
     assert(hdr.unit_code == NDS_UNIT_CODE_NDS_DSI);
+
+    /* The /NDS payload's banner carries the full (untruncated) title. */
+    assert_banner(&vol, &sub, "SUBDIR PAYLOAD");
 
     s_handoff_calls = 0u;
     assert(loader_stage_and_boot_path(&vol, &sub, path, true, &res)

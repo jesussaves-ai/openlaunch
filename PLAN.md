@@ -90,6 +90,8 @@ Consequences:
 | 1-level subdir FAT   | clean-room (`fat_find_path`/`fat_list_dir_cluster`) | `src/common/fat_ro.c`     | **new**       |
 | DLDI scan / patch    | clean-room (Chishm DLDI format)                     | `src/common/dldi.c`       | **new**       |
 | BOOT.CFG inspector   | clean-room (menu item [9])                          | `src/arm9/menu.c`         | **new**       |
+| NDS banner decoder   | clean-room (0x068 block, CRC16 + UTF-16LE title)    | `src/common/nds_header.c` | **new**       |
+| Release packager     | clean-room (variants + SD template + SHA256SUMS)    | `scripts/make_release.py` | **new**       |
 
 ## 2. Next steps
 
@@ -226,3 +228,20 @@ Consequences:
   SD target check (`OK`/`MISSING`) and the locked `B`/`SELECT` override.
   Covered by `tests/test_dldi.c` (suite 10), `tests/test_sd_image.c` and
   `tests/test_menu.c` (docs §29).
+* **NDS banner decoder + reproducible release bundle** —
+  `nds_header_t` now carries `banner_offset` (0x068) and
+  `nds_banner_parse()` (`src/common/nds_header.c`) validates the banner version
+  (`0x0001`/`0x0002`/`0x0003`/`0x0103`), recomputes the CRC-16/MODBUS over
+  `0x020..0x83F` and decodes the UTF-16LE title at `0x240` into a single-line
+  ASCII summary (`\n` → `" / "`, non-ASCII → `'?'`). `loader_read_banner()`
+  streams the 0x840-byte block through the delegated FAT reader and `[6]`'s
+  verify view renders `BANNER: <title>` / `BAD CRC` / `NONE`.
+  `scripts/pack_nds.py` emits a real v1 banner at `0x840` (`--banner-title`)
+  and `scripts/make_sd_image.py` retitles it for the `BOOT.NDS`/`SUBAPP.NDS`
+  variants. `make release` (`scripts/make_release.py`) builds the diagnostic,
+  live-chainload and autoboot variants in isolated build directories, stages
+  `build/release/` with a `BOOT.CFG` template, `NDS/HELLO.NDS` and
+  `sdcard.img`, and writes/verifies a deterministic `SHA256SUMS.txt` plus a
+  deterministic `build/dsi_bootloader_release.tar.gz`. Covered by
+  `tests/test_loader.c`, `tests/test_sd_image.c`, `scripts/verify_rom.py` and
+  `scripts/verify_sd_image.py` (docs §30).

@@ -95,6 +95,12 @@ write-protect field layout. Built as `build/host_test_scfg`.
 * `nds_header_validate_twl_segments()` for valid `ARM9i`/`ARM7i` segments
   (Main RAM and NWRAM), out-of-bounds/un-aligned addresses, truncated files and
   bootloader-reservation overlap.
+* `nds_banner_parse()` (the NDS banner referenced by header offset `0x068`):
+  valid v1/v2/v3/0x0103 banners, the multi-line form
+  `"Line 1\nLine 2"` → `"Line 1 / Line 2"`, CRLF collapsing, non-ASCII `'?'`
+  substitution, trailing-space trimming, bad-CRC16 detection (title still
+  decoded), unsupported versions, NULL/short-buffer rejection and the
+  `nds_header_t.banner_offset` decode.
 
 Built as `build/host_test_loader` (`src/arm9/loader.c` compiles on the host with
 the hardware CPU handoff compiled out).
@@ -131,6 +137,11 @@ It also asserts the DLDI path end to end: `HELLO.NDS`, `BOOT.NDS` and
 after staging, the staged ARM9 header parses as the built-in read-only driver,
 and only the replaced 1 KiB DLDI block differs from the on-disk ARM9 bytes.
 
+It also reads each payload's banner through `loader_read_banner()` and asserts
+`banner_offset == 0x840`, `version_ok`, `crc_ok` and the decoded titles
+(`CHAINLOAD OK`, `AUTOBOOT OK`, `SUBDIR PAYLOAD`); the synthetic `BADCRC.NDS`
+stub is asserted to carry no banner (`banner_offset == 0`).
+
 `make host-test` builds `build/sdcard.img` first, so this suite always runs
 against the real generated artefact.
 
@@ -159,6 +170,7 @@ Run all of them with `make host-test`.
 make              # link build/arm{9,7}.elf -> .bin -> build/dsi_bootloader.nds
 make sd-image     # build build/hello_payload.nds + build/sdcard.img
 make verify       # validate the packaged ROM, the payload and the SD image
+make release      # stage build/release/ + build/dsi_bootloader_release.tar.gz
 ```
 
 `make verify` runs `scripts/verify_rom.py` (on both `build/dsi_bootloader.nds`
@@ -171,6 +183,8 @@ and `build/hello_payload.nds`), which asserts:
   covers it, the `0x080` total-used size is consistent and the padding is `0xFF`;
 * the `0x012` unit code is a valid value and, when DSi-capable, is the
   NDS+DSi hybrid `0x02` with a non-zero TWL region mask;
+* the `0x068` banner offset resolves to a block with a supported version, a
+  correct CRC16 over `0x020..0x83F` and a decodable UTF-16LE title;
 * no eMMC/NAND write symbols (AGENTS.md §5) are present in the linker maps.
 
 It then runs `scripts/verify_sd_image.py`, which independently re-checks the
@@ -183,7 +197,16 @@ multi-cluster `HELLO.NDS` chain, the `BOOT.NDS` autoboot variant (title
 `AUTOBOOT OK`, valid CRC16), the canonical unpatched `"NONE"` DLDI stub in the
 `HELLO.NDS` / `BOOT.NDS` / `NDS/SUBAPP.NDS` ARM9 segments (1 KiB reserved), and
 the two negative-test headers (`BADCRC.NDS` bad CRC16, `OVERLAP.NDS` ARM9 range
-inside the bootloader reservation).
+inside the bootloader reservation). It additionally verifies the banner
+(version, CRC16 and decoded title) of `HELLO.NDS`, `BOOT.NDS` and
+`NDS/SUBAPP.NDS`.
+
+`make release` (`scripts/make_release.py`) builds the diagnostic, chainload and
+autoboot variants in isolated build directories, stages `build/release/`
+(`dsi_bootloader_diag.nds`, `dsi_bootloader.nds`, `BOOT.NDS`, `BOOT.CFG`,
+`NDS/HELLO.NDS`, `sdcard.img`), writes a deterministic `SHA256SUMS.txt`,
+re-hashes every entry to verify it and then emits a deterministic
+`build/dsi_bootloader_release.tar.gz`.
 
 ## 8. melonDS smoke test
 
@@ -255,4 +278,5 @@ hardware.
 treats those `0x800` bytes as the secure area and may overwrite them; keeping
 the code after the prefix makes the image survive that.
 
-CI should run at minimum `make check`, `make verify` and `make host-test`.
+CI should run at minimum `make check`, `make verify`, `make host-test` and
+`make release`.

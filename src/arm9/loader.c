@@ -40,6 +40,13 @@ static u8 s_header_sector[LOADER_HEADER_READ_LEN];
  */
 static u8 s_dldi_scan_buf[LOADER_DLDI_SCAN_MAX];
 
+/*
+ * Banner read buffer (0x840 bytes) for loader_read_banner(). Lives in .bss
+ * (shared Main RAM) so the delegated ARM9 storage reader can fill it directly
+ * over IPC. Never DTCM.
+ */
+static u8 s_banner_buf[NDS_BANNER_SIZE];
+
 #ifdef LOADER_HOST_TEST
 /*
  * Host integration tests (tests/test_sd_image.c) run the full staging pipeline
@@ -215,6 +222,13 @@ nds_load_status_t loader_validate_file(fat_volume_t *vol,
     }
 
     /*
+     * `out_hdr` now also carries `banner_offset` (0x068), so the [6]
+     * verify/dry-run inspector can fetch and decode the banner block with
+     * loader_read_banner(). A missing or malformed banner never affects the
+     * loadability verdict.
+     */
+
+    /*
      * In TWL mode, a DSi-capable image may carry optional ARM9i/ARM7i segments.
      * They are validated even when absent (a plain hybrid image has none).
      */
@@ -255,6 +269,34 @@ bool loader_detect_dldi(fat_volume_t *vol, const fat_file_entry_t *entry,
         return false;
     }
     return dldi_scan(s_dldi_scan_buf, got, out, NULL);
+}
+
+bool loader_read_banner(fat_volume_t *vol, const fat_file_entry_t *entry,
+                        const nds_header_t *hdr, nds_banner_info_t *out)
+{
+    u32 got = 0u;
+    fat_chain_status_t chain = FAT_CHAIN_ERR_ARG;
+
+    if (out != NULL) {
+        dsi_memset(out, 0, sizeof(*out));
+    }
+    if (vol == NULL || entry == NULL || hdr == NULL || out == NULL) {
+        return false;
+    }
+    if (hdr->banner_offset == 0u) {
+        return false;
+    }
+    /* The whole 0x840-byte block must lie inside the file. */
+    if (hdr->banner_offset > entry->file_size ||
+        entry->file_size - hdr->banner_offset < NDS_BANNER_SIZE) {
+        return false;
+    }
+    if (!fat_read_file_range(vol, entry, hdr->banner_offset,
+                             s_banner_buf, NDS_BANNER_SIZE, &got, &chain) ||
+        got != NDS_BANNER_SIZE) {
+        return false;
+    }
+    return nds_banner_parse(s_banner_buf, NDS_BANNER_SIZE, out);
 }
 
 #if defined(ENABLE_CHAINLOAD_BOOT) && \

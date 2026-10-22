@@ -10,6 +10,7 @@
 
 #include "../common/types.h"
 #include "../common/dsi_hw.h"
+#include "../common/nds_header.h"
 #include "boot_cfg.h"
 #include "input.h"
 
@@ -94,6 +95,11 @@ typedef struct {
     bool dldi_patched;      /* it was replaced by the built-in RO driver */
     u32  dldi_alloc_kb;     /* reserved block size in KiB                */
     char dldi_io_type[5];   /* 4-char IOType tag + NUL                   */
+
+    /* NDS banner report for the [6] verify/dry-run inspector. */
+    bool banner_present;    /* a banner was read and its version accepted */
+    bool banner_crc_ok;     /* the banner CRC16 verified                  */
+    char banner_title[NDS_BANNER_TITLE_MAX + 1u]; /* decoded English title */
 
     /* Unlaunch-style BOOT.NDS / BOOT.CFG autoboot policy / discovery state. */
     bool autoboot_checked;  /* the SD root was probed for the target       */

@@ -42,6 +42,21 @@ HEADER_CRC_OFF = 0x15E
 # Header CRC covers 0x000..0x15D inclusive (i.e. up to HEADER_CRC_OFF).
 HEADER_CRC_LEN = HEADER_CRC_OFF
 
+# --------------------------------------------------------------------------
+# NDS banner block (header offset 0x068 -> a 0x840-byte block)
+# --------------------------------------------------------------------------
+# The canonical banner referenced by the 32-bit word at header 0x068. It fits
+# inside the 0x4000-byte header block, before the ARM9 binary at 0x4000.
+BANNER_OFFSET = 0x840
+BANNER_SIZE = 0x840
+BANNER_VERSION = 0x0001
+BANNER_VERSION_OFF = 0x000
+BANNER_CRC_OFF = 0x002
+BANNER_CRC_START = 0x020
+BANNER_CRC_LEN = 0x820
+BANNER_TITLE_OFF = 0x240
+BANNER_TITLE_BYTES = 256       # 128 UTF-16LE code units
+
 # Cartridge capacity. melonDS (and the DSi loader) expect a ROM whose size is
 # a power of two of at least 32 KiB; anything smaller is rounded up and logged
 # as "bad ROM size". The Device Capacity byte (offset 0x014) is the exponent of
@@ -143,6 +158,26 @@ def find_ndstool():
     return None
 
 
+def build_banner(title_text: str) -> bytes:
+    """Return a valid 0x840-byte v1 NDS banner with `title_text` as the title.
+
+    The English/primary title is stored as UTF-16LE at banner + 0x240 (up to 128
+    code units) and the CRC-16/MODBUS over bytes 0x020..0x83F is written at
+    banner + 0x002.
+    """
+    banner = bytearray(BANNER_SIZE)
+    struct.pack_into("<H", banner, BANNER_VERSION_OFF, BANNER_VERSION)
+
+    encoded = title_text.encode("utf-16-le")[:BANNER_TITLE_BYTES]
+    if len(encoded) % 2:                  # never split a code unit
+        encoded = encoded[:-1]
+    banner[BANNER_TITLE_OFF:BANNER_TITLE_OFF + len(encoded)] = encoded
+
+    crc = crc16(bytes(banner[BANNER_CRC_START:BANNER_CRC_START + BANNER_CRC_LEN]))
+    struct.pack_into("<H", banner, BANNER_CRC_OFF, crc)
+    return bytes(banner)
+
+
 def load_logo(path: str) -> bytes:
     with open(path, "rb") as fh:
         data = fh.read(NINTENDO_LOGO_OFF + NINTENDO_LOGO_LEN)
@@ -161,7 +196,8 @@ def load_logo(path: str) -> bytes:
 def build_header(arm9, arm7, twl: bool, logo: bytes, rom_size: int,
                  capacity: int, title: bytes = TITLE,
                  game_code: bytes = GAME_CODE,
-                 maker_code: bytes = MAKER_CODE) -> bytearray:
+                 maker_code: bytes = MAKER_CODE,
+                 banner_offset: int = BANNER_OFFSET) -> bytearray:
     """Return the 0x4000-byte header block."""
     arm9_off, arm9_entry, arm9_ram, arm9_size = arm9
     arm7_off, arm7_entry, arm7_ram, arm7_size = arm7
@@ -198,6 +234,7 @@ def build_header(arm9, arm7, twl: bool, logo: bytes, rom_size: int,
 
     put32(0x60, NORMAL_CMD)
     put32(0x64, KEY1_CMD)
+    put32(0x68, banner_offset)        # banner block file offset (0 = none)
     put16(0x6C, 0x0000)               # secure-area CRC (unencrypted payload)
     put16(0x6E, SECURE_AREA_DELAY)
 
@@ -253,6 +290,12 @@ def main(argv) -> int:
     ap.add_argument("--maker", default=None,
                     help="2-byte maker code (default: %s)"
                          % MAKER_CODE.decode("ascii"))
+    ap.add_argument("--banner-title", default=None,
+                    help="UTF-16LE banner title at 0x840+0x240 (default: the "
+                         "ROM title). Literal '\\n' separators become ' / '.")
+    ap.add_argument("--no-banner", dest="banner", action="store_false",
+                    default=True,
+                    help="omit the 0x840-byte banner block (banner_offset 0)")
     ap.add_argument("--twl", dest="twl", action="store_true", default=True,
                     help="populate the DSi/TWL extended header (default)")
     ap.add_argument("--no-twl", dest="twl", action="store_false",
@@ -296,12 +339,27 @@ def main(argv) -> int:
     if len(maker_code) != 2:
         ap.error("--maker must be exactly 2 bytes (got %d)" % len(maker_code))
 
+    # Banner title defaults to the ROM title. A literal "\n" in the argument is
+    # honoured as a line break so the decoded summary exercises " / ".
+    if args.banner:
+        if args.banner_title is not None:
+            banner_title = args.banner_title.replace("\\n", "\n")
+        else:
+            banner_title = title.decode("ascii", "replace")
+    else:
+        banner_title = None
+
     header = build_header(
         (arm9_off, arm9_entry, args.arm9_ram, len(arm9_bin)),
         (arm7_off, arm7_entry, args.arm7_ram, len(arm7_bin)),
         args.twl, logo, padded_size, capacity,
         title=title, game_code=game_code, maker_code=maker_code,
+        banner_offset=BANNER_OFFSET if args.banner else 0,
     )
+
+    if banner_title is not None:
+        banner = build_banner(banner_title)
+        header[BANNER_OFFSET:BANNER_OFFSET + BANNER_SIZE] = banner
 
     # Fill the padding with 0xFF, matching a blank cartridge/EEPROM image.
     rom = bytearray(b"\xFF" * padded_size)
@@ -330,6 +388,13 @@ def main(argv) -> int:
           % (UNIT_CODE_NDS_DSI if args.twl else UNIT_CODE_NDS,
              " (NDS+DSi hybrid)" if args.twl else " (NDS)",
              crc16(logo), crc16(bytes(header[:HEADER_CRC_LEN]))))
+    if banner_title is not None:
+        banner_crc = struct.unpack_from("<H", header, BANNER_OFFSET + BANNER_CRC_OFF)[0]
+        shown = banner_title.replace("\n", " / ")
+        print("    banner off 0x%05X  v%04X  crc 0x%04X  title %r"
+              % (BANNER_OFFSET, BANNER_VERSION, banner_crc, shown))
+    else:
+        print("    banner: none")
     print("    ndstool: %s" % (ndstool if ndstool else "not found (not required)"))
     return 0
 

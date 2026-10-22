@@ -82,6 +82,9 @@ bool nds_header_parse(const u8 *buf, u32 len, nds_header_t *out)
     out->arm7_ram_addr   = dsi_read_le32(buf + NDS_ARM7_RAM_ADDR_OFF);
     out->arm7_size       = dsi_read_le32(buf + NDS_ARM7_SIZE_OFF);
 
+    /* Banner block file offset (0x068); decoded for every header. */
+    out->banner_offset   = dsi_read_le32(buf + NDS_BANNER_OFF_OFF);
+
     /*
      * The TWL extended header is only meaningful for a DSi-capable image and
      * only readable when the caller supplied enough bytes. Decoding it is
@@ -104,6 +107,97 @@ bool nds_header_parse(const u8 *buf, u32 len, nds_header_t *out)
 bool nds_header_read(const u8 *buf, u32 len, nds_header_t *out)
 {
     return nds_header_parse(buf, len, out);
+}
+
+/* ------------------------------------------------------------------ */
+/* Banner block                                                        */
+/* ------------------------------------------------------------------ */
+
+/* Append one character to the summary, honouring the fixed-size buffer. */
+static bool banner_append(nds_banner_info_t *out, u32 *o, char c)
+{
+    if (*o >= NDS_BANNER_TITLE_MAX) {
+        return false;
+    }
+    out->title[*o] = c;
+    (*o)++;
+    return true;
+}
+
+bool nds_banner_parse(const u8 *buf, u32 len, nds_banner_info_t *out)
+{
+    u32 i;
+    u32 o = 0u;
+    bool pending_sep = false;
+    u16 version;
+
+    if (out != NULL) {
+        dsi_memset(out, 0, sizeof(*out));
+    }
+    if (buf == NULL || out == NULL || len < NDS_BANNER_SIZE) {
+        return false;
+    }
+
+    version = dsi_read_le16(buf + NDS_BANNER_VERSION_OFF);
+    out->version = version;
+    out->version_ok = (version == NDS_BANNER_VERSION_1 ||
+                       version == NDS_BANNER_VERSION_2 ||
+                       version == NDS_BANNER_VERSION_3 ||
+                       version == NDS_BANNER_VERSION_0103);
+
+    out->stored_crc   = dsi_read_le16(buf + NDS_BANNER_CRC_OFF);
+    out->computed_crc = nds_crc16(buf + NDS_BANNER_CRC_START,
+                                  NDS_BANNER_CRC_LEN);
+    out->crc_ok = (out->stored_crc == out->computed_crc);
+
+    /*
+     * Decode the UTF-16LE title. A line break is only materialised as the
+     * separator " / " when a further character follows, so leading, trailing
+     * and consecutive breaks never leave a dangling separator.
+     */
+    for (i = 0u; i < NDS_BANNER_TITLE_CHARS; i++) {
+        u16 ch = dsi_read_le16(buf + NDS_BANNER_TITLE_OFF + i * 2u);
+        char c;
+
+        if (ch == 0x0000u) {
+            break;
+        }
+        if (ch == 0x000Au || ch == 0x000Du) {
+            /* Collapse a CRLF pair into a single line break. */
+            if (ch == 0x000Du && (i + 1u) < NDS_BANNER_TITLE_CHARS &&
+                dsi_read_le16(buf + NDS_BANNER_TITLE_OFF +
+                              (i + 1u) * 2u) == 0x000Au) {
+                i++;
+            }
+            if (o > 0u) {
+                pending_sep = true;
+            }
+            continue;
+        }
+
+        c = (ch >= 0x0020u && ch <= 0x007Eu) ? (char)ch : '?';
+        if (pending_sep) {
+            /* Reserve room for the 3-character separator plus one char. */
+            if (o + 4u > NDS_BANNER_TITLE_MAX) {
+                break;
+            }
+            (void)banner_append(out, &o, ' ');
+            (void)banner_append(out, &o, '/');
+            (void)banner_append(out, &o, ' ');
+            pending_sep = false;
+        }
+        if (!banner_append(out, &o, c)) {
+            break;
+        }
+    }
+    out->title[o] = '\0';
+
+    /* Trim trailing spaces. */
+    while (o > 0u && out->title[o - 1u] == ' ') {
+        out->title[--o] = '\0';
+    }
+
+    return true;
 }
 
 /* ------------------------------------------------------------------ */

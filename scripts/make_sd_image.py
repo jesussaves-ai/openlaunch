@@ -71,6 +71,15 @@ NDS_ARM7_SIZE_OFF = 0x03C
 NDS_UNIT_CODE_OFF = 0x012
 UNIT_CODE_NDS_DSI = 0x02
 
+# NDS banner block (mirror include/common/nds_header.h).
+NDS_BANNER_OFF_OFF = 0x068
+NDS_BANNER_SIZE = 0x840
+NDS_BANNER_CRC_OFF = 0x002
+NDS_BANNER_CRC_START = 0x020
+NDS_BANNER_CRC_LEN = 0x820
+NDS_BANNER_TITLE_OFF = 0x240
+NDS_BANNER_TITLE_BYTES = 256
+
 # Bootloader reservation (include/common/nds_header.h) used by OVERLAP.NDS.
 BOOTLOADER_RESERVE_BASE = 0x02100000
 BOOTLOADER_RESERVE_END = 0x02280000
@@ -96,6 +105,33 @@ def put16(buf: bytearray, off: int, value: int) -> None:
 
 def put32(buf: bytearray, off: int, value: int) -> None:
     struct.pack_into("<I", buf, off, value & 0xFFFFFFFF)
+
+
+def u32(buf, off: int) -> int:
+    return struct.unpack_from("<I", buf, off)[0]
+
+
+def set_banner_title(data: bytearray, text: bytes) -> None:
+    """Retitle the banner referenced by header offset 0x068 and fix its CRC16.
+
+    No-op when the image carries no banner (banner_offset 0) or when the block
+    would fall past the end of `data`.
+    """
+    off = u32(data, NDS_BANNER_OFF_OFF)
+    if off == 0 or off + NDS_BANNER_SIZE > len(data):
+        return
+
+    title_off = off + NDS_BANNER_TITLE_OFF
+    data[title_off:title_off + NDS_BANNER_TITLE_BYTES] = bytes(NDS_BANNER_TITLE_BYTES)
+    encoded = text.decode("ascii", "replace").encode("utf-16-le")
+    encoded = encoded[:NDS_BANNER_TITLE_BYTES]
+    if len(encoded) % 2:                  # never split a code unit
+        encoded = encoded[:-1]
+    data[title_off:title_off + len(encoded)] = encoded
+
+    crc = crc16(bytes(data[off + NDS_BANNER_CRC_START:
+                          off + NDS_BANNER_CRC_START + NDS_BANNER_CRC_LEN]))
+    put16(data, off + NDS_BANNER_CRC_OFF, crc)
 
 
 def compute_fat_size(total_sectors: int, reserved: int, nfats: int,
@@ -143,6 +179,8 @@ def make_boot_variant(hello: bytes, title: bytes = BOOT_NDS_TITLE) -> bytes:
         raise ValueError("payload is smaller than one sector")
     out = bytearray(hello)
     out[0:NDS_TITLE_LEN] = title.ljust(NDS_TITLE_LEN, b" ")[:NDS_TITLE_LEN]
+    # Keep the banner title in step with the (possibly truncated) ROM title.
+    set_banner_title(out, title)
     crc = crc16(bytes(out[:NDS_HEADER_CRC_LEN]))
     put16(out, NDS_HEADER_CRC_OFF, crc)
     return bytes(out)

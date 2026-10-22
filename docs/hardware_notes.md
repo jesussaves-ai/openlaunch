@@ -1408,4 +1408,87 @@ target check (`OK` / `MISSING`); unbound keys render `-`; and the unbrickable
   checks `allocated_size_log2 == 10` and that the reserved block fits the ARM9
   segment for all three payloads.
 
+## 30. NDS banner (`0x068`) decoder + reproducible release packaging
+
+This section covers two release-readiness features: a pure NDS banner parser
+that decodes the English title for the `[6]` file inspector, and a
+`make release` bundle that stages every production variant.
+
+### 30.1 The banner block
+
+An `.nds` image points at its banner with the 32-bit word at header offset
+`0x068`; the block itself is `0x840` (2112) bytes and is normally placed at file
+offset `0x840` (inside the `0x4000`-byte header region, before the ARM9 binary).
+Layout of the fields the reader touches:
+
+| Offset | Size | Field |
+| :--- | :--- | :--- |
+| `0x000` | 2 | version (`0x0001`/`0x0002`/`0x0003`/`0x0103`) |
+| `0x002` | 2 | CRC-16/MODBUS over `0x020..0x83F` (`0x820` bytes) |
+| `0x020` | `0x220` | 32x32 4bpp icon bitmap + 32-byte palette |
+| `0x240` | 256 | primary/English title, UTF-16LE, 128 code units |
+
+`src/common/nds_header.c` exposes `nds_banner_parse(buf, len, out)`, a pure,
+bounds-checked reader. It:
+
+* requires `len >= 0x840` and checks the version against the accepted set
+  (`version_ok`);
+* recomputes the Modbus/ARC CRC-16 (seed `0xFFFF`, polynomial `0xA001`) over
+  `0x020..0x83F` and compares it with the stored value (`crc_ok`);
+* converts the UTF-16LE title at `0x240` into a compact, NUL-terminated ASCII
+  summary: printable ASCII (`0x20..0x7E`) verbatim, a line break (`0x000A`, or a
+  `0x000D`/`0x000A` CRLF pair collapsed) as the 3-character separator `" / "`,
+  and every other code unit as `'?'`. Trailing spaces are trimmed.
+
+`nds_header_parse()` additionally decodes the `banner_offset` field into
+`nds_header_t.banner_offset`. The chainloader exposes
+`loader_read_banner()` (in `src/arm9/loader.c`), which streams the `0x840`-byte
+block through the delegated FAT reader into a fixed `.bss` window and runs the
+parser; the `[6]` `Y`/`SELECT` inspector rows now render
+`BANNER: <title>` / `BANNER: BAD CRC` / `BANNER: NONE`.
+
+`scripts/pack_nds.py` writes a valid v1 banner at `0x840` with a correct CRC16
+and a `--banner-title`-customisable UTF-16LE title (defaulting to the ROM title;
+a literal `\n` becomes `" / "` when decoded). `scripts/make_sd_image.py`
+retitles the banner in step with the `BOOT.NDS`/`NDS/SUBAPP.NDS` variants and
+recomputes its CRC16.
+
+### 30.2 Reproducible release bundle (`make release`)
+
+`scripts/make_release.py` (driven by `make release`) builds each production
+variant in its own isolated `build/_release_work/<key>` directory — so the
+default `build/` tree is untouched — and stages `build/release/`:
+
+| Artifact | Build |
+| :--- | :--- |
+| `dsi_bootloader_diag.nds` | default (safe dry-run / diagnostic) |
+| `dsi_bootloader.nds` | `CHAINLOAD_BOOT=1` (live chainload on `A` / `[8]`) |
+| `BOOT.NDS` | `CHAINLOAD_BOOT=1 AUTOBOOT=1` (drop-in autoboot) |
+| `BOOT.CFG` | sample SD-root hotkey map (`DEFAULT=NDS/HELLO.NDS`) |
+| `NDS/HELLO.NDS` | the standalone chainload test payload |
+| `sdcard.img` | the pre-built 16 MiB FAT16 melonDS test image |
+| `SHA256SUMS.txt` | deterministic SHA-256 of every artifact |
+
+The `BOOT.CFG` sample deliberately targets `NDS/HELLO.NDS`, never `BOOT.NDS`
+itself (that is the autoboot bootloader), so the drop-in `BOOT.NDS` cannot
+recursively boot itself. `SHA256SUMS.txt` is written in sorted order and then
+re-read and re-hashed; the script reports the verified digest count before
+producing a deterministic `build/dsi_bootloader_release.tar.gz` (zeroed owner
+and timestamp metadata, fixed `mtime`).
+
+### 30.3 Verification
+
+* `tests/test_loader.c` covers `nds_banner_parse()`: valid v1/v2/v3/0x0103
+  banners, the `"Line 1\nLine 2"` → `"Line 1 / Line 2"` multi-line form, CRLF
+  collapsing, non-ASCII `'?'` substitution, trailing-space trimming, bad CRC16
+  detection, unsupported versions and NULL/short-buffer rejection, plus the
+  `nds_header_t.banner_offset` decode.
+* `tests/test_sd_image.c` reads the banner of `HELLO.NDS` (`CHAINLOAD OK`),
+  `BOOT.NDS` (`AUTOBOOT OK`) and `NDS/SUBAPP.NDS` (`SUBDIR PAYLOAD`) through
+  `loader_read_banner()` and asserts `version_ok` + `crc_ok`; the `BADCRC.NDS`
+  stub is asserted to have `banner_offset == 0` and no banner.
+* `scripts/verify_rom.py` checks the `0x068` offset, the banner CRC16 and the
+  decoded title; `scripts/verify_sd_image.py` does the same for all three
+  payloads inside `build/sdcard.img`.
+
 

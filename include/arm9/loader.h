@@ -158,4 +158,17 @@ nds_load_status_t loader_stage_and_boot(fat_volume_t *vol,
 bool loader_detect_dldi(fat_volume_t *vol, const fat_file_entry_t *entry,
                         const nds_header_t *hdr, dldi_info_t *out);
 
+/*
+ * Read and decode the optional NDS banner referenced by `hdr->banner_offset`.
+ *
+ * Streams the 0x840-byte banner block through the delegated FAT reader into a
+ * fixed .bss window and runs nds_banner_parse(). Returns true when the banner
+ * block was read and parsed (even if its version/CRC is invalid); false when
+ * there is no banner (`banner_offset == 0`), it does not fit the file, or the
+ * read fails. `*out` is zeroed first, so callers may query `version_ok` /
+ * `crc_ok` / title safely either way.
+ */
+bool loader_read_banner(fat_volume_t *vol, const fat_file_entry_t *entry,
+                        const nds_header_t *hdr, nds_banner_info_t *out);
+
 #endif /* DSI_ARM9_LOADER_H */

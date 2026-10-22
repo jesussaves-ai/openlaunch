@@ -949,6 +949,161 @@ static void test_twl_segments(void)
     assert(nds_header_validate_twl_segments(&h, file_size, NULL) == NDS_LOAD_OK);
 }
 
+/* ------------------------------------------------------------------ */
+/* NDS banner parser                                                   */
+/* ------------------------------------------------------------------ */
+
+/* Finalise a hand-built banner: CRC16 over 0x020..0x83F. */
+static void finish_banner(u8 banner[NDS_BANNER_SIZE])
+{
+    put16(banner, NDS_BANNER_CRC_OFF,
+          nds_crc16(banner + NDS_BANNER_CRC_START, NDS_BANNER_CRC_LEN));
+}
+
+/* Build a v1 banner whose title is the ASCII string `title`. */
+static void build_banner(u8 banner[NDS_BANNER_SIZE], u16 version,
+                         const char *title)
+{
+    u32 o = NDS_BANNER_TITLE_OFF;
+    u32 i;
+
+    memset(banner, 0, NDS_BANNER_SIZE);
+    put16(banner, NDS_BANNER_VERSION_OFF, version);
+    for (i = 0u; title[i] != '\0' &&
+                 o + 2u <= NDS_BANNER_TITLE_OFF + NDS_BANNER_TITLE_BYTES; i++) {
+        banner[o++] = (u8)title[i];
+        banner[o++] = 0x00u;
+    }
+    finish_banner(banner);
+}
+
+static void test_banner_parse_valid(void)
+{
+    u8 banner[NDS_BANNER_SIZE];
+    nds_banner_info_t b;
+
+    /* A single-line v1 banner. */
+    build_banner(banner, NDS_BANNER_VERSION_1, "CHAINLOAD OK");
+    assert(nds_banner_parse(banner, sizeof(banner), &b));
+    assert(b.version_ok);
+    assert(b.crc_ok);
+    assert(b.stored_crc == b.computed_crc);
+    assert(strcmp(b.title, "CHAINLOAD OK") == 0);
+
+    /* A multi-line title: '\n' becomes the " / " separator. */
+    build_banner(banner, NDS_BANNER_VERSION_1, "Line 1\nLine 2");
+    assert(nds_banner_parse(banner, sizeof(banner), &b));
+    assert(b.version_ok && b.crc_ok);
+    assert(strcmp(b.title, "Line 1 / Line 2") == 0);
+
+    /* Every accepted version is recognised. */
+    build_banner(banner, NDS_BANNER_VERSION_2, "TWO");
+    assert(nds_banner_parse(banner, sizeof(banner), &b));
+    assert(b.version_ok && b.crc_ok && strcmp(b.title, "TWO") == 0);
+
+    build_banner(banner, NDS_BANNER_VERSION_3, "THREE");
+    assert(nds_banner_parse(banner, sizeof(banner), &b));
+    assert(b.version_ok && b.crc_ok && strcmp(b.title, "THREE") == 0);
+
+    build_banner(banner, NDS_BANNER_VERSION_0103, "DSI 1.3");
+    assert(nds_banner_parse(banner, sizeof(banner), &b));
+    assert(b.version_ok && b.crc_ok && strcmp(b.title, "DSI 1.3") == 0);
+}
+
+static void test_banner_parse_errors(void)
+{
+    u8 banner[NDS_BANNER_SIZE];
+    nds_banner_info_t b;
+
+    /* Unsupported version: parsed, but not accepted. */
+    build_banner(banner, 0x0000u, "BOGUS");
+    assert(nds_banner_parse(banner, sizeof(banner), &b));
+    assert(!b.version_ok);
+    assert(b.crc_ok);                     /* the CRC is still checked */
+    assert(strcmp(b.title, "BOGUS") == 0);
+
+    build_banner(banner, 0x0004u, "BOGUS");
+    assert(nds_banner_parse(banner, sizeof(banner), &b));
+    assert(!b.version_ok);
+
+    /* Bad CRC16 is detected, but the title is still decoded. */
+    build_banner(banner, NDS_BANNER_VERSION_1, "BAD CRC");
+    put16(banner, NDS_BANNER_CRC_OFF,
+          (u16)(nds_crc16(banner + NDS_BANNER_CRC_START, NDS_BANNER_CRC_LEN)
+                ^ 0x1234u));
+    assert(nds_banner_parse(banner, sizeof(banner), &b));
+    assert(b.version_ok);
+    assert(!b.crc_ok);
+    assert(strcmp(b.title, "BAD CRC") == 0);
+
+    /* A truncated block (or NULL inputs) is not parseable. */
+    build_banner(banner, NDS_BANNER_VERSION_1, "SHORT");
+    assert(!nds_banner_parse(banner, NDS_BANNER_SIZE - 1u, &b));
+    assert(!nds_banner_parse(NULL, sizeof(banner), &b));
+    assert(!nds_banner_parse(banner, sizeof(banner), NULL));
+}
+
+static void test_banner_title_sanitise(void)
+{
+    u8 banner[NDS_BANNER_SIZE];
+    nds_banner_info_t b;
+    /* 0x00E9 ('é') is non-ASCII -> '?'; trailing spaces are trimmed. */
+    const u16 units[] = { 'H', 'i', 0x00E9u, ' ', ' ', 0x0000u };
+    u32 i;
+
+    memset(banner, 0, sizeof(banner));
+    put16(banner, NDS_BANNER_VERSION_OFF, NDS_BANNER_VERSION_1);
+    for (i = 0u; i < ARRAY_SIZE(units); i++) {
+        put16(banner, NDS_BANNER_TITLE_OFF + i * 2u, units[i]);
+    }
+    finish_banner(banner);
+    assert(nds_banner_parse(banner, sizeof(banner), &b));
+    assert(b.version_ok && b.crc_ok);
+    assert(strcmp(b.title, "Hi?") == 0);
+
+    /* An empty title decodes to an empty, NUL-terminated string. */
+    build_banner(banner, NDS_BANNER_VERSION_1, "");
+    assert(nds_banner_parse(banner, sizeof(banner), &b));
+    assert(b.title[0] == '\0');
+
+    /* CRLF collapses to a single separator. */
+    build_banner(banner, NDS_BANNER_VERSION_1, "A\r\nB");
+    assert(nds_banner_parse(banner, sizeof(banner), &b));
+    assert(strcmp(b.title, "A / B") == 0);
+
+    /* Leading, trailing and consecutive breaks leave no dangling separator. */
+    build_banner(banner, NDS_BANNER_VERSION_1, "\nLEAD");
+    assert(nds_banner_parse(banner, sizeof(banner), &b));
+    assert(strcmp(b.title, "LEAD") == 0);
+
+    build_banner(banner, NDS_BANNER_VERSION_1, "TRAIL\n");
+    assert(nds_banner_parse(banner, sizeof(banner), &b));
+    assert(strcmp(b.title, "TRAIL") == 0);
+
+    build_banner(banner, NDS_BANNER_VERSION_1, "A\n\nB");
+    assert(nds_banner_parse(banner, sizeof(banner), &b));
+    assert(strcmp(b.title, "A / B") == 0);
+}
+
+static void test_header_banner_offset(void)
+{
+    u8 hdr[NDS_HEADER_SECTOR_SIZE];
+    nds_header_t h;
+
+    build_nds_header(hdr, &k_valid_spec);
+    put32(hdr, NDS_BANNER_OFF_OFF, 0x840u);
+    put16(hdr, NDS_HEADER_CRC_OFF, nds_crc16(hdr, NDS_HEADER_CRC_LEN));
+
+    assert(nds_header_parse(hdr, sizeof(hdr), &h));
+    assert(h.crc_ok);
+    assert(h.banner_offset == 0x840u);
+
+    /* A header with no banner decodes offset 0. */
+    build_nds_header(hdr, &k_valid_spec);
+    assert(nds_header_parse(hdr, sizeof(hdr), &h));
+    assert(h.banner_offset == 0u);
+}
+
 int main(void)
 {
     test_bounds_default();
@@ -962,6 +1117,11 @@ int main(void)
 
     test_argv_build();
     test_twl_segments();
+
+    test_banner_parse_valid();
+    test_banner_parse_errors();
+    test_banner_title_sanitise();
+    test_header_banner_offset();
 
     test_fat16_range();
     test_fat16_wide_cluster();

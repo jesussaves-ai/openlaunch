@@ -15,6 +15,7 @@
 #   make check      strict cross-compile of every object (-Werror)
 #   make verify     validate the packaged ROM (CRCs, offsets, no NAND writes)
 #   make host-test  host unit tests for the hardware-independent logic
+#   make release    build build/release/ (all variants + SD template + SHA256SUMS)
 #   make size       arm-none-eabi-size for both ELFs
 #   make clean
 
@@ -96,7 +97,7 @@ OBJS_ARM7 := $(patsubst %.c,$(BUILD)/arm7/%.o,$(SRCS_ARM7)) \
 OBJS_ARM9 := $(patsubst %.c,$(BUILD)/arm9/%.o,$(SRCS_ARM9)) \
              $(patsubst %.s,$(BUILD)/arm9/%.o,$(ASM_ARM9))
 
-.PHONY: all rom run check verify size clean host-test arm9-decompile sd-image
+.PHONY: all rom run check verify size clean host-test arm9-decompile sd-image release
 
 all: rom
 
@@ -188,6 +189,14 @@ $(SD_IMAGE): $(HELLO_ROM) scripts/make_sd_image.py
 	python3 scripts/make_sd_image.py --hello $(HELLO_ROM) --out $@
 
 sd-image: $(HELLO_ROM) $(SD_IMAGE)
+
+# ---- Reproducible release bundle (build/release/ + tar.gz) ---------------
+# Builds the diagnostic, live-chainload and autoboot variants (each in its own
+# isolated build directory so the default build/ tree is untouched), stages the
+# ready-to-copy SD card template and writes a deterministic SHA256SUMS.txt.
+# See scripts/make_release.py.
+release:
+	python3 scripts/make_release.py
 
 # ---- Verification harness ------------------------------------------------
 verify: $(ROM) $(HELLO_ROM) $(SD_IMAGE)

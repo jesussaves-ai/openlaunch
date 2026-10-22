@@ -11,6 +11,9 @@ Checks performed:
      (read with ``arm-none-eabi-nm``); the load addresses match ``__rom_start__``.
   4. No dangerous eMMC/NAND write symbols (``sdmmc_write`` etc.) are linked into
      the ARM7 image (AGENTS.md §5); checked against the linker map files.
+  5. The banner block referenced by offset 0x068 carries a supported version
+     (0x0001/0x0002/0x0003/0x0103), a valid CRC16 over 0x020..0x83F and a
+     decodable UTF-16LE title at 0x240.
 
 Exit status is non-zero if any check fails.
 """
@@ -29,6 +32,17 @@ NINTENDO_LOGO_LEN = 0x09C
 LOGO_CRC_OFF = 0x15C
 HEADER_CRC_OFF = 0x15E
 HEADER_CRC_LEN = HEADER_CRC_OFF
+
+# NDS banner block (header offset 0x068).
+BANNER_OFF_OFF = 0x068
+BANNER_SIZE = 0x840
+BANNER_VERSION_OFF = 0x000
+BANNER_CRC_OFF = 0x002
+BANNER_CRC_START = 0x020
+BANNER_CRC_LEN = 0x820
+BANNER_TITLE_OFF = 0x240
+BANNER_TITLE_CHARS = 128
+BANNER_VERSIONS = (0x0001, 0x0002, 0x0003, 0x0103)
 
 # Symbols that must never appear (AGENTS.md §5: eMMC is read-only by default).
 FORBIDDEN_SYMBOLS = (
@@ -58,6 +72,28 @@ def u32(buf, off):
 
 def u16(buf, off):
     return struct.unpack_from("<H", buf, off)[0]
+
+
+def decode_banner_title(banner: bytes) -> str:
+    """Decode the UTF-16LE banner title into the C parser's single-line form."""
+    out = []
+    i = 0
+    while i < BANNER_TITLE_CHARS:
+        ch = struct.unpack_from("<H", banner, BANNER_TITLE_OFF + i * 2)[0]
+        if ch == 0x0000:
+            break
+        if ch in (0x000A, 0x000D):
+            if (ch == 0x000D and i + 1 < BANNER_TITLE_CHARS and
+                    struct.unpack_from("<H", banner,
+                                       BANNER_TITLE_OFF + (i + 1) * 2)[0] == 0x000A):
+                i += 1
+            out.append(" / ")
+        elif 0x20 <= ch <= 0x7E:
+            out.append(chr(ch))
+        else:
+            out.append("?")
+        i += 1
+    return "".join(out).rstrip(" ")
 
 
 def nm_value(nm: str, elf: str, symbol: str):
@@ -189,6 +225,31 @@ def main(argv) -> int:
         c.check(region_mask != 0,
                 "TWL region mask is non-zero (not a 'bad dump')",
                 "got 0x%08X" % region_mask)
+
+    # ---- NDS banner ------------------------------------------------------
+    banner_off = u32(rom, BANNER_OFF_OFF)
+    c.check(banner_off != 0, "banner offset (0x068) is non-zero",
+            "got 0x%X" % banner_off)
+    c.check(banner_off >= 0x160 and banner_off % 4 == 0,
+            "banner offset is aligned and past the header",
+            "got 0x%X" % banner_off)
+    c.check(banner_off != 0 and banner_off + BANNER_SIZE <= len(rom),
+            "banner block lies inside the ROM",
+            "off 0x%X size 0x%X file %d" % (banner_off, BANNER_SIZE, len(rom)))
+    if banner_off != 0 and banner_off + BANNER_SIZE <= len(rom):
+        banner = rom[banner_off:banner_off + BANNER_SIZE]
+        version = u16(banner, BANNER_VERSION_OFF)
+        c.check(version in BANNER_VERSIONS,
+                "banner version is 0x0001/0x0002/0x0003/0x0103",
+                "got 0x%04X" % version)
+        stored = u16(banner, BANNER_CRC_OFF)
+        computed = crc16(banner[BANNER_CRC_START:BANNER_CRC_START + BANNER_CRC_LEN])
+        c.check(stored == computed, "banner CRC16 (0x002)",
+                "stored 0x%04X computed 0x%04X" % (stored, computed))
+        title = decode_banner_title(banner)
+        c.check(len(title) > 0, "banner title decodes to a non-empty string",
+                "got %r" % title)
+        print("  banner off 0x%05X v%04X title %r" % (banner_off, version, title))
 
     # ---- ELF cross-check -------------------------------------------------
     if args.arm9_elf:

@@ -34,7 +34,15 @@ disassembled from `asm/UNLAUNCH.DSI` into readable, strictly typed C99. See
 * **Inspectors** — menu item `[9] Inspect BOOT.CFG` shows the config source
   (`SD:/BOOT.CFG` or `DEFAULTS`), every hotkey binding with a live SD target
   check (`OK`/`MISSING`) and the locked `B`/`SELECT` override; item `[6]`'s
-  verify view reports `DLDI : YES (…)`/`NONE`.
+  verify view reports `DLDI : YES (…)`/`NONE` and the decoded
+  `BANNER: <title>` (or `BAD CRC` / `NONE`).
+* **NDS banner decoder** — the 0x840-byte banner referenced by header offset
+  `0x068` is CRC-16/MODBUS verified and its UTF-16LE English title decoded into
+  a clean single-line ASCII summary for the file inspector.
+* **Reproducible release** — `make release` builds the diagnostic,
+  live-chainload and autoboot variants (plus a ready-to-copy SD card template)
+  into `build/release/` with a deterministic `SHA256SUMS.txt` and
+  `build/dsi_bootloader_release.tar.gz`.
 * **Deterministic test image** — `make sd-image` builds a FAT16 SD card with
   real, loadable and negative-test payloads (including `NDS/SUBAPP.NDS` and a
   root `BOOT.CFG`) for emulator and CI verification.
@@ -57,6 +65,7 @@ make rom        # alias for the above
 make sd-image   # build build/hello_payload.nds + build/sdcard.img
 make verify     # validate the ROM, the payload and the SD image
 make host-test  # host unit/integration tests
+make release    # build build/release/ + build/dsi_bootloader_release.tar.gz
 make size       # arm-none-eabi-size for both ELFs
 make clean
 ```
@@ -80,6 +89,26 @@ scripts/      packaging, SD image builder and verification tools
 tests/        host test suites and melonDS notes
 ld/           linker scripts for the bootloader
 ```
+
+## The release bundle
+
+`make release` builds every production variant in isolation and stages
+`build/release/`:
+
+| Artifact | Build / purpose |
+| :--- | :--- |
+| `dsi_bootloader_diag.nds` | default: safe dry-run / diagnostic |
+| `dsi_bootloader.nds` | `CHAINLOAD_BOOT=1`: interactive menu + live chainload (`A` / `[8]`) |
+| `BOOT.NDS` | `CHAINLOAD_BOOT=1 AUTOBOOT=1`: drop-in autoboot bootloader (B/SELECT forces the menu) |
+| `BOOT.CFG` | sample SD-root hotkey map (`DEFAULT=NDS/HELLO.NDS`) |
+| `NDS/HELLO.NDS` | the standalone chainload test payload |
+| `sdcard.img` | the pre-built 16 MiB FAT16 image for melonDS testing |
+| `SHA256SUMS.txt` | deterministic SHA-256 of every artifact above |
+
+The script writes `SHA256SUMS.txt`, re-reads and re-hashes every entry to verify
+it, and then produces a deterministic `build/dsi_bootloader_release.tar.gz`. The
+`BOOT.CFG` sample never points at `BOOT.NDS` itself (that is the bootloader), so
+the drop-in build cannot recursively boot itself.
 
 ## The chainload SD image
 
@@ -122,9 +151,13 @@ target (`BOOT : NDS/SUBAPP.NDS [X]`). `B` or `SELECT` always force the menu.
 ## Verification
 
 * `make verify` runs `scripts/verify_rom.py` (CRC16s, ROM size/device capacity,
-  ELF entry/load cross-checks, unit code, no NAND-write symbols) on both
-  `build/dsi_bootloader.nds` and `build/hello_payload.nds`, then
-  `scripts/verify_sd_image.py` on `build/sdcard.img`.
+  ELF entry/load cross-checks, unit code, no NAND-write symbols, and the
+  `0x068` banner version/CRC16/title) on both `build/dsi_bootloader.nds` and
+  `build/hello_payload.nds`, then `scripts/verify_sd_image.py` on
+  `build/sdcard.img` (which also re-checks the banner of `HELLO.NDS`,
+  `BOOT.NDS` and `NDS/SUBAPP.NDS`).
+* `make release` builds `build/release/` and verifies its `SHA256SUMS.txt`
+  before producing the `.tar.gz` bundle.
 * `make host-test` builds and runs the host suites, including
   `tests/test_sd_image.c`, which mounts `build/sdcard.img` through
   `fat_mbr_find_fat_partition()` → `fat_mount()` → the root iterator →
