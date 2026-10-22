@@ -178,6 +178,8 @@ HOST_CFLAGS_SDMMC := $(HOST_CFLAGS) -DSDMMC_IO_HOOKS
 # Read-only FAT16/FAT32 parser + NDS header validator.
 HOST_SRCS_FAT := tests/test_fat_ro.c \
                  src/common/fat_ro.c src/common/nds_header.c src/common/mem.c
+# SCFG/MBK pure decoders (mode, clock, RAM window, slot packer).
+HOST_SRCS_SCFG := tests/test_scfg.c src/arm9/scfg.c
 
 host-test:
 	@mkdir -p $(BUILD)
@@ -187,9 +189,11 @@ host-test:
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_menu $(HOST_SRCS_MENU)
 	$(HOST_CC) $(HOST_CFLAGS_SDMMC) -o $(BUILD)/host_test_sdmmc $(HOST_SRCS_SDMMC)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_fat $(HOST_SRCS_FAT)
+	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_scfg $(HOST_SRCS_SCFG)
 	$(BUILD)/host_test_mem
 	$(BUILD)/host_test_arm9
 	$(BUILD)/host_test_console
 	$(BUILD)/host_test_menu
 	$(BUILD)/host_test_sdmmc
 	$(BUILD)/host_test_fat
+	$(BUILD)/host_test_scfg

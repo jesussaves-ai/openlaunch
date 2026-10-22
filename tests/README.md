@@ -47,6 +47,14 @@ volume geometry, `fat_get_next_cluster()`, root-directory listing and the
 failures, and the NDS header CRC16 (`src/common/nds_header.c`). Built as
 `build/host_test_fat`.
 
+## 6b. Host unit tests — SCFG / MBK decoders
+
+`tests/test_scfg.c` covers the hardware-independent parts of
+`src/arm9/scfg.c`: the `SCFG_A9ROM` DSi/NDS mode decode, the `SCFG_CLK` ARM9
+clock decode (67.03/134.06 MHz), the `SCFG_EXT` Main-RAM-window decode, the
+`mbk_slot_entry()` NWRAM slot packer, the MBK default slot maps and the `MBK9`
+write-protect field layout. Built as `build/host_test_scfg`.
+
 Run all of them with `make host-test`.
 
 ## 7. ROM packaging + static verification
@@ -88,6 +96,7 @@ loads `build/dsi_bootloader.nds`. The ROM now renders a text console:
   | `[4]`| Decompress the embedded LZ77 vector                  |
   | `[5]`| Halt the CPU safely                                  |
   | `[6]`| Browse the SD card's FAT volume, load a `.nds` header|
+  | `[7]`| Unlock and initialise SCFG / NWRAM (MBK1-9)          |
 
   The top screen also shows the mounted FAT type and, after loading a file in
   the browser, the NDS title, game code and header-CRC status (`BOOT :`).

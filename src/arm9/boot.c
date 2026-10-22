@@ -154,11 +154,11 @@ void arm9_main(void)
     cache_flush_all();
 
     /*
-     * 2b. Apply the reference SCFG configuration. Gated internally on the
-     *     runtime TWL probe, so this is a no-op on a legacy DS (avoiding
-     *     writes to the DSi-only 0x04004000 page).
+     * 2b. Apply the reference SCFG configuration and map the NWRAM banks.
+     *     scfg_init() verifies TWL mode first, so on a legacy DS it is a
+     *     complete no-op (avoiding writes to the DSi-only 0x04004000 page).
      */
-    scfg_apply_boot_config();
+    (void)scfg_init();
 
     /* 3. DMA register blocks are cleared before any user of them. */
     arm9_dma_reset();

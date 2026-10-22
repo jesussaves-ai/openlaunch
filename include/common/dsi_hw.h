@@ -59,8 +59,25 @@
 #define SCFG_EXT         (SCFG_BASE + 0x08u)  /* extended features         */
 
 /* SCFG_A9ROM (read-only) values (GBATEK DSi Control Registers). */
+#define SCFG_A9ROM_MODE_MASK    0x03u   /* bits 0-1 select the ROM mapping  */
 #define SCFG_A9ROM_DSI_MODE     0x01u   /* DSi console running in DSi mode  */
 #define SCFG_A9ROM_NDS_MODE     0x03u   /* NDS BIOS mapped (legacy DS mode) */
+
+/*
+ * SCFG_CLK (0x04004004) bit fields (GBATEK "DSi Control Registers (SCFG)").
+ * The ARM9 read/write view; SCFG_CLK7 on the ARM7 has a different layout.
+ */
+#define SCFG_CLK_ARM9_134MHZ    BIT(0)  /* ARM9 CPU: 1=134.06, 0=67.03 MHz  */
+#define SCFG_CLK_DSP            BIT(1)  /* Teak DSP block clock             */
+#define SCFG_CLK_CAMERA         BIT(2)  /* camera interface clock           */
+#define SCFG_CLK_NWRAM          BIT(7)  /* new shared RAM clock (via ARM7)  */
+#define SCFG_CLK_CAMERA_EXT     BIT(8)  /* camera external clock (16.76 MHz)*/
+
+/* Nominal ARM9 core clocks selected by SCFG_CLK.bit0. */
+#define SCFG_ARM9_CLK_NITRO_HZ  67028000u   /* 67.03 MHz (NITRO/DS)         */
+#define SCFG_ARM9_CLK_TWL_HZ    134056000u  /* 134.06 MHz (TWL/DSi)         */
+#define SCFG_ARM9_CLK_NITRO_MHZ 67u
+#define SCFG_ARM9_CLK_TWL_MHZ   134u
 
 /*
  * SCFG_EXT9 (ARM9) / SCFG_EXT7 (ARM7) bit fields. The positions below are
@@ -71,7 +88,11 @@
 #define SCFG_EXT_RAM_16MB       (2u << 14) /* 16 MiB (DSi)                   */
 #define SCFG_EXT_RAM_32MB       (3u << 14) /* 32 MiB (DSi debug only)        */
 #define SCFG_EXT_NDMA_ARM9      BIT(16)    /* access to NDMA (0x04004100)    */
+#define SCFG_EXT_CAMERA_ARM9    BIT(17)    /* ARM9: camera interface         */
+#define SCFG_EXT_DSP_ARM9       BIT(18)    /* ARM9: Teak DSP block           */
 #define SCFG_EXT_SDIO_ENABLE    BIT(18)    /* ARM7: access to SD/MMC regs    */
+#define SCFG_EXT_SDIO_WIFI      BIT(19)    /* ARM7: access to SDIO (wifi)    */
+#define SCFG_EXT_NWRAM_ACCESS   BIT(25)    /* R: new shared RAM enabled      */
 #define SCFG_EXT_SCFG_ACCESS    BIT(31)    /* access to SCFG/MBK registers   */
 
 /*
@@ -93,7 +114,58 @@
 #define MBK6             (MBK_BASE + 0x14u)  /* lock-restricted          */
 #define MBK7             (MBK_BASE + 0x18u)  /* lock-restricted          */
 #define MBK8             (MBK_BASE + 0x1Cu)  /* lock-restricted          */
-#define MBK9             (MBK_BASE + 0x20u)
+#define MBK9             (MBK_BASE + 0x20u)  /* ARM9: read-only write-protect */
+
+#define MBK_COUNT        9u
+
+/*
+ * MBK1..MBK5 "slot" byte fields (GBATEK "DSi New Shared WRAM").
+ *
+ * MBK1 packs four WRAM-A slots (64 KiB each); MBK2+MBK3 pack the eight
+ * WRAM-B slots (32 KiB each); MBK4+MBK5 pack the eight WRAM-C slots.
+ *
+ *   bit 0     master  (WRAM-A: 0=ARM9, 1=ARM7)
+ *                     (WRAM-B/C: 0=ARM9, 1=ARM7, 2 or 3=DSP)
+ *   bits 2-4  offset  (0..7, i.e. destination slot, in 32/64 KiB units)
+ *   bit 7     enable  (0=disabled, 1=enabled)
+ */
+#define MBK_SLOT_MASTER_ARM9  0x0u
+#define MBK_SLOT_MASTER_ARM7  0x1u
+#define MBK_SLOT_MASTER_DSP   0x2u
+#define MBK_SLOT_MASTER_MASK  0x3u
+#define MBK_SLOT_OFFSET_SHIFT 2u
+#define MBK_SLOT_OFFSET_MASK  0x7u
+#define MBK_SLOT_ENABLE       BIT(7)
+
+/* Pack one MBK1..MBK5 slot byte. Pure; host-testable. */
+static inline u8 mbk_slot_entry(u8 master, u8 offset, bool enable)
+{
+    return (u8)(((u32)master & MBK_SLOT_MASTER_MASK) |
+                (((u32)offset & MBK_SLOT_OFFSET_MASK) << MBK_SLOT_OFFSET_SHIFT) |
+                (enable ? MBK_SLOT_ENABLE : 0u));
+}
+
+/*
+ * MBK9 (0x0404060) slot write-protect bits. Read-only on ARM9; when a field
+ * is set the corresponding MBK1..MBK5 byte cannot be changed by the ARM9.
+ */
+#define MBK9_WRAM_A_PROTECT   (0x0000000Fu)  /* MBK1                        */
+#define MBK9_WRAM_B_PROTECT   (0x0000FF00u)  /* MBK2/MBK3                   */
+#define MBK9_WRAM_C_PROTECT   (0x00FF0000u)  /* MBK4/MBK5                   */
+#define MBK9_PROTECT_MASK \
+    (MBK9_WRAM_A_PROTECT | MBK9_WRAM_B_PROTECT | MBK9_WRAM_C_PROTECT)
+
+/*
+ * Canonical DSi NWRAM ownership: WRAM-A is handed to the ARM7 (it has only
+ * 64 KiB of private WRAM) and mapped at 0x03000000; WRAM-B and WRAM-C stay
+ * with the ARM9. These are the *slot-map* defaults; the firmware's address
+ * windows (MBK6..MBK8) are left untouched by mbk_init().
+ */
+#define MBK1_DEFAULT_VALUE   0x8D898581u  /* WRAM-A slots 0..3 -> ARM7      */
+#define MBK2_DEFAULT_VALUE   0x8C888480u  /* WRAM-B slots 0..3 -> ARM9      */
+#define MBK3_DEFAULT_VALUE   0x9C989490u  /* WRAM-B slots 4..7 -> ARM9      */
+#define MBK4_DEFAULT_VALUE   0x8C888480u  /* WRAM-C slots 0..3 -> ARM9      */
+#define MBK5_DEFAULT_VALUE   0x9C989490u  /* WRAM-C slots 4..7 -> ARM9      */
 
 /* ===================================================================== */
 /* ARM9 interrupt controller — docs/hardware_notes.md §2                  */

@@ -9,10 +9,11 @@
 #define DSI_ARM9_MENU_H
 
 #include "../common/types.h"
+#include "../common/dsi_hw.h"
 #include "input.h"
 
 /* Menu entries, in display order. */
-#define MENU_ITEM_COUNT   6u
+#define MENU_ITEM_COUNT   7u
 
 /* Maximum number of .nds/.srl files listed by the SD browser. */
 #define MENU_BROWSE_MAX   16u
@@ -24,7 +25,8 @@ typedef enum {
     MENU_ACTION_SD,         /* [3] probe the SD/TMIO controller           */
     MENU_ACTION_LZ77,       /* [4] expand the embedded LZ77 self-test     */
     MENU_ACTION_HALT,       /* [5] halt the system                        */
-    MENU_ACTION_BROWSE       /* [6] browse the SD card's FAT volume        */
+    MENU_ACTION_BROWSE,     /* [6] browse the SD card's FAT volume        */
+    MENU_ACTION_SCFG_INIT   /* [7] unlock + initialise SCFG/MBK           */
 } menu_action_t;
 
 typedef struct {
@@ -35,9 +37,15 @@ typedef struct {
 /* Snapshot of the live hardware telemetry shown on the top screen. */
 typedef struct {
     bool twl_mode;
+    bool scfg_accessible;   /* the DSi-only 0x04004000 page is present     */
+    bool extended_ram;      /* Main RAM window is 16/32 MiB                */
+    bool ndma;              /* NDMA engine accessible                      */
+    bool scfg_unlocked;     /* SCFG_EXT.bit31 (SCFG/MBK access)            */
     u32  a9rom;
     u32  scfg_clk;
     u32  scfg_ext;
+    u32  arm9_hz;           /* decoded ARM9 core clock                     */
+    u32  mbk[MBK_COUNT];    /* raw MBK1..MBK9                              */
     u32  mpu_control;
     u32  dtcm_base;
     bool ipc_ok;

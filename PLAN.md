@@ -76,7 +76,7 @@ Consequences:
 | ARM9 keypad input    | `FUN_06024fa0` (KEYINPUT polling)                   | `src/arm9/input.c`        | **new**       |
 | ARM9 boot menu       | clean-room                                          | `src/arm9/menu.c`         | **new**       |
 | ARM9 DMA             | `FUN_0602bf88`, `entry`                             | `src/arm9/dma.c`          | **translated**|
-| SCFG clock / 16 MB   | crt0, `FUN_06027158`                                | `src/arm9/scfg.c`         | **translated**|
+| SCFG clock / 16 MB   | crt0, `FUN_06027158`                                | `src/arm9/scfg.c`         | **translated + MBK**|
 | ARM9 SPI / firmware  | `FUN_0602546c/478/484/b760/b828/bd94`               | *(no ARM9 MMIO; via IPC)* | **gated**     |
 | eMMC read path       | `FUN_0001d6b8/d6e4/d760`                            | `src/arm7/sdmmc.c`        | **translated**|
 | SD/MMC write path    | `FUN_0001d760`                                      | `src/arm7/sdmmc.c`        | gated (RO)    |
@@ -135,3 +135,12 @@ Consequences:
   menu item `[6]` lists `.nds`/`.srl` files and loads the selected header
   (`src/common/nds_header.c`, CRC16 validated). Covered by
   `tests/test_fat_ro.c` (docs §21).
+* **SCFG unlock + NWRAM (MBK) bring-up** — the console-mode probe now uses the
+  canonical `SCFG_A9ROM & 3 == 1` test on both cores and treats an explicit
+  `0x03` as authoritative (a DSi running an NDS title), fixing the old
+  `SCFG_EXT.bit31` fallback that mis-detected DS-compatibility mode.
+  `scfg_init()` unlocks `SCFG_EXT.bit31`, applies the reference
+  `SCFG_EXT`/`SCFG_CLK` values and programs `MBK1`..`MBK5` (honouring the
+  `MBK9` write-protect). The register-inspection screen and top-screen
+  telemetry now show the live mode, ARM9 clock, RAM window and all nine MBK
+  registers. Covered by `tests/test_scfg.c` (docs §14).

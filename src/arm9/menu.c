@@ -37,6 +37,7 @@ static const char *const s_menu_labels[MENU_ITEM_COUNT] = {
     "[4] LZ77 Decompress Verify",
     "[5] Reboot / Halt System",
     "[6] Browse SD Card (.nds)",
+    "[7] Init SCFG / MBK",
 };
 
 static const char *const s_menu_desc[MENU_ITEM_COUNT] = {
@@ -46,6 +47,7 @@ static const char *const s_menu_desc[MENU_ITEM_COUNT] = {
     "Expand embedded LZ77 vector",
     "Halt the CPU safely",
     "Mount FAT, list .nds / .srl",
+    "Unlock + map DSi SCFG/NWRAM",
 };
 
 /* Embedded LZ77 self-test vector: literals "ABCD" + length-4/distance-4 back
@@ -117,6 +119,7 @@ menu_action_t menu_action_for(const menu_state_t *m)
     case 3u: return MENU_ACTION_LZ77;
     case 4u: return MENU_ACTION_HALT;
     case 5u: return MENU_ACTION_BROWSE;
+    case 6u: return MENU_ACTION_SCFG_INIT;
     default: return MENU_ACTION_NONE;
     }
 }
@@ -264,14 +267,25 @@ static void diag_poll_extkey(void)
 
 static void diag_collect(menu_diag_t *d)
 {
+    scfg_state_t scfg;
+    u32 i;
+
     dsi_memset(d, 0, sizeof(*d));
 
-    d->twl_mode = scfg_is_twl_mode();
-    if (d->twl_mode) {
-        d->a9rom = scfg_read_rom();
-        d->scfg_clk = scfg_read_clk();
-        d->scfg_ext = scfg_read_ext();
+    scfg_read_state(&scfg);
+    d->scfg_accessible = scfg.accessible;
+    d->twl_mode        = scfg.twl_mode;
+    d->extended_ram    = scfg.extended_ram;
+    d->ndma            = scfg.ndma;
+    d->scfg_unlocked   = scfg.scfg_unlocked;
+    d->a9rom           = scfg.a9rom;
+    d->scfg_clk        = scfg.clk;
+    d->scfg_ext        = scfg.ext;
+    d->arm9_hz         = scfg.arm9_hz;
+    for (i = 0u; i < MBK_COUNT; i++) {
+        d->mbk[i] = scfg.mbk[i];
     }
+
     d->mpu_control = arm9_mpu_read_control();
     d->dtcm_base = DTCM_BASE;
 
@@ -318,8 +332,18 @@ static void render_telemetry(const menu_diag_t *d)
     console_puts(0, 0, CONSOLE_PAL_CYAN, "OPENUNLAUNCH C99 BOOTLOADER");
     console_puts(0, 1, CONSOLE_PAL_GREY, "CLEAN-ROOM TWL DIAGNOSTICS");
 
-    console_printf(0, 3, CONSOLE_PAL_WHITE, "CPU  : %s",
-                   d->twl_mode ? "DSi/TWL" : "DS legacy");
+    if (d->scfg_accessible) {
+        console_printf(0, 2, CONSOLE_PAL_GREEN, "SCFG : %s %uMB%s",
+                       d->twl_mode ? "DSi/TWL" : "DSi NDS-mode",
+                       (unsigned)(scfg_ext_ram_bytes(d->scfg_ext) >> 20),
+                       d->scfg_unlocked ? " UNLOCKED" : " locked");
+    } else {
+        console_puts(0, 2, CONSOLE_PAL_GREY, "SCFG : N/A (DS mode)");
+    }
+
+    console_printf(0, 3, CONSOLE_PAL_WHITE, "CPU  : %s %uMHz",
+                   d->twl_mode ? "DSi/TWL" : "DS legacy",
+                   (unsigned)(d->arm9_hz / 1000000u));
     console_printf(0, 4, CONSOLE_PAL_WHITE, "DTCM : %08X", d->dtcm_base);
     console_printf(0, 5, CONSOLE_PAL_WHITE, "MPU  : %08X", d->mpu_control);
 
@@ -436,22 +460,34 @@ static void menu_inspect_view(const menu_diag_t *d)
     console_clear();
 
     console_puts(0, 0, CONSOLE_PAL_CYAN, "REGISTER INSPECTION");
-    console_printf(0, 2, CONSOLE_PAL_WHITE, "SCFG_A9ROM: %08X", d->a9rom);
-    console_printf(0, 3, CONSOLE_PAL_WHITE, "SCFG_CLK  : %08X", d->scfg_clk);
-    console_printf(0, 4, CONSOLE_PAL_WHITE, "SCFG_EXT  : %08X", d->scfg_ext);
-    console_printf(0, 5, CONSOLE_PAL_WHITE, "MPU CTL   : %08X", d->mpu_control);
-    console_printf(0, 6, CONSOLE_PAL_WHITE, "DTCM BASE : %08X", d->dtcm_base);
 
-    if (d->twl_mode) {
-        for (i = 0u; i < 9u; i++) {
-            console_printf(0, 8 + (int)i, CONSOLE_PAL_GREY, "MBK%u : %08X",
-                           (unsigned)(i + 1u), REG32(MBK_BASE + i * 4u));
-        }
+    if (d->scfg_accessible) {
+        console_printf(0, 2, CONSOLE_PAL_GREEN, "MODE  : %s",
+                       d->twl_mode ? "DSi/TWL mode" : "DSi (NDS compat)");
     } else {
-        console_puts(0, 8, CONSOLE_PAL_GREY, "MBK1-9 : N/A (DS mode)");
+        console_puts(0, 2, CONSOLE_PAL_GREY, "MODE  : legacy DS (no SCFG)");
+    }
+    console_printf(0, 3, CONSOLE_PAL_WHITE, "A9ROM : %08X", d->a9rom);
+    console_printf(0, 4, CONSOLE_PAL_WHITE, "CLK   : %08X (%u MHz)",
+                   d->scfg_clk, (unsigned)(d->arm9_hz / 1000000u));
+    console_printf(0, 5, CONSOLE_PAL_WHITE, "EXT   : %08X RAM-%uMB%s",
+                   d->scfg_ext,
+                   (unsigned)(scfg_ext_ram_bytes(d->scfg_ext) >> 20),
+                   d->scfg_unlocked ? " UL" : " LK");
+    console_printf(0, 6, CONSOLE_PAL_WHITE, "MPU   : %08X", d->mpu_control);
+    console_printf(0, 7, CONSOLE_PAL_WHITE, "DTCM  : %08X", d->dtcm_base);
+
+    if (d->scfg_accessible) {
+        for (i = 0u; i < MBK_COUNT; i++) {
+            console_printf(0, 9 + (int)i, CONSOLE_PAL_GREY, "MBK%u : %08X",
+                           (unsigned)(i + 1u), d->mbk[i]);
+        }
+        console_puts(0, 19, CONSOLE_PAL_GREY, "NWRAM A->ARM7  B/C->ARM9");
+    } else {
+        console_puts(0, 9, CONSOLE_PAL_GREY, "MBK1-9: N/A (DS mode)");
     }
 
-    console_puts(0, 20, CONSOLE_PAL_YELLOW, "PRESS B TO RETURN");
+    console_puts(0, 21, CONSOLE_PAL_YELLOW, "PRESS B TO RETURN");
 
     for (;;) {
         diag_poll_extkey();
@@ -588,6 +624,14 @@ static void menu_execute(const menu_state_t *state, menu_diag_t *d)
     case MENU_ACTION_BROWSE:
         menu_browse_view(d);
         break;
+    case MENU_ACTION_SCFG_INIT: {
+        bool configured = scfg_init();
+
+        diag_collect(d);
+        d->last_action = configured ? "SCFG/MBK initialized"
+                                    : "SCFG init: N/A (DS mode)";
+        break;
+    }
     default:
         break;
     }

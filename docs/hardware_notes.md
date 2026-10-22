@@ -384,19 +384,50 @@ unused). The previous 32-bit store to `0x04000300` was the bug flagged by the
 emulator: `POSTFLG` is 8-bit and `HALTCNT` (which halts the CPU when written
 `0x80`) lives at the next byte.
 
-## 14. DSi-mode detection and gated writes
+## 14. DSi-mode detection, SCFG unlock and NWRAM (MBK) initialisation
 
-The whole `0x04004000` page is DSi-only. `src/arm9/scfg.c::scfg_is_twl_mode()`
-reads `SCFG_A9ROM` (`0x04004000`, read-only on ARM9) and accepts the canonical
-`0x01` "DSi running in DSi mode" signature, falling back to
-`SCFG_EXT.bit31` (the SCFG/MBK access enable, set to 1 by the DSi firmware and
-by melonDS in DSi mode). On a legacy DS the page is unmapped and reads 0, so the
-probe returns false and every DSi-only write is skipped:
+The whole `0x04004000` page is DSi-only. The console-mode probe in
+`src/arm9/scfg.c` (and its ARM7 mirror in `src/arm7/ipc.c::ipc_twl_mode()`)
+applies the canonical GBATEK test to `SCFG_A9ROM` (`0x04004000`, read-only on
+ARM9):
 
-* `scfg_apply_boot_config()` / `scfg_enable_extended_ram()` / `scfg_set_mbk()`;
-* `arm9_dma_aux_reset()` (the NDMA block at `0x04004100`).
+```
+  if ((SCFG_A9ROM & 03h) == 01h)  DSi mode  else  NDS mode
+```
 
-This lets the same ROM boot cleanly in both DS and DSi modes.
+An **explicit `0x03` means the DSi is running an NDS title** (DS compatibility
+mode) and is authoritative: the probe returns *false* even though
+`SCFG_EXT.bit31` (the SCFG/MBK access gate) is typically still set by the
+firmware. Only when `SCFG_A9ROM` reads `0x00` — the page is hidden on a legacy
+DS, or bootstage-1 has not latched the mapping yet — does the probe fall back to
+`SCFG_EXT.bit31`. (The previous revision used bit31 as an unconditional
+fallback, which mis-reported a DSi running in NDS mode as DSi mode and enabled
+DSi-only writes there.)
+
+`scfg_hardware_accessible()` distinguishes "the page exists" (`A9ROM != 0` or
+bit31) from "DSi mode" (`A9ROM == 1`); the diagnostic UI shows NWRAM/SD status
+whenever the hardware is accessible, and *only* falls back to `N/A (DS mode)`
+on a genuine legacy DS.
+
+`scfg_init()` is the one-shot DSi bring-up used by `arm9_main()`:
+
+1. `scfg_unlock()` — make sure `SCFG_EXT.bit31` is set so the
+   `0x04004000`–`0x04004063` window is readable/writable (a no-op if already
+   set by the firmware);
+2. `scfg_apply_boot_config()` — `SCFG_EXT = 0x8307F100`, `SCFG_CLK &= 0xFEFE`;
+3. `mbk_init()` — program the NWRAM slot-ownership registers `MBK1`..`MBK5`
+   with the canonical DSi mapping (`WRAM-A` → ARM7, `WRAM-B`/`WRAM-C` → ARM9),
+   honouring the `MBK9` write-protect fields (read-only on ARM9).
+
+Every step is gated on `scfg_is_twl_mode()`, so on a legacy DS `scfg_init()`,
+`scfg_apply_boot_config()`, `scfg_enable_extended_ram()`, `scfg_set_mbk()`,
+`mbk_init()` and `arm9_dma_aux_reset()` (the NDMA block at `0x04004100`) are all
+skipped. This lets the same ROM boot cleanly in both DS and DSi modes.
+
+The pure decoders (`scfg_mode_from_a9rom`, `scfg_arm9_clock_hz`,
+`scfg_ext_ram_bytes`, `mbk_slot_entry`) are host-tested in
+`tests/test_scfg.c`. The clock decode reports 67.03 MHz when `SCFG_CLK.bit0`
+is clear and 134.06 MHz when it is set (GBATEK "SCFG_CLK").
 
 ## 15. Text console and font
 

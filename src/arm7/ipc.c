@@ -83,9 +83,27 @@ u32 ipc_sync_get(void)
  * case is filled in as the corresponding ARM7 service is translated.
  */
 
-/* True when the DSi SCFG page is backed by hardware (TWL/DSi mode). */
+/*
+ * True when the DSi is running in DSi/TWL mode.
+ *
+ * This mirrors src/arm9/scfg.c::scfg_is_twl_mode(): the canonical GBATEK test
+ * is "SCFG_A9ROM bits 0-1 == 1". An explicit 0x03 means the DSi is running an
+ * NDS title (DS compatibility mode) and MUST be authoritative even though the
+ * SCFG_EXT access gate (bit31) is still set: relying on bit31 alone wrongly
+ * reported DSi mode on a DSi running in DS mode.
+ */
 static bool ipc_twl_mode(void)
 {
+    /* On the ARM7, 0x04004000 is the byte-wide SCFG_A9ROM view. */
+    u8 a9rom = (u8)(REG8(SCFG_A9ROM) & SCFG_A9ROM_MODE_MASK);
+
+    if (a9rom == SCFG_A9ROM_DSI_MODE) {
+        return true;
+    }
+    if (a9rom == SCFG_A9ROM_NDS_MODE) {
+        return false;
+    }
+    /* 0x00: hidden page or bootstage-1; fall back to the access gate. */
     return (REG32(SCFG_EXT) & SCFG_EXT_SCFG_ACCESS) != 0u;
 }
 
