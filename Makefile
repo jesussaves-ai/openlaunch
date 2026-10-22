@@ -110,9 +110,9 @@ rom: $(ROM) $(LEGACY_ROM)
 run: $(ROM) $(SD_IMAGE)
 	./scripts/run_melonds.sh $(ROM)
 
-# Provision the local melonDS configuration (native XDG + Flatpak sandbox, TOML
-# or legacy INI) with build/sdcard.img so the DSi SD card is mounted without any
-# manual GUI step. Idempotent; backs up before the first change.
+# Provision the native melonDS configuration (XDG, TOML or legacy INI) with
+# build/sdcard.img so the DSi SD card is mounted without any manual GUI step.
+# Idempotent; backs up before the first change.
 configure-emulator: $(SD_IMAGE)
 	python3 scripts/configure_emulator.py --sd $(SD_IMAGE)
 

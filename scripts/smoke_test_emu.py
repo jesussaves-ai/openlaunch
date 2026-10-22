@@ -13,15 +13,14 @@ configured as the emulated DSi SD card) for a short window and asserts that:
 It is deliberately conservative and never touches the user's real emulator
 configuration:
 
-  * melonDS is looked up as a native ``melonDS``/``melonds`` binary on ``PATH``
-    first, then the Flatpak ``net.kuribo64.melonDS``.
+  * melonDS is looked up as the native ``melonDS`` binary on ``PATH``.
   * A display is required. ``WAYLAND_DISPLAY``/``DISPLAY`` are used when set;
     otherwise ``xvfb-run`` is used to provide a virtual X server.
   * The emulator runs with ``XDG_CONFIG_HOME`` pointed at a fresh temporary
     directory; the isolated ``melonDS/melonDS.toml`` written there by
     ``scripts/configure_emulator.py`` points the DSi SD card at
-    ``build/sdcard.img``. ``~/.config/melonDS/melonDS.toml`` and
-    ``~/.var/app/net.kuribo64.melonDS`` are never read or written.
+    ``build/sdcard.img``. The user's real ``~/.config/melonDS/melonDS.toml`` is
+    never read or written.
 
 If melonDS or a display helper is unavailable (for example on headless CI), the
 script prints ``[SKIP] melonDS or display environment not available`` and exits
@@ -61,19 +60,10 @@ def skip(msg: str) -> int:
 
 
 def find_melonds():
-    """Return (argv_prefix, is_flatpak), or None when melonDS is unavailable."""
-    for name in ("melonDS", "melonds"):
-        path = shutil.which(name)
-        if path:
-            return ([path], False)
-    if shutil.which("flatpak"):
-        try:
-            out = subprocess.run(["flatpak", "list", "--app"],
-                                 capture_output=True, text=True, timeout=30)
-        except (OSError, subprocess.SubprocessError):
-            out = None
-        if out is not None and "net.kuribo64.melonDS" in out.stdout:
-            return (["flatpak", "run", "net.kuribo64.melonDS"], True)
+    """Return the native ``melonDS`` argv prefix, or None when unavailable."""
+    path = shutil.which("melonDS")
+    if path:
+        return [path]
     return None
 
 
@@ -170,9 +160,9 @@ def main(argv) -> int:
               % sd, file=sys.stderr)
         return 1
 
-    prefix, is_flatpak = melonds
+    prefix = melonds
 
-    with tempfile.TemporaryDirectory(prefix="openlaunch-melonds-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="openlaunch-melonDS-") as tmp:
         cfg_path = configure_emulator.write_isolated_config(tmp, sd)
         log("using isolated config %s" % cfg_path)
 
@@ -180,14 +170,9 @@ def main(argv) -> int:
         env["XDG_CONFIG_HOME"] = tmp
 
         cmd = list(helper)
-        if is_flatpak:
-            # Keep the Flatpak sandbox config isolated from ~/.var/app.
-            cmd += ["flatpak", "run", "--env=XDG_CONFIG_HOME=%s" % tmp,
-                    "net.kuribo64.melonDS", rom]
-        else:
-            cmd += prefix + [rom]
+        cmd += prefix + [rom]
 
-        emu_log = os.path.join(tmp, "melonds.log")
+        emu_log = os.path.join(tmp, "melonDS.log")
         status, rc = run(cmd, env, args.timeout, emu_log)
         sd_ok, sd_msg = check_sd_attachment(emu_log, sd)
 

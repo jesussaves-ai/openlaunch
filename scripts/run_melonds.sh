@@ -5,20 +5,18 @@
 #
 #     ./scripts/run_melonds.sh [path/to/rom.nds]
 #
-# Before launching it provisions the local melonDS configuration with the
+# Before launching it provisions the native melonDS configuration with the
 # emulated DSi SD card (build/sdcard.img) so the chainloader and the ARM7
 # SD/MMC self-test work without any manual GUI setup. The configuration step is
 # handled by scripts/configure_emulator.py, which understands both the modern
 # melonDS.toml and the legacy melonDS.ini layouts in the native XDG directory
-# (~/.config/melonDS) and the Flatpak sandbox
-# (~/.var/app/net.kuribo64.melonDS/config/melonDS).
+# (~/.config/melonDS).
 #
 # Set OPENLAUNCH_SKIP_CONFIG=1 to leave the configuration untouched, or
 # OPENLAUNCH_SD_IMAGE=/path/to/image to point at a different SD image.
 #
-# It looks for a native `melonds`/`melonDS` binary first, then the Flatpak
-# `net.kuribo64.melonDS`. The exact melonDS settings (BIOS / DSi firmware /
-# NAND) are documented in tests/README.md.
+# It launches the native `melonDS` binary. The exact melonDS settings (BIOS /
+# DSi firmware / NAND) are documented in tests/README.md.
 #
 # Expected result once booted: the top screen shows the bootloader header and a
 # live hardware telemetry table, and the bottom screen shows a D-Pad navigable
@@ -52,28 +50,16 @@ if [ "${OPENLAUNCH_SKIP_CONFIG:-0}" != "1" ]; then
     fi
 fi
 
-if command -v melonds >/dev/null 2>&1; then
-    echo "[*] launching native melonds: $ROM"
-    exec melonds "$ROM"
-fi
-
 if command -v melonDS >/dev/null 2>&1; then
     echo "[*] launching native melonDS: $ROM"
     exec melonDS "$ROM"
-fi
-
-if command -v flatpak >/dev/null 2>&1 && \
-   flatpak list --app 2>/dev/null | grep -q 'net.kuribo64.melonDS'; then
-    echo "[*] launching Flatpak melonDS: $ROM"
-    exec flatpak run net.kuribo64.melonDS "$ROM"
 fi
 
 cat >&2 <<'EOF'
 run_melonds: melonDS was not found.
 
 Install one of:
-  * a distribution package providing `melonds`
-  * the Flatpak:  flatpak install flathub net.kuribo64.melonDS
+  * a distribution package providing `melonDS`
   * a build from https://github.com/melonDS-emu/melonDS
 
 Then re-run this script, or open build/openlaunch.nds manually.

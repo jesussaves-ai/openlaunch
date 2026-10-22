@@ -286,13 +286,11 @@ make configure-emulator           # point the local melonDS config at sdcard.img
 make smoke-test                   # isolated, non-destructive startup check
 ```
 
-`scripts/run_melonds.sh` finds a native `melonds`/`melonDS` or the Flatpak and
-loads `build/openlaunch.nds`. Before launching it calls
-`scripts/configure_emulator.py`, which discovers the standard melonDS
-configuration directories — native `~/.config/melonDS/` (honouring
-`XDG_CONFIG_HOME`) and the Flatpak sandbox
-`~/.var/app/net.kuribo64.melonDS/config/melonDS/` — and rewrites the DSi SD
-card settings so no manual GUI step is required:
+`scripts/run_melonds.sh` launches the native `melonDS` binary and loads
+`build/openlaunch.nds`. Before launching it calls
+`scripts/configure_emulator.py`, which discovers the native melonDS
+configuration directory — `~/.config/melonDS/` (honouring `XDG_CONFIG_HOME`) —
+and rewrites the DSi SD card settings so no manual GUI step is required:
 
 * modern TOML (`melonDS.toml`): `[DSi.SD] Enable = true` and
   `ImagePath = "<repo>/build/sdcard.img"`, plus `[Emu] ConsoleType = 1`

@@ -1063,6 +1063,12 @@ make rom sd-image
 make CHAINLOAD_BOOT=1 rom sd-image     # arms the real dual-CPU branch
 ```
 
+`make run` (or `./scripts/run_melonds.sh`) launches the native **`melonDS`**
+binary and, before booting, calls `scripts/configure_emulator.py` to point the
+native configuration (`~/.config/melonDS/melonDS.toml`, honouring
+`XDG_CONFIG_HOME`) at `build/sdcard.img` and select DSi mode — no GUI step is
+required. The manual steps below are only needed for a different setup.
+
 Mount the image in DSi mode:
 
 * **Config → Emu settings → Console type:** **DSi**.

@@ -259,9 +259,9 @@ Consequences:
   `build/openlaunch_release.tar.gz`) and UI headers now use the **OpenLaunch**
   identity. `scripts/verify_rom.py` enforces the ARM9 `< 64 KiB` / ARM7
   `< 32 KiB` binary size budgets and asserts the OpenLaunch title/banner;
-  `scripts/configure_emulator.py` provisions the local melonDS config (native
-  XDG + Flatpak, TOML or legacy INI) with `build/sdcard.img` so `make run` needs
-  no manual GUI step; `scripts/smoke_test_emu.py` (`make smoke-test`) boots the
+  `scripts/configure_emulator.py` provisions the native melonDS config (XDG,
+  TOML or legacy INI) with `build/sdcard.img` so `make run` needs no manual GUI
+  step; `scripts/smoke_test_emu.py` (`make smoke-test`) boots the
   ROM in melonDS under an isolated config, confirms the SD card attached and
   skips cleanly when melonDS or a display is absent; and
   `.github/workflows/ci.yml` runs the host tests, builds/verifies all variants,

@@ -9,13 +9,15 @@ port 0 when an image is attached (``[DSi.SD] Enable = true``); otherwise
 (see ``docs/hardware_notes.md`` §23). Developers therefore had to open the GUI
 and point *DSi SD card* at ``build/sdcard.img`` by hand.
 
-This helper removes that manual step. It discovers the standard melonDS
-configuration locations and rewrites the SD-card settings in place:
+This helper removes that manual step. It locates the native melonDS
+configuration and rewrites the SD-card settings in place:
 
   * native (XDG):        ``$XDG_CONFIG_HOME/melonDS/melonDS.toml``
                          (default ``~/.config/melonDS/melonDS.toml``)
-  * Flatpak sandbox:     ``~/.var/app/net.kuribo64.melonDS/config/melonDS/``
-  * legacy INI fallback: ``melonDS.ini`` / ``config.ini`` in either directory
+  * legacy INI fallback: ``melonDS.ini`` / ``config.ini`` in that directory
+
+Only the native XDG location is consulted; the Flatpak sandbox
+(``~/.var/app/...``) is never read or written.
 
 Modern melonDS stores its configuration as TOML (``melonDS.toml``); the relevant
 keys live in the ``[DSi.SD]`` table::
@@ -57,7 +59,6 @@ import sys
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_SD = os.path.join(REPO_ROOT, "build", "sdcard.img")
 
-FLATPAK_APP_ID = "net.kuribo64.melonDS"
 TOML_NAME = "melonDS.toml"
 INI_NAMES = ("melonDS.ini", "config.ini")
 
@@ -95,29 +96,20 @@ def warn(msg: str) -> None:
 # Configuration locations
 # ---------------------------------------------------------------------------
 def native_config_dir() -> str:
+    """Return the native melonDS configuration directory (XDG).
+
+    Defaults to ``~/.config/melonDS`` and honours ``XDG_CONFIG_HOME``. The
+    Flatpak sandbox (``~/.var/app/...``) is deliberately not consulted.
+    """
     xdg = os.environ.get("XDG_CONFIG_HOME")
     if not xdg:
         xdg = os.path.join(os.path.expanduser("~"), ".config")
     return os.path.join(xdg, "melonDS")
 
 
-def flatpak_config_dir() -> str:
-    return os.path.join(os.path.expanduser("~"), ".var", "app",
-                        FLATPAK_APP_ID, "config", "melonDS")
-
-
 def config_dirs() -> list:
-    """Return the standard melonDS config directories, de-duplicated."""
-    candidates = [native_config_dir(), flatpak_config_dir()]
-    out = []
-    seen = set()
-    for d in candidates:
-        real = os.path.realpath(d)
-        if real in seen:
-            continue
-        seen.add(real)
-        out.append(d)
-    return out
+    """Return the native melonDS configuration directory."""
+    return [native_config_dir()]
 
 
 def discover_targets(create: bool = True):
