@@ -341,3 +341,34 @@ So Unlaunch boots a title by rebuilding the boot info and **relaunching both
 CPUs through a stub at `0x0380F700`**, not by the stage-2 boot manager. The
 next reverse targets are the `0x06024218` stub and the `0x023FE27C`
 descriptor.
+
+### The relaunch stub (reversed)
+
+`0x06024218` (copied to `0x0380F700` and executed):
+
+```
+mov r0,#15 ; bl 0x0602423C     ; IPCSYNC = 0xF00, wait for input nibble 15
+mov r0,#0  ; bl 0x0602423C     ; IPCSYNC = 0x000, wait for input nibble 0
+msr CPSR_f,#0x80000000
+ldr ip,[0x02FFFE34]            ; ARM7 entry from the boot info
+mov lr,ip
+bx  ip
+```
+
+`0x0602423C` writes `(n << 8)` to IPCSYNC, then polls the low nibble until it
+equals `n`. So the title relaunch performs an **IPCSYNC 15 then 0** echo
+handshake between the two CPUs, then branches to the boot-info ARM entry at
+`0x02FFFE34`.
+
+Live check on the stage-2 ARM7 (patched22 NAND): writing `0x0F00`/`0x0000`
+leaves the ARM7 output at `7` - the stage-2 firmware does not implement this
+handshake. It belongs to the title-relaunch/system-firmware state (the one
+Unlaunch enters when launching a title).
+
+The data pool at `0x06025080` also holds `0x023FE27C`, the likely ARM7
+relaunch descriptor, plus the title ID (`00030017`, "HNA") and the boot-info
+pointers (`0x02FFE000`, `0x02FFFE00`, `0x02804000`).
+
+Next: capture the 15/0 handshake in the real title-launch flow (needs input to
+the Unlaunch menu, or an input-injecting emulator patch), then replicate the
+relaunch from our ARM9.
