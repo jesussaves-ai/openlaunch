@@ -57,6 +57,9 @@ Consequences:
 | IRQ control          | `FUN_00020ae4/af8/b04/cb0/df84/27028`               | `src/arm7/irq.c`          | **translated**|
 | ARM7 IRQ vector      | `FUN_00020b58`                                      | `src/arm7/boot.c`         | **translated**|
 | Boot-header MBK apply | `FUN_06027070` / `FUN_06027090`                    | `src/arm9/arm7_boot.c`    | **reversed**  |
+| ARM7 IRQ dispatcher  | `0x037D4B64` (IF priority + table `0x037DD7E4`)     | —                         | **reversed**  |
+| ARM7 IPC receive     | `0x037D6FEC` (cmd table `0x037F347C`)               | —                         | **reversed**  |
+| ARM7 boot ring       | `0x037B9300` / `0x037B938C` / `0x037B9494`          | —                         | **reversed**  |
 | IPC FIFO / sync      | `FUN_0001cc34/cb38/20be4`, `FUN_0001f21c`           | `src/arm7/ipc.c`          | **started**   |
 | IPC storage protocol | clean-room (ARM7-gated delegation)                  | `include/common/ipc_protocol.h` | **new** |
 | ARM9 storage client  | clean-room (IPC only, no MMIO)                      | `src/arm9/storage.c`      | **new**       |
@@ -153,35 +156,25 @@ Consequences:
    with the ARM7 when the ARM7 ready marker appears. The ARM7 writes a ready
    marker at `0x0237FFF4`; the old IPCSYNC path remains as
    `make ARM7_HANDOFF=1`.
-   A melonDS run shows the slide arms but the firmware ARM7 never reaches our
-   entry: the firmware's reset code uses stacks at `0x03FFFFC0` /
-   `0x03FFFF80` / `0x03FFFB7C`, not the Astronaut window, and mapping
-   WRAM-A/B/C at the top of the NWRAM range did not hit it. The ARM7 IRQ jump
-   vector at `0x03FFFFFC` (written by the reference `FUN_00020b58`) is equally
-   unreachable: it reads zero through every NWRAM window. Both are ARM7-private
-   aliases, so the stack slide and the IRQ-vector hijack are blocked from the
-   ARM9. A full NDS/TWL header (logo, both CRC16s, banner, unit code 3) was
-   added to the container to match UNLAUNCH.DSI; the genuine-header HNAA and
-   HNAE installs were also tested and none started the ARM7.
-   The ARM7 GDB stub now works in melonDS with Break-on-startup off for both
-   cores: the live test-NAND ARM7 is at PC `0x037F9304`, SP `0x03FFFB6C`,
-   IRQ vector `0x037D4B64` (shared WRAM), MBK6/7/8
-   `0x00300000`/`0x00304000`/`0xB837F807`. Redirecting the vector to a loop at
-   `0x0237F000` works; redirecting it to `0x02380000` still faults, so the
-   image's early setup needs debugging. Filling the container offset that
-   corresponds to `0x037F9304` with a branch did not reach it: the ARM7 PC is
-   in shared WRAM, while the container is in the ARM9's main-RAM overlay. The
-   ARM9 mirrors and the old-WRAM window read zero, and the ARM7 sits with
-   IRQs masked. This matches the official Unlaunch mechanism (ARM9 remaps
-   shared WRAM). Next: identify the shared-WRAM bank/window (or trace official
-   Unlaunch's ARM9 MBK writes) and restart/redirect the ARM7. Matching the
-   ARM9's MBK6-8 to the ARM7's exposes WRAM-C at `0x03800000`, but a jump at
-   the PC-mapped `0x03801304` had no effect; the ARM7 appears halted/crashed.
-   Setting PC/CPSR through melonDS's GDB `P` command segfaulted the emulator,
-   so register-level restart needs no$gba or a patched stub. Reference clue:
-   the disassembled ARM9 uses MBK1/MBK6/MBK9 (WRAM-A), not the WRAM-C slice
-   (literals near `0x060274F0`, code near `0x06025988`). See
-   `docs/stage2_re.md`.
+   The slide is now opt-in (`make ASTRO_SLIDE=1`): its MBK5/MBK8 values
+   target a different firmware layout and move the NWRAM-C parts the ARM7 is
+   executing from, producing an illegal-instruction abort (`S04`). Reading the
+   MBK registers little-endian corrected the earlier map: the stage-2 ARM7
+   runs from **NWRAM-C** (window start `0x037B8000`, `MBK8 = 0x07F837B8`,
+   parts 0..7 owned through MBK4/MBK5), not private WRAM. Its IRQ vector is
+   part 0 offset `0x7FFC` (`0x03FFFFFC`) and the handler `0x037D4B64` is part
+   3 offset `0x4B64`.
+   Live finding: `mbk_init()` used to rewrite MBK1..5 with the DS-style
+   canonical slots and thereby moved those parts out from under the running
+   ARM7 (`PC 0x037F9304`, `S04`) - the root cause of every failed takeover.
+   `arm9_main()` now skips `mbk_init()` on the overflow path and keeps stage
+   2's ownership; the ARM7 stays healthy at PC `0x00000EAC` (BIOS Halt),
+   SP `0x037F3290`, CPSR `0x1F`, IME `1`, IE `0x00040008` (Timer0 + IPC
+   receive). An IPC FIFO write sets IF bit 18 and the ARM7 wakes, services the
+   dispatcher, clears IF and halts again.
+   Next: derive the part/slot mapping from the live MBK4/MBK5 bytes, hijack
+   the part holding `0x03FFFFFC` / `0x037D4B64`, and wake via the IPC receive
+   IRQ. See `docs/stage2_re.md`.
 
 ## 3. Recent work (C99 bootloader bring-up)
 

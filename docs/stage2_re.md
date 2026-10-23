@@ -402,20 +402,87 @@ WRAM-C slice.
 | `0x06027090` | `FUN_06027090` | Copy the header's **ARM7 MBK6-8** (0x02FFE1A0, 12 bytes) to the ARM9's local MBK6..MBK8, and the global slots with bit0 XORed. This is the reference "match the ARM7's NWRAM windows" step. |
 | `0x00020b58` | `FUN_00020b58` | Write the ARM7 IRQ vector (`0x03FFFFFC`), enable the IPC IE bit and IME (reference writes `0x060245A0`). |
 
-Doing the MBK6-8 match live makes **WRAM-C visible to the ARM9 at
-`0x03800000`** (the window fills with code). The ARM7's private stack
-(`0x03FFFB6C`) and IRQ vector (`0x03FFFFFC`) remain **separate physical
-memory**: the ARM9 reading `0x03FFFFFC` sees WRAM-C code, not the vector. The
-next attempt is to write an ARM7 entry/jump into the now-visible WRAM-C region
-(`0x03800000`) and see whether the stage-2 ARM7 executes it, or to trace an
-official Unlaunch NAND through the same stubs.
+### Corrected NWRAM map (2026-10-23, live melonDS + GDB)
 
-The matched window exposes WRAM-C at `0x03800000`. The live ARM7 PC
-`0x037F9304` would map to `0x03801304` if the ARM7's window starts at
-`0x037F8000`, but writing a jump there produced no effect - consistent with the
-ARM7 being halted/crashed (CPSR `0x9F`) rather than fetching that window.
-Trying to set PC/CPSR through the melonDS GDB `P` command **segfaulted
-melonDS 1.1.r76**, so register-level restart needs no$gba or a patched stub.
+Reading the MBK registers as little-endian fixes the earlier confusion:
+
+| register | scope | meaning |
+| --- | --- | --- |
+| `MBK1`..`MBK5` | shared | NWRAM part ownership, one byte per part (bit7 enable, bits 0-1 CPU, bits 2-4 window slot) |
+| `MBK6`..`MBK8` | **per core** | that core's three NWRAM windows (start/end/size) |
+
+Live stage-2 state (healthy build):
+
+* `MBK4 = 0x9C999591`: physical NWRAM-C parts 0..2 -> ARM7 slots 4/5/6,
+  part 3 -> ARM9 slot 7.
+* `MBK5 = 0x9D999591`: parts 4..6 -> ARM7 slots 4/5/6, part 7 -> ARM7 slot 7.
+* ARM7 `MBK8 = 0x07F837B8`: window C starts at **`0x037B8000`**, size 3
+  (mask 7, 32 KiB parts). `MBK6/7 = 0x00003000/0x00403000` place windows A/B
+  over `0x03000000..0x0302FFFF`.
+
+So the stage-2 ARM7 **executes from NWRAM-C**, not private WRAM. Its link/load
+base is `0x037B8000` (matching `arm7.bin`), the IRQ vector slot `0x03FFFFFC`
+is part 0 offset `0x7FFC` (window slot 0), and the IRQ handler `0x037D4B64`
+is part 3 offset `0x4B64` (window slot 3). All parts are ARM7-owned through
+MBK4/MBK5; MBK9 is `0`, so the ARM9 may take them temporarily.
+
+**Critical bug found and fixed:** `mbk_init()` used to rewrite MBK1..5 with the
+DS-style canonical slots (A -> ARM7, B/C -> ARM9). On this firmware that moves
+the NWRAM-C parts out from under the running ARM7, so its next instruction
+fetch hits an unmapped slot: illegal instruction (GDB `S04`), PC
+`0x037F9304`. Every later takeover attempt then failed. On the overflow path
+`arm9_main()` now keeps stage 2's slot ownership and runs only
+`scfg_apply_boot_config()`; the normal homebrew/.nds path still calls
+`mbk_init()`.
+
+Healthy ARM7 with the fix (melonDS, 2026-10-23):
+
+```
+PC   0x00000EAC   (BIOS halt helper, just after the HALTCNT write)
+SP   0x037F3290
+CPSR 0x0000001F   (System mode, IRQ+FIQ enabled)
+IME  1
+IE   0x00040008   (Timer0 + IPC receive)
+```
+
+An ARM9 IPC FIFO write sets `IF` bit 18; continuing the ARM7 shows it wake,
+run the dispatcher, clear `IF` and halt again. The wake path works.
+
+### ARM7 IRQ / IPC path (all in ARM7-owned NWRAM-C)
+
+* `[0x03FFFFFC] = 0x037D4B64` -> generic dispatcher: reads IE/IF, acks the
+  pending bit with a write-1-to-clear, and calls `table[bit]` from
+  `0x037DD7E4` (IF) / `0x037DD7A8` (IF2).
+* IPC receive (bit 18) -> `0x037D6FEC`: reads `0x04100000` and dispatches on
+  the **low 5 bits** through the command table at `0x037F347C`.
+* Live commands: `1` (ring push), `2` (ring consume/advance), `19`, `20`,
+  `23`. The boot-message ring is `0x037DF6D8` (indices) / `0x037DF6E0`
+  (bytes). Pushing `4,5,6` through command 2 works (write index 3, bytes
+  `04 05 06`) but the halted loop never consumes them.
+* `0x037B9494` is the ring consumer (`write == read` spin); it is used by the
+  boot path at `0x037B81F8`, which expects `4`, then `5`, then `6`.
+
+Attempts that did **not** work, and why:
+
+* matching the ARM9's MBK6-8 to the ARM7's and writing `0x03801304` or
+  `0x03FFFFFC` by guesswork — the ARM9 window/slot arithmetic was wrong
+  (register reads are little-endian, and the ARM7 window starts at
+  `0x037B8000`);
+* taking part 7 / part 1 via MBK4/MBK5 — the window slot is derived from the
+  start address, not the part index;
+* the shared-WRAM (`WRAMSTAT`) jumpslide: with `WRAMSTAT=0` the ARM9 can fill
+  the 32 KiB bank only after clearing its own MBK6-8 (otherwise NWRAM-B
+  shadows `0x03000000`); with `WRAMSTAT=3` the ARM7 sees the bank at
+  `0x03030000+`, but `0x037B8000+` is NWRAM-C for the ARM7, so the handler is
+  never fetched from the bank;
+* melonDS GDB `P` (register write) segfaults the emulator, so the PC cannot be
+  forced from the stub.
+
+Next: derive the part/slot mapping from the **live MBK4/MBK5 bytes** every
+boot, take the part containing `0x03FFFFFC` (slot 0) and/or `0x037D4B64`
+(slot 3), write the ARM7 entry, restore ownership, and wake via the IPC
+receive IRQ. The boot-ring consumer at `0x037B9494` is the fallback once the
+loop that calls it can be re-entered.
 
 The remaining routes are:
 
@@ -424,8 +491,6 @@ The remaining routes are:
 2. an IPC command that makes the running firmware ARM7 restart/boot a title;
 3. installing OpenLaunch as a real title so stage 2 starts both CPUs through
    its normal flow.
-
-The slide itself is armed correctly; the target is the problem.
 
 `make openlaunch-payload` builds the wired container; `make verify` and
 `scripts/verify_openlaunch_payload.py` check it structurally.

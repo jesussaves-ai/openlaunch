@@ -115,10 +115,6 @@ void arm9_boot_arm7(void)
  */
 bool arm9_arm7_takeover(void)
 {
-    u32 mbk5;
-    u32 mbk8;
-    u32 i;
-
     /* Marker is written by overflow_bootstrap.s after staging the ARM7. */
     if (REG32(ARM7_HANDOFF_MARKER_ADDR) != ARM7_HANDOFF_MARKER_MAGIC) {
         return false;
@@ -133,6 +129,30 @@ bool arm9_arm7_takeover(void)
     /* Clear the diagnostic markers our ARM7 will write once it is alive. */
     REG32(ARM7_READY_MARKER_ADDR) = 0u;
     REG32(ARM7_JUMP_MARKER_ADDR) = 0u;
+
+#if !defined(ENABLE_ASTRO_SLIDE)
+    /*
+     * The Astronaut slide is disabled by default on this firmware.
+     *
+     * Live melonDS tracing of the test NAND (2026-10-23) shows the stage-2
+     * ARM7 running from NWRAM-C with its window at 0x037B8000 (MBK8 =
+     * 0x07F837B8, size 3 / mask 7) and parts 0..7 owned by the ARM7 through
+     * MBK4/MBK5. Astronaut targets a different firmware layout: its
+     * MBK5/MBK8 values (0x00000080 / 0x0C003800) disable parts 5..7 and
+     * move the ARM7's code out from under it. The result is an immediate
+     * illegal-instruction abort (S04), not a jumpslide.
+     *
+     * Returning false keeps stage 2's MBK ownership intact (see
+     * arm9_main()); the ARM7 stays healthy and reachable over IPC while the
+     * correct NWRAM-part hand-off is developed. Enable with
+     * `make ASTRO_SLIDE=1` when testing a firmware that matches Astronaut's
+     * layout.
+     */
+    return false;
+#else
+    u32 mbk5;
+    u32 mbk8;
+    u32 i;
 
     /* The NWRAM page is DSi-only; on a legacy DS this is a no-op. */
     if (!scfg_is_twl_mode()) {
@@ -174,4 +194,5 @@ bool arm9_arm7_takeover(void)
     cache_flush_all();
 
     return true;
+#endif
 }

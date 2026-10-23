@@ -152,6 +152,7 @@ boot_policy_t boot_resolve_policy(u16 raw_keyinput)
 void arm9_main(void)
 {
     bool arm7_taken_over;
+    bool overflow_boot;
 
     /*
      * 0. Bring-up heartbeat (diagnostic). MUST stay the first statement: it
@@ -188,6 +189,8 @@ void arm9_main(void)
      * jumpslide (see src/arm9/arm7_boot.c). On the ordinary `.nds` boot and on
      * the title-boot path the marker is absent and this is a no-op.
      */
+    overflow_boot = (REG32(ARM7_HANDOFF_MARKER_ADDR) ==
+                     ARM7_HANDOFF_MARKER_MAGIC);
     arm7_taken_over = arm9_arm7_takeover();
     if (arm7_taken_over) {
         u32 wait;
@@ -212,12 +215,20 @@ void arm9_main(void)
      *     scfg_init() verifies TWL mode first, so on a legacy DS it is a
      *     complete no-op (avoiding writes to the DSi-only 0x04004000 page).
      *
-     *     After a successful ARM7 takeover we deliberately skip mbk_init():
-     *     it hands WRAM-C to the ARM9, but WRAM-C is where the freshly started
-     *     ARM7 keeps its IWRAM and stacks. Keep stage 2's slot ownership and
-     *     apply only the clock/extended-RAM configuration.
+     *     The TMD-overflow boot runs *after* stage 2 has already assigned the
+     *     NWRAM parts. The firmware ARM7 executes its stage-2 image from
+     *     NWRAM-C (window start 0x037B8000, parts 0..7), so rewriting MBK1..5
+     *     moves the code out from under it: the next fetch hits unmapped
+     *     slots, the CPU takes an illegal-instruction abort and every later
+     *     takeover attempt fails. This was observed live in melonDS: with the
+     *     overflow build the ARM7 sat at an invalid PC and returned S04 on
+     *     continue; skipping mbk_init() left it healthy in the BIOS Halt loop.
+     *
+     *     Therefore: on the overflow path keep stage 2's slot ownership and
+     *     apply only the clock/extended-RAM configuration. The regular
+     *     homebrew/.nds path still runs the canonical mbk_init().
      */
-    if (arm7_taken_over) {
+    if (arm7_taken_over || overflow_boot) {
         (void)scfg_unlock();
         scfg_apply_boot_config();
     } else {

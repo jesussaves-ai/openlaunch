@@ -83,6 +83,16 @@ ifeq ($(ARM7_HANDOFF),1)
 CFLAGS_COMMON += -DENABLE_ARM7_HANDOFF
 endif
 
+# Astronaut-style NWRAM-C jumpslide (fill the firmware's stack window and let a
+# return pop our entry). DISABLED by default: the live test NAND's stage-2 ARM7
+# runs from NWRAM-C parts 0..7 with its window at 0x037B8000, and Astronaut's
+# MBK5/MBK8 values remove the parts it is executing from, so the ARM7 takes an
+# illegal-instruction abort instead of sliding. Build with `make ASTRO_SLIDE=1`
+# only when testing a firmware whose layout matches Astronaut's.
+ifeq ($(ASTRO_SLIDE),1)
+CFLAGS_COMMON += -DENABLE_ASTRO_SLIDE
+endif
+
 # NAND installer write path. DISABLED by default: the eMMC is read-only
 # (the project conventions, scripts/verify_rom.py). Build with `make NAND_WRITE_DANGER=1`
 # to compile in the guarded backup + flash pipeline (menu item [10]).
