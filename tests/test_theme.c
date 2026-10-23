@@ -24,6 +24,7 @@
 
 #include "arm9/boot_cfg.h"
 #include "arm9/theme.h"
+#include "arm9/splash_tux.h"
 #include "common/fat_ro.h"
 
 /* ------------------------------------------------------------------ */
@@ -269,10 +270,12 @@ static void test_splash_from_image(void)
         assert(last == 0x03FFu);
     }
 
-    /* Feed the staging path through theme_load_splash (no MMIO). */
+    /* Feed the staging path through theme_load_splash (no MMIO). With no
+     * SPLASH_IMAGE configured it stages the built-in penguin splash. */
     theme_defaults(&cfg);
-    assert(theme_load_splash(&vol, &cfg, &got) == THEME_SPLASH_NONE);
-    assert(theme_splash_pixels() == NULL);
+    assert(theme_load_splash(&vol, &cfg, &got) == THEME_SPLASH_BUILTIN);
+    assert(got == THEME_SPLASH_BYTES);
+    assert(theme_splash_pixels() != NULL);
 
     cfg.has_splash = true;
     strcpy(cfg.splash_path, "SPLASH.RAW");
@@ -328,6 +331,49 @@ static int load_image(const char *path)
     return 0;
 }
 
+/*
+ * Built-in penguin splash: argument checks, that it actually paints (backdrop +
+ * art + wordmark), and that it is what theme_load_splash() stages when no
+ * SPLASH_IMAGE is configured.
+ */
+static void test_splash_tux(void)
+{
+    static u8 buf[THEME_SPLASH_BYTES];
+    const u16 bg = THEME_BG_BGR555_DEFAULT;
+    const u16 accent = THEME_ACCENT_BGR555_DEFAULT;
+    u32 i, non_bg = 0u, accent_px = 0u;
+    theme_config_t cfg;
+    u32 got = 0u;
+
+    assert(!splash_tux_render(NULL, (u32)sizeof(buf), bg, accent));
+    assert(!splash_tux_render(buf, (u32)sizeof(buf) - 1u, bg, accent));
+
+    memset(buf, 0, sizeof(buf));
+    assert(splash_tux_render(buf, (u32)sizeof(buf), bg, accent));
+
+    for (i = 0u; i < THEME_SPLASH_PIXELS; i++) {
+        u16 px = (u16)((u16)buf[i * 2u] | ((u16)buf[i * 2u + 1u] << 8));
+
+        if (px != (u16)(bg | THEME_SPLASH_ALPHA)) {
+            non_bg++;
+        }
+        if (px == (u16)(accent | THEME_SPLASH_ALPHA)) {
+            accent_px++;
+        }
+    }
+    assert(non_bg > 2000u);      /* the penguin + wordmark cover real area  */
+    assert(accent_px > 200u);    /* ... and the wordmark is accent-coloured */
+    assert(non_bg < THEME_SPLASH_PIXELS / 2u);  /* still mostly backdrop   */
+
+    /* With no SPLASH_IMAGE the built-in splash is what gets staged. */
+    theme_defaults(&cfg);
+    assert(!cfg.has_splash);
+    assert(theme_load_splash(NULL, &cfg, &got) == THEME_SPLASH_BUILTIN);
+    assert(got == THEME_SPLASH_BYTES);
+    assert(theme_splash_pixels() != NULL);
+    assert(strcmp(theme_splash_status_text(THEME_SPLASH_BUILTIN), "BUILTIN") == 0);
+}
+
 int main(int argc, char **argv)
 {
     const char *path = (argc > 1) ? argv[1] : "build/sdcard.img";
@@ -338,6 +384,7 @@ int main(int argc, char **argv)
     test_boot_cfg_theme();
     test_splash_check();
     test_splash_blit();
+    test_splash_tux();
 
     if (load_image(path) != 0) {
         printf("test_theme: skipping SD-image checks (%s not found)\n", path);

@@ -376,6 +376,7 @@ HOST_SRCS_ARM9 := tests/test_arm9.c \
                   src/arm9/mpu.c src/arm9/irq.c src/arm9/ipc.c \
                   src/arm9/video.c src/arm9/dma.c src/arm9/scfg.c \
                   src/arm9/boot.c src/arm9/boot_cfg.c src/arm9/theme.c \
+                  src/arm9/splash_tux.c \
                   src/arm9/console.c src/arm9/font8x8.c src/arm9/ui_font.c \
                   src/arm9/input.c src/arm9/menu.c src/arm9/storage.c \
                   src/arm9/nand_boot.c src/arm9/loader.c \
@@ -387,7 +388,7 @@ HOST_SRCS_CONSOLE := tests/test_console.c \
 # Menu state machine + keypad edge detector + BOOT.CFG/hotkey resolver.
 HOST_SRCS_MENU := tests/test_menu.c \
                   src/arm9/menu.c src/arm9/boot.c src/arm9/boot_cfg.c \
-                  src/arm9/theme.c \
+                  src/arm9/theme.c src/arm9/splash_tux.c \
                   src/arm9/input.c \
                   src/arm9/console.c src/arm9/font8x8.c src/arm9/ui_font.c \
                   src/arm9/ipc.c src/arm9/scfg.c src/arm9/mpu.c \
@@ -417,6 +418,7 @@ HOST_SRCS_SCFG := tests/test_scfg.c src/arm9/scfg.c
 # compiled with -DLOADER_HOST_TEST so it stages into the test's scratch arena.
 HOST_SRCS_SDIMG := tests/test_sd_image.c \
                    src/arm9/loader.c src/arm9/boot_cfg.c src/arm9/theme.c \
+                   src/arm9/splash_tux.c src/arm9/font8x8.c \
                    src/common/fat_ro.c src/common/nds_header.c \
                    src/common/mem.c src/common/cache.c src/arm9/ipc.c \
                    src/common/dldi.c
@@ -436,6 +438,7 @@ HOST_SRCS_NAND := tests/test_nand.c \
 # raw splash validator / FAT reader (suite 13).
 HOST_SRCS_THEME := tests/test_theme.c \
                    src/arm9/theme.c src/arm9/boot_cfg.c \
+                   src/arm9/splash_tux.c src/arm9/font8x8.c \
                    src/common/fat_ro.c src/common/mem.c
 # NAND installer: SHA-256/HMAC-SHA-256, token codec + policy, layout validation,
 # the bounded FAT root-file writer, and the backup/flash streaming engines

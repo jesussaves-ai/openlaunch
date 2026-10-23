@@ -25,6 +25,9 @@
  *
  *     THEME_ACCENT=#00FFCC      THEME_TEXT=0xFFFFFF      THEME_BG=#000000
  *     SPLASH_IMAGE=SPLASH.RAW
+ * When SPLASH_IMAGE is not set the built-in OpenLaunch penguin splash is
+ * rendered instead (see include/arm9/splash_tux.h), so the boot screen is never
+ * a bare backdrop.
  *
  * A `#` begins a comment only at the start of a line or after whitespace, so a
  * `#RRGGBB` colour value is never mistaken for a comment.

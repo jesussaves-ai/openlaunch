@@ -18,6 +18,7 @@
 #include "arm9/theme.h"
 #include "arm9/console.h"
 #include "arm9/video.h"
+#include "arm9/splash_tux.h"
 #include "common/dsi_hw.h"
 
 /* The built-in theme, shared by theme_defaults() and theme_apply(NULL). */
@@ -145,6 +146,7 @@ const char *theme_splash_status_text(theme_splash_status_t status)
     case THEME_SPLASH_ERR_KIND:  return "KIND";
     case THEME_SPLASH_ERR_SIZE:  return "SIZE";
     case THEME_SPLASH_ERR_IO:    return "IO";
+    case THEME_SPLASH_BUILTIN:   return "BUILTIN";
     default:                     return "?";
     }
 }
@@ -228,6 +230,21 @@ theme_splash_status_t theme_load_splash(fat_volume_t *vol,
         *out_len = 0u;
     }
     if (cfg == NULL || !cfg->has_splash || cfg->splash_path[0] == '\0') {
+        /*
+         * No SPLASH_IMAGE configured: render the built-in OpenLaunch penguin.
+         * This needs no SD card, so the boot screen is never a bare backdrop.
+         */
+        u16 bg     = (cfg != NULL) ? cfg->bg     : THEME_BG_BGR555_DEFAULT;
+        u16 accent = (cfg != NULL) ? cfg->accent : THEME_ACCENT_BGR555_DEFAULT;
+
+        if (splash_tux_render(s_splash_stage, (u32)sizeof(s_splash_stage),
+                              bg, accent)) {
+            s_splash_ready = true;
+            if (out_len != NULL) {
+                *out_len = THEME_SPLASH_BYTES;
+            }
+            return THEME_SPLASH_BUILTIN;
+        }
         s_splash_ready = false;
         return THEME_SPLASH_NONE;
     }

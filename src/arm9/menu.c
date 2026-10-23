@@ -466,8 +466,19 @@ static void menu_load_theme(menu_diag_t *d)
     theme_apply(&s_boot_cfg.theme);
 
     if (!s_boot_cfg.theme.has_splash) {
-        menu_copy_str(s_theme_footer, sizeof(s_theme_footer),
-                      s_boot_cfg_present ? "THEME: BOOT.CFG" : "THEME: DEFAULT");
+        /*
+         * No SPLASH_IMAGE configured: present the built-in OpenLaunch penguin
+         * splash. It needs no card, so the boot screen is never blank.
+         */
+        st = theme_load_splash(NULL, &s_boot_cfg.theme, &got);
+        d->splash_status = (u8)st;
+        if (st == THEME_SPLASH_BUILTIN && theme_present_splash()) {
+            d->splash_loaded = true;
+            menu_copy_str(s_theme_footer, sizeof(s_theme_footer), "THEME: TUX");
+        } else {
+            menu_copy_str(s_theme_footer, sizeof(s_theme_footer),
+                          s_boot_cfg_present ? "THEME: BOOT.CFG" : "THEME: DEFAULT");
+        }
         return;
     }
 

@@ -96,7 +96,8 @@ typedef enum {
     THEME_SPLASH_ERR_ARG,       /* NULL / undersized destination             */
     THEME_SPLASH_ERR_KIND,      /* not a RAW image (e.g. .BMP)               */
     THEME_SPLASH_ERR_SIZE,      /* not exactly 256*192*2 bytes               */
-    THEME_SPLASH_ERR_IO         /* file not found / FAT read failed          */
+    THEME_SPLASH_ERR_IO,        /* file not found / FAT read failed          */
+    THEME_SPLASH_BUILTIN        /* rendered the built-in OpenLaunch splash   */
 } theme_splash_status_t;
 
 /* Human-readable splash status ("OK", "NONE", "SIZE", ...); never NULL. */
