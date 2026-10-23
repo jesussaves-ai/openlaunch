@@ -151,3 +151,47 @@ changed. `scripts/dsi_nand_install.py verify` re-checks a decrypted image.
 * Every build step is offline; the tool never touches a console.
 * The mandatory full-NAND backup / recovery guidance in docs §34 still applies
   before any flash.
+
+## Install modes: overflow-hijack vs. legitimate title
+
+`scripts/dsi_nand_install.py` writes the container into the launcher region's
+`title.tmd`. There are two modes, selected by `--keep-prefix`:
+
+* **overflow-hijack (default, no `--keep-prefix`)** - the TMD is the container
+  prefixed with 520 zero bytes. Stage 2 takes the TMD-overflow path documented
+  in [`stage2_re.md`](stage2_re.md) instead of a normal title boot, so the ARM9
+  runs and the ARM7 does not.
+* **legitimate title (`--keep-prefix`)** - the 520-byte *genuine* TMD header is
+  kept and the container appended after it (`520 + payload`). Stage 2 can then
+  accept the TMD and boot the region as an ordinary title, which is the path
+  that starts **both** CPUs: boot stage 2 publishes the boot-info and restarts
+  the ARM7 into the header's ARM7 entry (`0x34`). This is the shape
+  SafeUnlauncher installs and the one the reference relies on.
+
+Building a legitimate-title image from a stock dump:
+
+```
+python3 scripts/dsi_nand_install.py patch \
+    nand.bin out.bin 484E4145 \
+    --payload build/openlaunch_payload.bin --keep-prefix
+```
+
+Verified offline against the reference dump: the region's `title.tmd` grows
+`520 -> 196608` bytes with the header unchanged
+(`head=000100013abd67fb8237b03d52af21e9`) and a consistent FAT chain
+(`fat-copy mismatches on chain: 0`). Whether stage 2 actually completes that
+boot is a **hardware** question - neither emulator available here can show it
+(see [`stage2_re.md`](stage2_re.md)).
+
+## NAND footer conventions
+
+A DSi eMMC image carries a 0x40-byte `"DSi eMMC CID/CPU"` footer in one of two
+places:
+
+* **in-place** at `0x000FF800` (the convention our own images use), and
+* **appended** after the 240 MiB image at `0x0F000000`, as `dumpTool` writes it
+  (equivalently the last 0x40 bytes of the file). Its `.sha1` covers the 240 MiB
+  image *before* the footer is appended.
+
+`dsi_nand_tool` and `dsi_nand_install.py` now accept **either**, so a stock
+dumpTool image decrypts with no extra arguments.

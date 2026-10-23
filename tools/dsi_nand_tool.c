@@ -46,24 +46,43 @@ static int parse_hex(const char *s, u8 *out, int n)
     return s[2 * n] == '\0' ? 0 : -1;
 }
 
+/* Read the 0x40-byte "DSi eMMC CID/CPU" footer at `off`, if present. */
+static int footer_at(FILE *fh, long off, u8 cid[16], u8 console_id[8])
+{
+    u8 buf[0x40];
+
+    if (off < 0) return 0;
+    if (fseek(fh, off, SEEK_SET) != 0) return 0;
+    if (fread(buf, 1, sizeof(buf), fh) != sizeof(buf)) return 0;
+    if (memcmp(buf, FOOTER_MAGIC, 16) != 0) return 0;
+    memcpy(cid, buf + 0x10, 16);
+    memcpy(console_id, buf + 0x20, 8);
+    return 1;
+}
+
 static int load_keys(const char *path, u8 cid[16], u8 console_id[8],
                      int have_keys)
 {
     FILE *fh = fopen(path, "rb");
-    u8 buf[0x40];
+    long size;
 
     if (!fh) { perror("open"); return -1; }
-    if (fseek(fh, (long)FOOTER_OFF, SEEK_SET) != 0 ||
-        fread(buf, 1, sizeof(buf), fh) != sizeof(buf)) {
+    if (fseek(fh, 0, SEEK_END) != 0) { fclose(fh); return have_keys ? 0 : -1; }
+    size = ftell(fh);
+
+    /*
+     * Two footer conventions are in the wild: the in-place one at 0xFF800
+     * (used by our own images) and the dumpTool-style footer appended after the
+     * 240 MiB image at 0x0F000000 (equivalently the last 0x40 bytes). Accept
+     * either, so a stock dumpTool image decrypts without extra arguments.
+     */
+    if (footer_at(fh, (long)FOOTER_OFF, cid, console_id) ||
+        footer_at(fh, (long)0x0F000000u, cid, console_id) ||
+        footer_at(fh, size - 0x40, cid, console_id)) {
         fclose(fh);
-        return have_keys ? 0 : -1;
-    }
-    fclose(fh);
-    if (memcmp(buf, FOOTER_MAGIC, 16) == 0) {
-        memcpy(cid, buf + 0x10, 16);
-        memcpy(console_id, buf + 0x20, 8);
         return 1;
     }
+    fclose(fh);
     return have_keys ? 0 : -1;
 }
 

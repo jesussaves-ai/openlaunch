@@ -279,10 +279,20 @@ FOOTER_MAGIC = b"DSi eMMC CID/CPU"
 
 
 def read_footer(img):
-    blob = img[0xFF800:0xFF840]
-    if blob[:len(FOOTER_MAGIC)] != FOOTER_MAGIC:
-        raise SystemExit("no 0xFF800 footer; pass --cid/--console")
-    return blob[0x10:0x20], blob[0x20:0x28]
+    """Return (cid, console_id) from the "DSi eMMC CID/CPU" footer.
+
+    Accepts both conventions: the in-place footer at 0xFF800 (used by our own
+    images) and the dumpTool-style footer appended after the 240 MiB image at
+    0x0F000000 (equivalently the last 0x40 bytes), so a stock dumpTool image
+    decrypts with no extra arguments.
+    """
+    for off in (0xFF800, 0x0F000000, len(img) - 0x40):
+        if off < 0 or off + 0x40 > len(img):
+            continue
+        blob = img[off:off + 0x40]
+        if blob[:len(FOOTER_MAGIC)] == FOOTER_MAGIC:
+            return blob[0x10:0x20], blob[0x20:0x28]
+    raise SystemExit("no footer at 0xFF800 or appended; pass --cid/--console")
 
 
 def run_tool(tool, *args):
