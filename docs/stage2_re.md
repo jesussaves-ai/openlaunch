@@ -352,6 +352,31 @@ tested; neither started the ARM7. A retail System Menu boot with a breakpoint
 on stage 2's `0x037B9AC4` hand-off did not hit it in the trace window, so the
 title-boot route needs an ARM7-side trace.
 
+### Live ARM7 trace (melonDS, both cores running)
+
+The melonDS GDB stub only accepts on port 3334 when the ARM7 is executing, so
+leave **Break on startup** off for both cores and connect after the system is
+running. On the test NAND the live ARM7 is:
+
+```
+PC = 0x037F9304     SP = 0x03FFFB6C     LR = 0x037B94D4
+IRQ vector [0x03FFFFFC] = 0x037D4B64           (shared WRAM)
+ARM7-local MBK6/7/8 = 0x00300000 / 0x00304000 / 0xB837F807
+```
+
+This is the **stage-2 ARM7**, running from shared WRAM - not the VRAM system
+firmware (`0x0602xxxx`) seen on a normal retail boot. Writing the IRQ vector to
+a `b .` loop at `0x0237F000` works: the ARM7 reaches it with CPSR in IRQ/ARM
+mode, so the vector jump and Main-RAM execution are valid. Writing it to our
+staged image at `0x02380000` still faults (S04) before `arm7_main`, so the
+image's early setup needs another pass (the IRQ vector install and Main-RAM
+stacks are now in place but unvalidated).
+
+This matches the official Unlaunch description: the ARM9 starts the ARM7 by
+**remapping shared WRAM**, not by the VRAM/system-firmware path. The next step
+is to map the shared-WRAM bank containing `0x037D4B64` on the ARM9 and redirect
+that handler, and to single-step `0x02380000` with the ARM7 stub.
+
 The remaining routes are:
 
 1. a hijack target in memory the ARM9 *can* write (main RAM or a firmware IPC

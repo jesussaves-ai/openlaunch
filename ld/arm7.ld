@@ -8,7 +8,10 @@
  *
  * Memory map (the project conventions):
  *   MAIN_RAM  0x02380000  4 MiB Main RAM (256 KiB modelled here)
- *   IWRAM     0x03800000  64 KiB dedicated ARM7 WRAM (stacks)
+ *   IWRAM     0x02300000  64 KiB free Main RAM (stacks + .iwram)
+ *
+ * 0x03800000 (ARM7 WRAM) is not mapped early in the stage-2 boot, so the
+ * image keeps its stacks and IWRAM section in Main RAM instead.
  *
  * Unlike ARM9 there is no secure-area prefix, so the reset vector sits at the
  * first byte of the image.
@@ -18,7 +21,7 @@ ENTRY(_start)
 MEMORY
 {
     MAIN_RAM (rwx) : ORIGIN = 0x02380000, LENGTH = 256K
-    IWRAM    (rwx) : ORIGIN = 0x03800000, LENGTH = 64K
+    IWRAM    (rwx) : ORIGIN = 0x02300000, LENGTH = 64K
 }
 
 SECTIONS
@@ -75,9 +78,9 @@ SECTIONS
     __iwram_lma__ = LOADADDR(.iwram);
 
     /* ---- stacks at the top of IWRAM ---------------------------------- */
-    __sp_svc__ = 0x0380FFC0;
-    __sp_irq__ = 0x0380FF00;
-    __sp_usr__ = 0x0380FE40;
+    __sp_svc__ = 0x0230FFC0;
+    __sp_irq__ = 0x0230FF00;
+    __sp_usr__ = 0x0230FE40;
 
     /* ---- ELF metadata must not reach the flat image ------------------ */
     /DISCARD/ :

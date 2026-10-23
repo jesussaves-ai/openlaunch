@@ -160,10 +160,15 @@ Consequences:
    aliases, so the stack slide and the IRQ-vector hijack are blocked from the
    ARM9. A full NDS/TWL header (logo, both CRC16s, banner, unit code 3) was
    added to the container to match UNLAUNCH.DSI; the genuine-header HNAA and
-   HNAE installs were also tested and none started the ARM7. Next: a writable
-   target in main RAM or a firmware IPC handler, an IPC command that restarts
-   the ARM7, or a real title install so stage 2 starts both CPUs. See
-   `docs/stage2_re.md`.
+   HNAE installs were also tested and none started the ARM7.
+   The ARM7 GDB stub now works in melonDS with Break-on-startup off for both
+   cores: the live test-NAND ARM7 is at PC `0x037F9304`, SP `0x03FFFB6C`,
+   IRQ vector `0x037D4B64` (shared WRAM), MBK6/7/8
+   `0x00300000`/`0x00304000`/`0xB837F807`. Redirecting the vector to a loop at
+   `0x0237F000` works; redirecting it to `0x02380000` still faults, so the
+   image's early setup needs debugging. This matches the official Unlaunch
+   mechanism (ARM9 remaps shared WRAM). Next: map `0x037D4B64` on the ARM9 and
+   single-step `0x02380000` with the ARM7 stub. See `docs/stage2_re.md`.
 
 ## 3. Recent work (C99 bootloader bring-up)
 

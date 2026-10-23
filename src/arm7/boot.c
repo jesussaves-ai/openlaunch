@@ -35,6 +35,18 @@ void arm7_main(void)
     irq_register(IRQ_IPC_RECV, ipc_dispatch_pending);
     irq_enable_bits(IRQ_IPC_RECV);
 
+    /*
+     * The DSi ARM7 exception vector jumps through the top-of-WRAM pointer at
+     * 0x03FFFFFC. A takeover enters our image through that pointer, so it
+     * must be repointed at our own handler before IME is enabled - otherwise
+     * the next IRQ re-enters _start and restarts the image in a loop.
+     */
+    {
+        extern void arm7_irq(void);
+
+        REG32(0x03FFFFFCu) = (u32)(uintptr_t)&arm7_irq;
+    }
+
     /* Unmask interrupts (IME = 1). */
     irq_restore(1u);
 
