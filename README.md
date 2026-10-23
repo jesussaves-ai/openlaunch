@@ -243,6 +243,29 @@ python3 scripts/dsi_nand_install.py patch nand.bin nand_patched.bin 484E4141 \
         --payload build/openlaunch_payload.bin
 ```
 
+### Booting OpenLaunch with Unlaunch (verified, both CPUs)
+
+The complete, verified launch path is Unlaunch's own filemenu: Unlaunch starts
+the selected file as a DSi title, so the loader starts **both** the ARM9
+(`0x02200800`) and the ARM7 (`0x02380000`) from our header.
+
+```sh
+make rom                                    # -> build/openlaunch.nds
+cp build/openlaunch.nds /media/<SD>/bootcode.dsi
+```
+
+Then, in Unlaunch's filemenu, scroll to the bottom and select `bootcode.dsi`
+(it is the last entry and is drawn just below the visible rows). The menu
+self-test then reports `ARM7: OK (1)`.
+
+Live melonDS trace: `ARM9 0x02200958` (`arm9_main`), `0x02201700`
+(`console_init`), `0x02203D94` (`menu_run`), the ARM7 markers `JMPD` at
+`0x0237FFE8` and `RADY` at `0x0237FFF4`, and boot info at `0x02FFE000` holding
+our header (`"OPENLAUNCH"`, ARM9 `0x02200800`/`0xB33C`, ARM7
+`0x02380000`/`0x117C`). No stage-2 handshake is involved. See
+`docs/unlaunch_reference.md` for the full trace and why the launcher-TMD route
+reaches only the ARM9.
+
 ## Repository layout
 
 ```text

@@ -190,6 +190,24 @@ Consequences:
    (`0x03FFF6D8`/`0x03FFF7D0`) and does not reach our entry yet. Next:
    reverse the post-handshake loader (`0x0238103C` onward).
 
+### Verified launch path (2026-10-23)
+
+The stage-2 handshake workaround is no longer the primary route. Unlaunch's
+own filemenu starts the selected file as a DSi title, and that **does** start
+both CPUs from our header. Verified in melonDS with the official Unlaunch v2.0
+install (`HNAE`):
+
+* container on SD as `bootcode.dsi`, selected in the filemenu;
+* boot info `0x02FFE000` = our header (`"OPENLAUNCH"`, ARM9 `0x02200800` /
+  `0xB33C`, ARM7 `0x02380000` / `0x117C`);
+* ARM9 reaches `arm9_main` / `console_init` / `menu_run`;
+* ARM7 writes `JMPD` (`0x0237FFE8`) and `RADY` (`0x0237FFF4`) and runs our IPC
+  dispatcher; the menu reports `ARM7: OK (1)`.
+
+So the launcher-TMD installs (`HNAA`/`HNAE`) remain ARM9-only experiments,
+while `sd:/bootcode.dsi` is the supported launch path. See
+`docs/unlaunch_reference.md`.
+
 ## 3. Recent work (C99 bootloader bring-up)
 
 * **Register widths** — `POSTFLG` is now an 8-bit store (a 32-bit write clobbers

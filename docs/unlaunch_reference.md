@@ -10,6 +10,48 @@ Reference notes gathered on 2026-10-23 from:
 These notes exist so the official behaviour can be reproduced without
 redistributing TWLMagician code. See `NOTICE` item 4.
 
+## Verified entry point: `sd:/bootcode.dsi` (2026-10-23)
+
+**This is the working launch path.** Put the OpenLaunch container on the SD
+card as `bootcode.dsi` and select it in Unlaunch's filemenu (it is listed last;
+scroll to the bottom). Unlaunch's own title launcher then starts **both CPUs**
+from the container header:
+
+1. it builds the boot info at `0x02FFE000` from our header
+   (`"OPENLAUNCH"`, ARM9 `0x02200800` / size `0xB33C`, ARM7 `0x02380000` /
+   size `0x117C`);
+2. it runs its relaunch sequence (`0x06025B9C` -> `0x060240BC` ->
+   `0x0380F700`);
+3. it starts the ARM9 at `0x02200800` and the ARM7 at `0x02380000`.
+
+Live melonDS trace (official Unlaunch v2.0 installed in `HNAE`, 256 MiB
+foldered SD image, no cart inserted):
+
+```
+ARM9 pc=02200958   arm9_main
+ARM9 pc=02201700   console_init
+ARM9 pc=02203D94   menu_run
+mem 0237FFE8: 44504D4A   "JMPD" (ARM7 crt0 ran)
+mem 0237FFF4: 59444152   "RADY" (ARM7 main ran)
+```
+
+The on-screen self-test reports `ARM7: OK (1)`, so the ARM7 IPC dispatcher is
+serving the ARM9; `IPCSYNC` is `0` at the ARM9 entry and no stage-2 ring/echo
+is involved. The stage-2 boot manager and its header gate are simply not part
+of this path: Unlaunch's filemenu runs after stage 2 and starts the title
+itself.
+
+Notes:
+
+* melonDS 1.1 draws only 18 filemenu rows; `bootcode.dsi` is the 19th entry and
+  its highlight sits just below the last drawn row. Press Down to the bottom
+  (or configure `OPTIONS` -> `NO BUTTON` to start it) and press A.
+* Unlaunch's crawler displays the cart-header title for SD files; the entry is
+  the only one after `Photo Clock`.
+* This also explains the earlier `boot.nds` expectation in the DSi guides:
+  every DSiWare exploit loads `boot.nds`, while Unlaunch itself autoloads
+  `bootcode.dsi`/`bootthis.dsi` (hotkey table in `unlaunch.htm`).
+
 ## Install method (what TWLMagician does)
 
 1. Locate the **real launcher** title:
@@ -87,11 +129,14 @@ started by the loader.
 
 Routes forward:
 
-1. install OpenLaunch into the **real launcher** (`HNAE`) with the 520-byte
-   TMD prefix, like the official installer, so the loader starts both CPUs;
-2. or make the overflow path start the ARM7 the same way the loader does
+1. **verified:** put the container on SD as `bootcode.dsi` and start it from
+   Unlaunch's filemenu — Unlaunch's own launcher starts both CPUs (see the
+   section at the top of this document);
+2. install OpenLaunch into the **real launcher** (`HNAE`) with the 520-byte
+   TMD prefix, like the official installer (reaches only the ARM9 side);
+3. or make the overflow path start the ARM7 the same way the loader does
    (publish the boot info at `0x02FFFE00`, then drive the boot handshake);
-3. hardware validation, where the ARM7/loader timing may differ from melonDS.
+4. hardware validation, where the ARM7/loader timing may differ from melonDS.
 
 ## Live real-title boot (2026-10-23)
 
@@ -257,9 +302,14 @@ The ARM9 counterpart of the boot manager is `0x022087B0` (called by the
 stage-2 ARM9 with `r0 = 0x02FFE000`); it reads the ARM9 entry at `[+0x24]`,
 matching the standard NDS header layout (ARM7 entry at `[+0x34]`).
 
-### Status of the two routes (2026-10-23, end of session)
+### Status of the three routes (2026-10-23, end of session)
 
-Both routes reach our ARM9 and drive the ARM7 ring/echo handshake:
+**Route 3 (`sd:/bootcode.dsi`) is verified working and is the recommended
+path** — both CPUs start, `JMPD`/`RADY` are written, and the menu self-test
+reports `ARM7: OK (1)`. See the section at the top of this document. Routes 1
+and 2 below reach only the ARM9 side:
+
+Both launcher routes reach our ARM9 and drive the ARM7 ring/echo handshake:
 
 * **real-launcher (`HNAE`)**: loader boots our ARM9, ARM7 stays in the stage-2
   boot manager;
