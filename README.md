@@ -10,6 +10,10 @@ disassembled from `asm/UNLAUNCH.DSI` into readable, strictly typed C99. See
 [`docs/hardware_notes.md`](docs/hardware_notes.md) for the register-level notes
 and [`PLAN.md`](PLAN.md) for the translation roadmap.
 
+OpenLaunch is free software, licensed under the **GNU General Public License,
+version 3 or later**. See [`LICENSE`](LICENSE) for the full text and
+[`NOTICE`](NOTICE) for third-party and reference-material attribution.
+
 > Development note: this codebase is developed with heavy AI assistance — the
 > hardware reverse-engineering, architecture and review are directed by the
 > maintainer, and the C99/assembly is largely machine-written and verified by the
@@ -341,3 +345,23 @@ target (`BOOT : NDS/SUBAPP.NDS [X]`). `B` or `SELECT` always force the menu.
 
 See [`tests/README.md`](tests/README.md) for the full test matrix and
 [`docs/hardware_notes.md`](docs/hardware_notes.md) §26 for the SD image format.
+
+## License
+
+Copyright (C) 2026 The OpenLaunch Authors.
+
+OpenLaunch is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but **WITHOUT
+ANY WARRANTY**; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program. If not, see <https://www.gnu.org/licenses/>.
+
+Third-party components and reference material (including the Unlaunch/DSi
+firmware notes under `asm/` and the vendored `FlashGBX/` environment) keep their
+own terms; see [`NOTICE`](NOTICE).

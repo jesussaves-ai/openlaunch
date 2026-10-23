@@ -1,0 +1,61 @@
+OpenLaunch
+Copyright (C) 2026 The OpenLaunch Authors
+
+This project is licensed under the GNU General Public License, version 3 or
+later (GPL-3.0-or-later). See LICENSE for the full text.
+
+================================================================================
+Third-party and reference material
+================================================================================
+
+OpenLaunch is a clean-room reimplementation. The following material is either
+referenced, vendored, or used as a build/test dependency. It is NOT relicensed
+by this project; the original terms and copyrights apply.
+
+1. Unlaunch and DSi firmware reference material (`asm/`)
+
+   The `asm/` directory contains reverse-engineering notes, disassembly, and
+   extracted binaries derived from Martin Korth's Unlaunch and from Nintendo DSi
+   firmware/NAND dumps. All rights remain with their respective owners. This
+   material is included for interoperability and research reference and is not
+   covered by the GPL-3.0-or-later grant for OpenLaunch's own source code.
+
+   No Nintendo ROMs, NAND images, console-unique keys, or other copyrighted
+   data are distributed as part of OpenLaunch.
+
+2. Astronaut
+
+   Project:  https://github.com/Vickerinox/Astronaut
+   Copyright (C) Viktor Karlsson and contributors.
+   License:  GNU General Public License, version 3 or later.
+
+   OpenLaunch's stage-2 ARM7 takeover mechanism is based on behaviour documented
+   and implemented in Astronaut. Any code adapted from Astronaut remains under
+   GPL-3.0-or-later, which is compatible with this project's license.
+
+3. Relaunch
+
+   Project:  https://github.com/Universal-Team/Relaunch
+   Copyright (C) Universal-Team and contributors.
+   License:  MIT.
+
+   Used as a reference for the NDS bootstub / title-boot path.
+
+4. FlashGBX (`FlashGBX/`)
+
+   The vendored FlashGBX environment retains its own license and the licenses
+   of its bundled Python packages. See the package metadata under
+   `FlashGBX/lib/.../site-packages/*.dist-info/`.
+
+5. Build, test, and emulator tooling
+
+   BlocksDS / devkitARM, melonDS, Python, and other external tools are not
+   vendored and remain under their own licenses.
+
+================================================================================
+Contributions
+================================================================================
+
+Unless explicitly stated otherwise, any contribution intentionally submitted
+for inclusion in OpenLaunch is licensed under GPL-3.0-or-later, without any
+additional terms or conditions.
