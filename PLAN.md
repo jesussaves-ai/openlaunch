@@ -172,7 +172,9 @@ Consequences:
    ARM9 mirrors and the old-WRAM window read zero, and the ARM7 sits with
    IRQs masked. This matches the official Unlaunch mechanism (ARM9 remaps
    shared WRAM). Next: identify the shared-WRAM bank/window (or trace official
-   Unlaunch's ARM9 MBK writes) and restart/redirect the ARM7. See
+   Unlaunch's ARM9 MBK writes) and restart/redirect the ARM7. Reference clue:
+   the disassembled ARM9 uses MBK1/MBK6/MBK9 (WRAM-A), not the WRAM-C slice
+   (literals near `0x060274F0`, code near `0x06025988`). See
    `docs/stage2_re.md`.
 
 ## 3. Recent work (C99 bootloader bring-up)

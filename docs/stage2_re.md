@@ -387,6 +387,13 @@ overflow clobbered its stage-2 code. The next step is to identify the
 shared-WRAM bank/window from the stage-2 setup (or trace the official Unlaunch
 ARM9's MBK writes) and restart/redirect the ARM7.
 
+A useful reference clue: the disassembled reference ARM9 (`asm/arm9_vram.bin`)
+contains literals for **MBK1 / MBK6 / MBK9 (WRAM-A)**, not MBK4/5/8 (WRAM-C).
+The literals sit around `0x060274F0`; the code that consumes them is around
+`0x06025988`. The next attempt should replicate that WRAM-A sequence (or run an
+official Unlaunch NAND through the same GDB stubs) instead of extending the
+WRAM-C slice.
+
 The remaining routes are:
 
 1. a hijack target in memory the ARM9 *can* write (main RAM or a firmware IPC
