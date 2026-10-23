@@ -236,3 +236,23 @@ place *before* that check.
 
 This is the last gate: either get the boot info + IPCSYNC 6 in place before
 `0x02380240` runs (loader-side timing), or force the first branch.
+
+The two-part condition at `0x0238025C` is:
+
+```
+bl 0x02381A78 ; must return non-zero (boot-mode/title check)
+bl 0x02381494 ; must return 6       (IPCSYNC input from the ARM9)
+```
+
+Only then does it call the boot manager with the intact `0x02FFE000` header.
+The fallback at `0x023802B4` does `memset(0x02FFE000, 0, 0x1000)` first.
+
+On our title boot the ARM9 entry runs after this decision, so it cannot set
+IPCSYNC/header in time; the fallback wipes the header, the parameter block
+entry is 0, and the stub parks at `0x03FFF6E8`. The official flow must satisfy
+`0x02381A78`/IPCSYNC from the loader/stage-2 side before the title's ARM9
+starts.
+
+The ARM9 counterpart of the boot manager is `0x022087B0` (called by the
+stage-2 ARM9 with `r0 = 0x02FFE000`); it reads the ARM9 entry at `[+0x24]`,
+matching the standard NDS header layout (ARM7 entry at `[+0x34]`).
