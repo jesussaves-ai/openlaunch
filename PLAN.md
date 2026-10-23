@@ -55,6 +55,8 @@ Consequences:
 | LZ77 / RLE           | crt0 SWI `0x11` (`@ref 0x02200800`)                 | `src/common/lz77.c`       | **translated**|
 | Cache / CP15         | `FUN_0001cae0`, `FUN_0602c338`                       | `src/common/cache.c`      | **translated**|
 | IRQ control          | `FUN_00020ae4/af8/b04/cb0/df84/27028`               | `src/arm7/irq.c`          | **translated**|
+| ARM7 IRQ vector      | `FUN_00020b58`                                      | `src/arm7/boot.c`         | **translated**|
+| Boot-header MBK apply | `FUN_06027070` / `FUN_06027090`                    | `src/arm9/arm7_boot.c`    | **reversed**  |
 | IPC FIFO / sync      | `FUN_0001cc34/cb38/20be4`, `FUN_0001f21c`           | `src/arm7/ipc.c`          | **started**   |
 | IPC storage protocol | clean-room (ARM7-gated delegation)                  | `include/common/ipc_protocol.h` | **new** |
 | ARM9 storage client  | clean-room (IPC only, no MMIO)                      | `src/arm9/storage.c`      | **new**       |

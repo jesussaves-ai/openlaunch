@@ -394,6 +394,22 @@ The literals sit around `0x060274F0`; the code that consumes them is around
 official Unlaunch NAND through the same GDB stubs) instead of extending the
 WRAM-C slice.
 
+### Reversed ARM7 hand-off routines
+
+| address | routine | role |
+| --- | --- | --- |
+| `0x06027070` | `FUN_06027070` | Copy the boot header's global MBK1-5 + ARM9 MBK6-8 (0x02FFE180, 32 bytes) to MBK1..MBK8; write `WRAMSTAT` from header byte 0x1AF. |
+| `0x06027090` | `FUN_06027090` | Copy the header's **ARM7 MBK6-8** (0x02FFE1A0, 12 bytes) to the ARM9's local MBK6..MBK8, and the global slots with bit0 XORed. This is the reference "match the ARM7's NWRAM windows" step. |
+| `0x00020b58` | `FUN_00020b58` | Write the ARM7 IRQ vector (`0x03FFFFFC`), enable the IPC IE bit and IME (reference writes `0x060245A0`). |
+
+Doing the MBK6-8 match live makes **WRAM-C visible to the ARM9 at
+`0x03800000`** (the window fills with code). The ARM7's private stack
+(`0x03FFFB6C`) and IRQ vector (`0x03FFFFFC`) remain **separate physical
+memory**: the ARM9 reading `0x03FFFFFC` sees WRAM-C code, not the vector. The
+next attempt is to write an ARM7 entry/jump into the now-visible WRAM-C region
+(`0x03800000`) and see whether the stage-2 ARM7 executes it, or to trace an
+official Unlaunch NAND through the same stubs.
+
 The remaining routes are:
 
 1. a hijack target in memory the ARM9 *can* write (main RAM or a firmware IPC
