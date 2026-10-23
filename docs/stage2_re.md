@@ -478,6 +478,32 @@ Attempts that did **not** work, and why:
 * melonDS GDB `P` (register write) segfaults the emulator, so the PC cannot be
   forced from the stub.
 
+### Decisive result: the live handler is private (2026-10-23)
+
+The NWRAM-C window is real and the ARM9 can read the firmware image through
+it (`0x037B8000` matches `arm7.bin`), but the code the ARM7 actually executes
+is **not** the NWRAM copy. Proof: writing `0x11223344` to the ARM7's
+`0x037D4B64` and then scanning every NWRAM-C part at offset `0x4B64` from the
+ARM9 found the marker in **none** of them. The same holds for the vector word
+at `0x03FFFFFC` (it aliases `0x0380FFFC`, i.e. the classic top-of-WRAM slot).
+
+So on this boot the stage-2 ARM7 runs from **ARM7-private WRAM**
+(`0x03800000`-based, 64 KiB, mirrored over `0x03000000`-`0x037FFFFF`), and the
+NWRAM-C window at `0x037B8000` only carries a *copy* of the image. An ARM9-side
+code patch therefore cannot reach the running ARM7. The MBK slot arithmetic
+was verified (`part p -> slot p` in the healthy state; the slot index is
+`(addr >> 15) & mask`), but it does not matter while the ARM is executing from
+private memory.
+
+Remaining routes:
+
+1. drive the firmware's own IPC/boot-ring protocol (`0x037B9300` push,
+   `0x037B9494` consume) so it loads and branches to a title ARM7 itself;
+2. find the state where the ARM7 runs from shared/NWRAM (the official
+   Unlaunch "shared WRAM remap" point) and take over there;
+3. hardware validation, where the private-WRAM layout may differ from the
+   emulator's.
+
 Next: derive the part/slot mapping from the **live MBK4/MBK5 bytes** every
 boot, take the part containing `0x03FFFFFC` (slot 0) and/or `0x037D4B64`
 (slot 3), write the ARM7 entry, restore ownership, and wake via the IPC

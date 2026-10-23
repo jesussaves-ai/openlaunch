@@ -172,9 +172,12 @@ Consequences:
    SP `0x037F3290`, CPSR `0x1F`, IME `1`, IE `0x00040008` (Timer0 + IPC
    receive). An IPC FIFO write sets IF bit 18 and the ARM7 wakes, services the
    dispatcher, clears IF and halts again.
-   Next: derive the part/slot mapping from the live MBK4/MBK5 bytes, hijack
-   the part holding `0x03FFFFFC` / `0x037D4B64`, and wake via the IPC receive
-   IRQ. See `docs/stage2_re.md`.
+   Decisive follow-up: a marker written by the ARM7 at `0x037D4B64` does not
+   appear in any NWRAM-C part, so the live handler and vector are in
+   **ARM7-private WRAM**; the NWRAM-C window at `0x037B8000` only carries a
+   copy of the image. An ARM9-side code patch cannot reach the running ARM7.
+   The remaining routes are the firmware's own IPC/boot-ring protocol or the
+   boot stage where it runs from shared/NWRAM. See `docs/stage2_re.md`.
 
 ## 3. Recent work (C99 bootloader bring-up)
 
