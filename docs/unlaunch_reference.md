@@ -185,3 +185,32 @@ The remaining work is therefore narrow:
    which physical memory);
 2. either keep the windows mapping NWRAM-C until the stub has copied the block,
    or write the block after the window switch and before the stub copy.
+
+### The official boot-configuration blob
+
+The stage-2 ARM7 binary contains a configuration blob at file offset
+`0x21AA8` (loaded at `0x023A1AA8`):
+
+```
+0x037DF578 x4           ; parameter block pointer
+0x03800D30
+...
+0x02FFFE00              ; NDS boot info / header
+0x02FFE000              ; secondary boot info
+0x03FFF600              ; generated stub
+0x8D898581 0x8D898581 0x9D999591 0x8D898581 0x9D999591   ; MBK1..MBK5
+0x00003000 0x00003000 0x00003000                          ; MBK6..MBK8
+```
+
+So the official state is:
+
+* identity NWRAM ownership (parts -> ARM7 slots 0..7);
+* **all three windows empty** (`MBK6/7/8 = 0x00003000`), so
+  `0x037DF578` falls through to shared WRAM at offset `0x7578`;
+* the parameter block and the stub (`0x03FFF600`) are prepared from the
+  boot-info/header (`0x02FFFE00`, `0x02FFE000`).
+
+Our live boot manager instead ends with `MBK6/7/8 = 0` and a zero block, so
+it is taking a different path from the official one (the loader/header setup
+differs). The next step is to find which branch fills/copies the block from
+`0x02FFFE00`/`0x02FFE000` and make our boot-info match what it expects.
