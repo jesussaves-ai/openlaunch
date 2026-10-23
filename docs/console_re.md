@@ -61,7 +61,7 @@ Titles observed: `00030017` System Menu (`HNAE` real, `HNAA` backup), `00030015`
 
 | Vector | Mechanism | Status |
 | --- | --- | --- |
-| **Launcher TMD overflow** | stage 2 loads `title.tmd` without a real `filesize` check → overflows an IPC/controller structure | **RE'd + working in melonDS**: bug at `0x037BAA18`, buffer `0x037DF06C`; entry = clobbered ARM9 IPC handler table `0x037F3B68` (dispatch `0x037CA720`); the container arms the table + a stub and is observed to reach OpenLaunch's ARM9 entry (`stage2_re.md`, `tools/stage2_dataflow.py`) |
+| **Launcher TMD overflow** | stage 2 loads `title.tmd` without a real `filesize` check → overflows an IPC/controller structure | **RE'd + working in melonDS**: bug at `0x037BAA18`, buffer `0x037DF06C`; entry = clobbered ARM9 IPC handler table `0x037F3B68` (dispatch `0x037CA720`); the container arms the table + a stub and is observed to reach OpenLaunch's ARM9 entry, which then arms the **ARM7 jumpslide takeover** (`stage2_re.md`, `tools/stage2_dataflow.py`) |
 | SafeUnlaunch variant | exploit installed to the *backup* launcher (`HNAA`); real `HNAE` TMD byte broken → stage 2 falls back | **DONE** (mechanism + tooling) |
 | Modcrypt | modcrypt region key/IV from rom header | TODO |
 | ES / DSiWare | CCM (non-standard) on SD titles + tickets | TODO |

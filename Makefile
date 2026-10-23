@@ -375,7 +375,8 @@ HOST_SRCS_ARM9 := tests/test_arm9.c \
                   src/common/sha256.c src/common/installer.c \
                   src/arm9/mpu.c src/arm9/irq.c src/arm9/ipc.c \
                   src/arm9/video.c src/arm9/dma.c src/arm9/scfg.c \
-                  src/arm9/boot.c src/arm9/boot_cfg.c src/arm9/theme.c \
+                  src/arm9/boot.c src/arm9/arm7_boot.c src/arm9/boot_cfg.c \
+                  src/arm9/theme.c \
                   src/arm9/splash_tux.c \
                   src/arm9/console.c src/arm9/font8x8.c src/arm9/ui_font.c \
                   src/arm9/input.c src/arm9/menu.c src/arm9/storage.c \
@@ -387,7 +388,8 @@ HOST_SRCS_CONSOLE := tests/test_console.c \
                      src/arm9/console.c src/arm9/font8x8.c src/common/mem.c
 # Menu state machine + keypad edge detector + BOOT.CFG/hotkey resolver.
 HOST_SRCS_MENU := tests/test_menu.c \
-                  src/arm9/menu.c src/arm9/boot.c src/arm9/boot_cfg.c \
+                  src/arm9/menu.c src/arm9/boot.c src/arm9/arm7_boot.c \
+                  src/arm9/boot_cfg.c \
                   src/arm9/theme.c src/arm9/splash_tux.c \
                   src/arm9/input.c \
                   src/arm9/console.c src/arm9/font8x8.c src/arm9/ui_font.c \

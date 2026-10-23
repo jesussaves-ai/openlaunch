@@ -86,8 +86,9 @@ reference payload; with the IPC table armed and those four words set, the patche
 
 The stub runs *in place* at `0x037F0EC0` (since the container image is overlaid
 at `0x037DF274`). It enters SVC mode, reads the header fields above, copies the
-ARM9/ARM7 flat images to their linked bases, cleans/invalidates the caches and
-branches to the ARM9 entry. Building the payload is:
+ARM9/ARM7 flat images to their linked bases, writes the ARM7 takeover marker at
+`0x0237FFF0`, cleans/invalidates the caches and branches to the ARM9 entry. The
+ARM9 entry then arms the jumpslide (see [`stage2_re.md`](stage2_re.md)). Building the payload is:
 
 ```
 make openlaunch-payload          # -> build/openlaunch_payload.bin
@@ -135,12 +136,15 @@ changed. `scripts/dsi_nand_install.py verify` re-checks a decrypted image.
   the images and branches to OpenLaunch's ARM9 entry (`0x02200800`). The
   differential that found the last requirement (four IPC/task context words) is
   in [`stage2_re.md`](stage2_re.md).
-* the **ARM7 handoff** is not performed (and the reference does not perform one
-  either): the ARM7 keeps running the system firmware. The stub stages our ARM7
-  at `0x02380000` but never starts it - verified with a temporary marker (never
-  observed). Stage 2 boots an ARM7 through the `0x02FFFE00` boot-info block plus
-  an IPCSYNC handshake; reusing that requires reversing the firmware ARM7's
-  trigger (see [`stage2_re.md`](stage2_re.md)).
+* the **ARM7 hand-off** is implemented with a jumpslide takeover
+  (`src/arm9/arm7_boot.c`): the overflow bootstrap stages our ARM7 at
+  `0x02380000`, the ARM9 briefly maps NWRAM-C and overwrites the firmware ARM7's
+  return/stack window, and the ARM7 starts our image on its next return. The
+  ARM7 writes a ready marker at `0x0237FFF4`, which is the emulator/GDB check.
+  The mechanism is adapted from Astronaut (GPL-3.0-or-later) and is documented
+  in [`stage2_re.md`](stage2_re.md). It is timing sensitive and still needs a
+  melonDS/hardware run; the old IPCSYNC route remains as
+  `make ARM7_HANDOFF=1` for the title-boot case.
 * `nand_patched.bin` is still **not hardware-validated**: flash only on a console
   with a full NAND backup (docs §34).
 
@@ -159,14 +163,15 @@ changed. `scripts/dsi_nand_install.py verify` re-checks a decrypted image.
 
 * **overflow-hijack (default, no `--keep-prefix`)** - the TMD is the container
   prefixed with 520 zero bytes. Stage 2 takes the TMD-overflow path documented
-  in [`stage2_re.md`](stage2_re.md) instead of a normal title boot, so the ARM9
-  runs and the ARM7 does not.
+  in [`stage2_re.md`](stage2_re.md), so the ARM9 runs and the ARM7 is taken
+  over by the jumpslide.
 * **legitimate title (`--keep-prefix`)** - the 520-byte *genuine* TMD header is
-  kept and the container appended after it (`520 + payload`). Stage 2 can then
-  accept the TMD and boot the region as an ordinary title, which is the path
-  that starts **both** CPUs: boot stage 2 publishes the boot-info and restarts
-  the ARM7 into the header's ARM7 entry (`0x34`). This is the shape
-  SafeUnlauncher installs and the one the reference relies on.
+  kept and the container appended after it (`520 + payload`). The file is still
+  oversized, so the broken size check still overflows; Astronaut uses exactly
+  this shape and still needs the ARM7 takeover. Keeping the genuine header is
+  therefore not a substitute for the takeover. Whether stage 2 additionally
+  accepts the region as an ordinary title (which would start both CPUs through
+  the normal boot-info flow) is unverified.
 
 Building a legitimate-title image from a stock dump:
 
@@ -179,8 +184,8 @@ python3 scripts/dsi_nand_install.py patch \
 Verified offline against the reference dump: the region's `title.tmd` grows
 `520 -> 196608` bytes with the header unchanged
 (`head=000100013abd67fb8237b03d52af21e9`) and a consistent FAT chain
-(`fat-copy mismatches on chain: 0`). Whether stage 2 actually completes that
-boot is a **hardware** question - neither emulator available here can show it
+(`fat-copy mismatches on chain: 0`). Whether stage 2 also completes an ordinary
+title boot is a **hardware** question; the ARM7 jumpslide does not depend on it
 (see [`stage2_re.md`](stage2_re.md)).
 
 ## NAND footer conventions

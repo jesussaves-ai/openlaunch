@@ -10,6 +10,8 @@
  *   - reads/polls IPCSYNC (0x04000180) and writes 0x600 to it.
  */
 #include "arm9/arm7_boot.h"
+#include "arm9/scfg.h"
+#include "common/cache.h"
 #include "common/dsi_hw.h"
 #include "common/mem.h"
 #include "common/nds_header.h"
@@ -90,4 +92,85 @@ void arm9_boot_arm7(void)
         }
     }
     REG16(IPC_SYNC) = IPCSYNC_ARM7_GO;
+}
+
+/*
+ * @ref Astronaut `astronaut/arm9/src/arm7_exploit.rs` (Vickerinox/Astronaut,
+ * GPL-3.0-or-later) — the stage-2 ARM7 takeover.
+ *
+ * The firmware ARM7 keeps its stack in the NWRAM-C window at 0x03800000. While
+ * the ARM9 owns WRAM-C it can write that memory: we map the window at
+ * 0x03800000, hand slot 4 to the ARM9 and fill the firmware's return/stack
+ * window with our ARM7 entry. When the mapping is withdrawn the firmware ARM7
+ * still sees the overwritten words, pops 0x02380000 on its next return and
+ * starts our image. This is timing sensitive (we steal the slot the ARM7 is
+ * using for a few microseconds) but it is the only route that reaches an ARM7
+ * that is already past its boot path.
+ *
+ * Hardware side effects:
+ *   - writes MBK8 (WRAM-C window) and MBK5 (slot ownership), then restores the
+ *     exact stage-2 values;
+ *   - writes 0x800 words of NWRAM-C at 0x03803040;
+ *   - cleans/invalidates the ARM9 data cache around the remap.
+ */
+bool arm9_arm7_takeover(void)
+{
+    u32 mbk5;
+    u32 mbk8;
+    u32 i;
+
+    /* Marker is written by overflow_bootstrap.s after staging the ARM7. */
+    if (REG32(ARM7_HANDOFF_MARKER_ADDR) != ARM7_HANDOFF_MARKER_MAGIC) {
+        return false;
+    }
+    REG32(ARM7_HANDOFF_MARKER_ADDR) = 0u;
+
+    /* The staged image must start with an ARM branch (crt0's reset vector). */
+    if ((REG32(ARM7_HANDOFF_ENTRY) & 0xFF000000u) != 0xEA000000u) {
+        return false;
+    }
+
+    /* Clear the diagnostic marker our ARM7 will write once it is alive. */
+    REG32(ARM7_READY_MARKER_ADDR) = 0u;
+
+    /* The NWRAM page is DSi-only; on a legacy DS this is a no-op. */
+    if (!scfg_is_twl_mode()) {
+        return false;
+    }
+    (void)scfg_unlock();
+
+    mbk5 = REG32(MBK5);
+    mbk8 = REG32(MBK8);
+
+    /*
+     * Map WRAM-C at 0x03800000 on the ARM9 and hand slot 4 to us. Both writes
+     * must stick; if MBK9 protects WRAM-C the slide cannot be armed.
+     */
+    if (!scfg_set_mbk(8u, ARM7_HANDOFF_MBK8_WINDOW) ||
+        !scfg_set_mbk(5u, ARM7_HANDOFF_MBK5_SLOT)) {
+        REG32(MBK5) = mbk5;
+        REG32(MBK8) = mbk8;
+        return false;
+    }
+
+    /* The jumpslide: every return address in the window becomes our entry. */
+    for (i = 0u; i < ARM7_HANDOFF_SLIDE_WORDS; i++) {
+        REG32(ARM7_HANDOFF_SLIDE_ADDR + i * 4u) = ARM7_HANDOFF_ENTRY;
+    }
+
+    /*
+     * The stores above are cached. Clean them out to physical WRAM before the
+     * mapping is withdrawn, otherwise the ARM7 sees the old stack contents.
+     */
+    dc_flush_range((const void *)(uintptr_t)ARM7_HANDOFF_SLIDE_ADDR,
+                   ARM7_HANDOFF_SLIDE_WORDS * 4u);
+
+    /* Put the stage-2 mapping back exactly as we found it. */
+    REG32(MBK5) = mbk5;
+    REG32(MBK8) = mbk8;
+
+    /* Drop any cache lines still tagged to the temporary ARM9 window. */
+    cache_flush_all();
+
+    return true;
 }

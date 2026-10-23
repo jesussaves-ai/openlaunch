@@ -11,8 +11,9 @@
  * Stage 2 later calls the (now clobbered) callback at RAM 0x037F3870 / 0x037F3898
  * through `blx`. This stub is what those pointers point at: it runs *in place*
  * from inside the overlaid payload (RAM 0x037F0EC0 = payload offset 0x11C4C),
- * relocates the OpenLaunch ARM9 image to its linked address and jumps to the ARM9
- * entry. (The container's ARM7 image is deliberately not staged; see below.)
+ * relocates the OpenLaunch ARM9/ARM7 images to their linked addresses and jumps
+ * to the ARM9 entry. The ARM9 entry then hijacks the running firmware ARM7 with
+ * the jumpslide in src/arm9/arm7_boot.c (the marker below arms it).
  *
  * The literal PAYLOAD_BASE below must match scripts/make_openlaunch_payload.py
  * (PAYLOAD_BASE) and the buffer base in docs/stage2_re.md.
@@ -21,7 +22,8 @@
  *   - enters SVC mode with IRQ/FIQ masked;
  *   - disables the MMU and the ARM946 I/D caches (CP15 c1), drains the write
  *     buffer and invalidates the TLB/I-cache (CP15 c7/c8);
- *   - copies the ARM9 flat image into Main RAM (the ARM7 image is not staged);
+ *   - copies the ARM9 and ARM7 flat images into Main RAM;
+ *   - sets the ARM7 takeover marker at 0x0237FFF0;
  *   - branches to the ARM9 entry point (never returns).
  */
     .syntax unified
@@ -38,6 +40,10 @@
 
 /* RAM address the container image is overlaid at (buffer 0x037DF06C + 520). */
     .equ PAYLOAD_BASE,   0x037DF274
+
+/* ARM7 takeover handoff (keep in sync with include/common/arm7_handoff.h). */
+    .equ HANDOFF_MARKER_ADDR,  0x0237FFF0
+    .equ HANDOFF_MARKER_MAGIC, 0x54424C4F
 
     .section .text
     .global overflow_bootstrap_start
@@ -57,13 +63,27 @@ overflow_bootstrap_start:
     bl      copy_words
 
     /*
-     * The container also carries an ARM7 image (unlaunch's does too), but we do
-     * NOT stage it. Running an ARM7 requires stage 2's title-boot flow, which the
-     * overflow deliberately bypasses, so the image would never execute - and
-     * copying it to its linked base 0x02380000 overwrites the firmware ARM7's own
-     * loaded image in shared RAM, damaging a live CPU for no benefit. Staging
-     * stays off until the hand-off is actually solved; see docs/stage2_re.md.
+     * ARM7 image -> its linked base (0x02380000).
+     *
+     * A GDB-stub read shows 0x02380000 is free at the exploit: stage 2's ARM7
+     * image has already been consumed/relocated into ARM7 WRAM, so staging ours
+     * there does not disturb the running firmware. The ARM9 entry then arms the
+     * jumpslide in src/arm9/arm7_boot.c, which makes the firmware ARM7 pop this
+     * address and start our image.
      */
+    ldr     r1, [r9, #HDR_ARM7_OFF]
+    add     r2, r9, r1
+    ldr     r3, [r9, #HDR_ARM7_BASE]
+    ldr     r1, [r9, #HDR_ARM7_SIZE]
+    bl      copy_words
+
+    /*
+     * Tell the ARM9 entry that the ARM7 image is staged. Without this marker
+     * (ordinary `.nds` boot, title-boot path) the takeover is a no-op.
+     */
+    ldr     r0, =HANDOFF_MARKER_ADDR
+    ldr     r1, =HANDOFF_MARKER_MAGIC
+    str     r1, [r0]
 
     /* Make the fresh code visible, then hand off to the ARM9 entry. */
     mov     r0, #0

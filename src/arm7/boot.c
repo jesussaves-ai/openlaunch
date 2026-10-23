@@ -8,6 +8,7 @@
 #include "arm7/boot.h"
 #include "arm7/ipc.h"
 #include "arm7/irq.h"
+#include "common/arm7_handoff.h"
 #include "common/dsi_hw.h"
 
 /* IRQ vector body: delegate to the C dispatcher. */
@@ -19,6 +20,13 @@ void arm7_irq_handler(void)
 void arm7_main(void)
 {
     (void)irq_disable_all();   /* enter critical section for setup */
+
+    /*
+     * Diagnostic handshake for the stage-2 jumpslide: the ARM9 (and a GDB
+     * session) can confirm that the hijacked firmware ARM7 is executing our
+     * image. It is harmless on the ordinary title-boot path.
+     */
+    REG32(ARM7_READY_MARKER_ADDR) = ARM7_READY_MARKER_MAGIC;
 
     /* Enable the IPC FIFO (master + send direction) and flush receive. */
     REG16(IPC_FIFOCNT) = IPC_FIFOCNT_INIT_VALUE;

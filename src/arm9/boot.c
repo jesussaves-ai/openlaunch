@@ -143,6 +143,8 @@ boot_policy_t boot_resolve_policy(u16 raw_keyinput)
  */
 void arm9_main(void)
 {
+    bool arm7_taken_over;
+
     /*
      * 0. Bring-up heartbeat (diagnostic). MUST stay the first statement: it
      *    paints the Engine A backdrop bright red before any other video, VRAM
@@ -170,11 +172,33 @@ void arm9_main(void)
     cache_flush_all();
 
     /*
+     * 2a. ARM7 takeover for the TMD-overflow boot.
+     *
+     * The overflow bootstrap stages our ARM7 image and leaves a marker in
+     * Main RAM. When that marker is present, hijack the still-running firmware
+     * ARM7 now - before scfg_init() remaps NWRAM - with the Astronaut-style
+     * jumpslide (see src/arm9/arm7_boot.c). On the ordinary `.nds` boot and on
+     * the title-boot path the marker is absent and this is a no-op.
+     */
+    arm7_taken_over = arm9_arm7_takeover();
+    (void)arm7_taken_over;
+
+    /*
      * 2b. Apply the reference SCFG configuration and map the NWRAM banks.
      *     scfg_init() verifies TWL mode first, so on a legacy DS it is a
      *     complete no-op (avoiding writes to the DSi-only 0x04004000 page).
+     *
+     *     After a successful ARM7 takeover we deliberately skip mbk_init():
+     *     it hands WRAM-C to the ARM9, but WRAM-C is where the freshly started
+     *     ARM7 keeps its IWRAM and stacks. Keep stage 2's slot ownership and
+     *     apply only the clock/extended-RAM configuration.
      */
-    (void)scfg_init();
+    if (arm7_taken_over) {
+        (void)scfg_unlock();
+        scfg_apply_boot_config();
+    } else {
+        (void)scfg_init();
+    }
 
     /* 3. DMA register blocks are cleared before any user of them. */
     arm9_dma_reset();
@@ -198,21 +222,18 @@ void arm9_main(void)
     arm9_irq_unmask_all();
 
     /*
-     * 5b. ARM7 hand-off (opt-in: `make ARM7_HANDOFF=1`).
+     * 5b. Reference IPCSYNC hand-off (opt-in: `make ARM7_HANDOFF=1`).
      *
-     * Stage 2 normally performs this while booting a title, but the TMD-overflow
-     * exploit bypasses that, so the ARM7 is still running the system firmware.
-     * This publishes the boot header at 0x02FFFE00 and rings IPCSYNC so the
-     * firmware ARM7 would jump to OpenLaunch's ARM7 (0x02380000).
-     *
-     * NOTE: experimental / not yet working. The header is published correctly
-     * (header+0x34 == 0x02380000 verified) but the firmware ARM7 does not take
-     * the off, so the exact IPCSYNC handshake still needs pinning down (see
-     * docs/stage2_re.md). Off by default: it overwrites the boot-info at
-     * 0x02FFFE00, which the running firmware may itself use.
+     * This is the path stage 2 uses while booting a title: publish a boot
+     * header at 0x02FFFE00 and ring IPCSYNC. It is kept for the title-boot
+     * experiment and as a fallback when the overflow jumpslide did not arm
+     * (for example if WRAM-C is write-protected). It is skipped when the
+     * takeover above succeeded, because the ARM7 is then already ours.
      */
 #ifdef ENABLE_ARM7_HANDOFF
-    arm9_boot_arm7();
+    if (!arm7_taken_over) {
+        arm9_boot_arm7();
+    }
 #endif
 
     /* 6. Text console + interactive diagnostics menu (never returns). */

@@ -139,17 +139,18 @@ Consequences:
    `ENABLE_CHAINLOAD_BOOT` (dry run by default) — see
    docs/hardware_notes.md §25. Remaining polish: a hardware/emulator run of a
    real multi-MiB image and the ARM7-WRAM self-copy edge case.)*
-8. ARM7 hand-off for the overflow boot — **not reachable from the overflow**.
-   Unlaunch runs its *own* ARM7 because it is installed as the launcher and boot
-   stage 2 starts both CPUs via the ordinary title-boot flow; the TMD-overflow
-   bypasses exactly that flow. The ARM7's IPCSYNC rounds come from its *boot* path
-   (`0x02380164` consumes messages `4`/`5`/`6` from a ring at `0x037DF6D8`, then
-   `0x02381000`/`0x02381124` rendezvous with the ARM9's `0x037B9AC4`), and at the
-   exploit that ring is untouched - the ARM7 is already past it. `0x02380000` is
-   free/zero, so the stub no longer stages an ARM7 image there. Implemented and
-   gated (`make ARM7_HANDOFF=1`, `src/arm9/arm7_boot.c`) for the record. The open
-   question is whether to boot OpenLaunch the way unlaunch does (as a title, so
-   stage 2 starts the ARM7). See `docs/stage2_re.md`.
+8. ARM7 hand-off for the overflow boot — **solved with a jumpslide takeover**.
+   Stage 2's own IPCSYNC flow is unreachable from the overflow (its boot-mode
+   ring at `0x037DF6D8` is already past messages `4`/`5`/`6`), so the ARM9
+   hijacks the running firmware ARM7 instead: the overflow bootstrap stages our
+   ARM7 at `0x02380000`, and `arm9_arm7_takeover()` (`src/arm9/arm7_boot.c`)
+   briefly maps NWRAM-C and overwrites the firmware's return/stack window at
+   `0x03803040` with `0x02380000` (mechanism adapted from Astronaut,
+   GPL-3.0-or-later). The takeover is marker-gated, runs before `scfg_init()`,
+   and skips `mbk_init()` so WRAM-C stays with the ARM7. The ARM7 writes a ready
+   marker at `0x0237FFF4`; the old IPCSYNC path remains as
+   `make ARM7_HANDOFF=1`. Remaining: a melonDS/hardware run (timing sensitive).
+   See `docs/stage2_re.md`.
 
 ## 3. Recent work (C99 bootloader bring-up)
 
@@ -342,5 +343,6 @@ Consequences:
   static data-flow pass that located the transfer, and
   `scripts/verify_openlaunch_payload.py` checks the container (`make verify`).
   The overflow entry, the relocate/jump and the final ARM9 hand-off are verified
-  in melonDS against a patched `HNAA` TMD. The ARM7 is not replaced (neither is
-  Unlaunch's).
+  in melonDS against a patched `HNAA` TMD. The ARM7 is taken over with a
+  jumpslide (Astronaut-style) instead of being left on the system firmware; the
+  takeover still needs an emulator/hardware run. See `docs/stage2_re.md`.

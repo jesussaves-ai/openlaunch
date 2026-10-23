@@ -239,22 +239,17 @@ loader 0x037BAA18 x2 (HNAE, HNAA), read helper 0x037B9C30 x4 (the overflow)
 -> 0x02200800   OpenLaunch ARM9 entry          [reached]
 ```
 
-### The ARM7 hand-off (mechanism recovered; not reachable from the overflow)
+### The ARM7 hand-off (solved: jumpslide takeover)
 
-The overflow is entirely on the ARM9: the ARM7 keeps running the system
-firmware. Verified in melonDS with a marker write at the top of our `arm7_main()`
-(read back through the ARM9 stub): the marker never appears.
+Stage 2 starts a title's ARM7 through its own boot path, but the TMD overflow
+bypasses that path: when stage 2 jumps into our ARM9 code the firmware ARM7 has
+already left its boot loop. The reference IPCSYNC route therefore cannot work
+from the overflow. It is documented here because it is still the title-boot flow
+(and `make ARM7_HANDOFF=1` still tries it when the takeover cannot arm).
 
-**The reference is different, and the difference is the whole point.** Unlaunch
-ships its **own** ARM7 image: `asm/UNLAUNCH.DSI`'s header gives ARM7 ROM offset
-`0xF800`, entry `0x02380000` and size `0x205F8`, and 342 of its functions (the SPI,
-RTC, timer, TMIO and IPC dispatcher we have been porting into `src/arm7/`) live
-there. It gets that ARM7 running because unlaunch is installed as the *launcher*,
-so boot stage 2 starts it - and its ARM7 - through the ordinary title-boot flow.
-OpenLaunch reaches control through the TMD-overflow instead, which *bypasses*
-exactly that flow - hence no ARM7.
+#### Why stage 2's own hand-off cannot be reused
 
-**The trigger**, recovered from the decrypted stage 2 (`docs` pipeline +
+The trigger, recovered from the decrypted stage 2 (`docs` pipeline +
 `scripts/dsi_stage2_decrypt.py`), is a two-sided handshake:
 
 | side | address | behaviour |
@@ -265,51 +260,59 @@ exactly that flow - hence no ARM7.
 | ARM7 | `0x02381134` | `ldr r4, [r6, #0x34]` - the **ARM7 entry field** (standard NDS header offset `0x34`) |
 
 So the intended sequence is: publish an NDS header at `0x02FFFE00` whose offset
-`0x34` is the ARM7 entry, then ring IPCSYNC.
+`0x34` is the ARM7 entry, then ring IPCSYNC. `src/arm9/arm7_boot.c`
+(`arm9_boot_arm7()`, gated behind `make ARM7_HANDOFF=1`) implements exactly
+that, including the logo and both CRC16s.
 
-**Implemented** in `src/arm9/arm7_boot.c` (`arm9_boot_arm7()`, gated behind
-`make ARM7_HANDOFF=1`): it builds a valid header (logo + both CRC16s, ARM7 entry
-`0x02380000`), copies 352 bytes to `0x02FFFE00`, then waits for `IPCSYNC == 6`
-(bounded) and writes `0x600`.
+It does not work from the overflow because the ARM7's IPCSYNC rounds are driven
+by its own **boot-mode message ring** (`0x037DF6D8` = write index,
+`0x037DF6DC` = read index, 8-byte ring at `0x037DF6E0`). Its boot path
+`0x02380164` consumes messages `4`, then `5`, then `6`; only on `6` does it call
+the boot manager `0x02381124` -> `0x02381000` (which sends `IPCSYNC = 0x600` and
+waits for `6`, rendezvousing with the ARM9's `0x037B9AC4` hand-off). At the
+moment of the overflow that ring is **untouched** (`write == read == 0`, all
+bytes zero): the ARM7 is already past it and running the system firmware. No
+ARM9-side IPCSYNC write can re-enter a boot path that has already completed.
 
-**Status: not reachable from the overflow.** The header is published correctly
-(melonDS reads `0x02380000` back from `0x02FFFE34`) but the ARM7 never runs it, and
-a GDB-stub read of ARM7 state at the exploit shows why:
+#### The takeover (implemented)
 
-* the ARM7's IPCSYNC rounds are driven by its own **boot-mode message ring**
-  (`0x037DF6D8` = write index, `0x037DF6DC` = read index, 8-byte ring at
-  `0x037DF6E0`). Its boot path `0x02380164` consumes messages `4`, then `5`, then
-  `6`; only on `6` does it call the boot manager `0x02381124` -> `0x02381000`
-  (which sends `IPCSYNC = 0x600` and waits for `6`, rendezvousing with the ARM9's
-  `0x037B9AC4` hand-off);
-* at the moment of the overflow that ring is **untouched** (`write == read == 0`,
-  all bytes zero) - i.e. the ARM7 is not parked in its boot-mode flow waiting for
-  a message; it is already past it and running the system firmware.
+The working route is a jumpslide adapted from
+[Astronaut](https://github.com/Vickerinox/Astronaut) (Vickerinox/Astronaut,
+GPL-3.0-or-later, `astronaut/arm9/src/arm7_exploit.rs`). It does not need the
+ARM7 to cooperate:
 
-So no ARM9-side IPCSYNC write can make the running firmware ARM7 jump: the
-decision to boot a title ARM7 lives in the ARM7's **boot** path, which has long
-since run. Reproducing what stage 2 does would mean getting the ARM7 back into its
-boot flow (an ARM7 reset), which the ARM9 cannot trigger and which would be far
-riskier than useful.
+* the firmware ARM7 keeps its stack in NWRAM-C, reachable at `0x03800000`;
+* the ARM9 temporarily maps WRAM-C to itself
+  (`MBK8 = 0x0C003800`, `MBK5 = 0x00000080`), overwrites the firmware's
+  return/stack window (`0x03803040..0x03805040`, `0x800` words) with our ARM7
+  entry `0x02380000`, cleans the data cache, and restores the exact stage-2
+  MBK5/MBK8 values;
+* the next return the firmware ARM7 performs pops `0x02380000` and starts our
+  image. Astronaut notes that this is timing sensitive; the remap is held for a
+  few microseconds only.
 
-`arm9_boot_arm7()` is therefore kept but off by default (`make ARM7_HANDOFF=1`),
-and the stub no longer stages an ARM7 image either (see
-`src/arm9/overflow_bootstrap.s`). Notes for any future attempt:
+OpenLaunch wires it as follows:
 
-* `0x02380000` is **free** at the exploit - a GDB-stub read returns all zero, so
-  the stage-2 ARM7 image has already been consumed/relocated and the *running*
-  ARM7's code is not there (almost certainly relocated into ARM7 IRAM at
-  `0x03800000`). Staging an image at `0x02380000` is therefore a no-op, which is
-  why the copy was removed;
-* the ARM9's IPC registers follow GBATEK (`IPCSYNC`/`IPCFIFOCNT`/`IPCFIFOSEND` at
-  `0x04000180`/`84`/`88`, ARM9 receive at `0x04100000`) and match unlaunch's own
-  ARM9 (its `entry` writes `IPCFIFOCNT` at `0x04000184`), so our register layout is
-  correct. The menu's IPC self-test times out because it speaks *unlaunch's* ARM7
-  protocol (`include/common/ipc_protocol.h`, dispatcher `FUN_0001f21c`) and only
-  unlaunch's own ARM7 implements that - the system firmware ARM7 does not.
+* `src/arm9/overflow_bootstrap.s` stages the container's ARM7 image at
+  `0x02380000` and writes the marker `0x54424C4F` ("OLBT") to `0x0237FFF0`;
+* `arm9_main()` calls `arm9_arm7_takeover()` after IRQs are disabled and the
+  caches are flushed, and **before** `scfg_init()`. The marker makes the call a
+  complete no-op on the ordinary `.nds` boot and on the title-boot path;
+* after a successful takeover, `mbk_init()` is skipped (only `scfg_unlock()` +
+  `scfg_apply_boot_config()` run) so WRAM-C stays with the ARM7 for its IWRAM
+  and stacks;
+* `src/arm7/boot.c` writes `0x59444152` ("RADY") to `0x0237FFF4` once our ARM7
+  is executing. That word is the melonDS/GDB check for a successful hand-off;
+  the menu's IPC self-test is the functional check.
+
+The IPCSYNC route remains available as `make ARM7_HANDOFF=1` and is only
+attempted when the takeover did not arm (for example if MBK9 write-protects
+WRAM-C).
+
+Status: implemented and structurally verified (`make verify`, `make host-test`).
+The takeover itself is timing-sensitive and still needs a melonDS/hardware run.
+If the firmware ARM7 is not inside the assumed stack window, widen
+`ARM7_HANDOFF_SLIDE_WORDS` or fall back to Astronaut's VRAM-D variant.
 
 `make openlaunch-payload` builds the wired container; `make verify` and
-`scripts/verify_openlaunch_payload.py` check it structurally. The remaining item
-is the ARM7 handoff (the stub stages the ARM7 at `0x02380000` but does not start
-it).
-
+`scripts/verify_openlaunch_payload.py` check it structurally.
