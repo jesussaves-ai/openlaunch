@@ -149,3 +149,19 @@ from the ARM9 does not reach the ARM7's block. To write it the ARM9 must:
 
 In the GDB test this write did not stick in melonDS (likely a JIT/NWRAM
 remap quirk); doing it from the ARM9 C code is the next step.
+
+### Corrections from the live handshake (2026-10-23, later)
+
+* **Register map:** NWRAM-C parts 0-3 are **`MBK4` at `0x0400404C`**
+  (`0x04004048` is `MBK3`, NWRAM-B). With the correct register the ARM9 can
+  take part 3 and write `0x0381F578`; with `0x04004048` the write silently
+  goes to the wrong bank.
+* **The ARM7 zeroes its own windows.** After the ring handshake the ARM7's
+  `MBK6/7/8` read `0` (and the shared ownership reads `0`). `0x037DF578`
+  therefore falls through to **shared WRAM** (`WRAMSTAT = 3`) at offset
+  `0x7578`, not NWRAM-C. The parameter block must be placed in that shared
+  bank (the equivalent ARM9 view is `0x03007578` with `WRAMSTAT = 0` and the
+  ARM9's own NWRAM windows cleared).
+* The real-title test's shared-WRAM write did not stick yet (the ARM9's
+  `WRAMSTAT`/window state needs to be pinned down); that is the last open
+  step before the stub's `+0x10` jump.
