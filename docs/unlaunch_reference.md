@@ -407,3 +407,37 @@ Therefore, to run our ARM7, our ARM9 must **launch our ARM7 as a title**:
 publish a boot info at `0x02FFE000` whose `+0x24` is a relay ARM9 entry and
 whose `+0x34` is `0x02380000`, then invoke the relaunch (the `0x0380F700`
 stub / 15/0 handshake or the 14/13 title handshake).
+
+## Full title-relaunch sequence (live trace)
+
+Launching a title from Unlaunch produced this exact sequence:
+
+```
+ARM9 0x06025B9C  IPCSYNC wait/ack helper, r0=13, MBK6-8 normal
+ARM7 0x060240BC  relaunch function,  r11=0x02FFFE00 (title boot info),
+                 MBK1-8 = 0, WRAMSTAT=0, IPCSYNC=0x4707
+ARM7 0x0380F700  copied stub, R0=0xF, R3=0x02FFFE34, LR=0x0602413C
+ARM9 0x02200800  title ARM9 entry, IPCSYNC=0x000E, MBK=0, WRAMSTAT=3
+```
+
+At the relaunch the title's NDS header is already at `0x02FFE000` /
+`0x02FFFE00`:
+
+```
+WIFIBOOT ...  ARM9 0x02200800 / 0xE844   ARM7 0x037F8000 / 0xB4
+```
+
+So the launcher drives the **system-firmware ARM7** into its own relaunch
+routine (`0x060240BC`, in the shared VRAM code); that routine clears MBK,
+copies the `0x0380F700` stub, does the IPCSYNC 15/0 handshake with the ARM9,
+and jumps to `[0x02FFFE34]` (the title ARM7 entry). The launcher ARM9 responds
+through the helper at `0x06025B9C` and then enters `[0x02FFFE24]` (the title
+ARM9 entry).
+
+To start our own ARM7 we can therefore:
+
+1. place our boot info (NDS header) at `0x02FFE000` / `0x02FFFE00` with
+   `+0x24` = our ARM9 relay and `+0x34` = `0x02380000`;
+2. drive the same IPCSYNC sequence the launcher uses (`0x06025B9C` helper:
+   13, then the 15/0 stages) so the system-firmware ARM7 runs `0x060240BC`
+   and jumps to our ARM7 entry.
