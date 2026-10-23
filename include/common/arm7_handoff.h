@@ -34,6 +34,10 @@
 #define ARM7_READY_MARKER_ADDR     0x0237FFF4u
 #define ARM7_READY_MARKER_MAGIC    0x59444152u  /* "RADY" */
 
+/* Written by the ARM7 reset stub before any stack/BSS setup. */
+#define ARM7_JUMP_MARKER_ADDR      0x0237FFE8u
+#define ARM7_JUMP_MARKER_MAGIC     0x44504D4Au  /* "JMPD" */
+
 /* Our ARM7 image: linked at 0x02380000 by ld/arm7.ld. */
 #define ARM7_HANDOFF_ENTRY         0x02380000u
 

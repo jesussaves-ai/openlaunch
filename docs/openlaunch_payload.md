@@ -142,8 +142,9 @@ changed. `scripts/dsi_nand_install.py verify` re-checks a decrypted image.
   return/stack window, and the ARM7 starts our image on its next return. The
   ARM7 writes a ready marker at `0x0237FFF4`, which is the emulator/GDB check.
   The mechanism is adapted from Astronaut (GPL-3.0-or-later) and is documented
-  in [`stage2_re.md`](stage2_re.md). It is timing sensitive and still needs a
-  melonDS/hardware run; the old IPCSYNC route remains as
+  in [`stage2_re.md`](stage2_re.md). A melonDS run shows the slide arms but the
+  firmware ARM7 stack is at `0x03FFFFC0`, not in Astronaut's window, so the
+  ARM7 does not start yet; the old IPCSYNC route remains as
   `make ARM7_HANDOFF=1` for the title-boot case.
 * `nand_patched.bin` is still **not hardware-validated**: flash only on a console
   with a full NAND backup (docs §34).

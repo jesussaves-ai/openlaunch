@@ -34,6 +34,14 @@
 #define ARM9_BOOT_IPC_TIMEOUT   0x04000000u
 #define ARM9_BOOT_IPC_RESEND    0x00100000u   /* power of two */
 
+/*
+ * How long to wait for the hijacked ARM7 to write its ready marker before
+ * deciding the jumpslide did not actually start it. The ARM7 core runs at
+ * ~33 MHz, so this is several milliseconds - ample for the staged image's
+ * crt0 + arm7_main() prologue.
+ */
+#define ARM9_ARM7_READY_POLL    0x00100000u
+
 /* ------------------------------------------------------------------ */
 /* Stage 1 — relocation / extraction                                   */
 /* ------------------------------------------------------------------ */
@@ -181,6 +189,22 @@ void arm9_main(void)
      * the title-boot path the marker is absent and this is a no-op.
      */
     arm7_taken_over = arm9_arm7_takeover();
+    if (arm7_taken_over) {
+        u32 wait;
+
+        /*
+         * "Armed" is not the same as "alive": wait (bounded) for the ARM7 to
+         * run its crt0 and write the ready marker. Only then is it safe to
+         * keep stage 2's NWRAM-C ownership instead of calling mbk_init().
+         */
+        arm7_taken_over = false;
+        for (wait = 0u; wait < ARM9_ARM7_READY_POLL; wait++) {
+            if (REG32(ARM7_READY_MARKER_ADDR) == ARM7_READY_MARKER_MAGIC) {
+                arm7_taken_over = true;
+                break;
+            }
+        }
+    }
     (void)arm7_taken_over;
 
     /*

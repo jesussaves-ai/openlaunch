@@ -310,9 +310,35 @@ attempted when the takeover did not arm (for example if MBK9 write-protects
 WRAM-C).
 
 Status: implemented and structurally verified (`make verify`, `make host-test`).
-The takeover itself is timing-sensitive and still needs a melonDS/hardware run.
-If the firmware ARM7 is not inside the assumed stack window, widen
-`ARM7_HANDOFF_SLIDE_WORDS` or fall back to Astronaut's VRAM-D variant.
+`arm9_main()` additionally waits for the ARM7 ready marker and only keeps
+stage 2's NWRAM-C ownership when the ARM7 is actually alive; otherwise it falls
+back to the normal `mbk_init()` path.
+
+**Validation note (melonDS, 2026-10-23).** On the available test NAND the
+takeover arms and returns true (the MBK5/MBK8 writes stick and the slide is
+written), but the firmware ARM7 never reaches `0x02380000`. Its reset code -
+found in WRAM-C slot 7 at `0x03838000` - loads these stacks:
+
+```
+SVC SP = 0x03FFFFC0
+IRQ SP = 0x03FFFF80
+SYS SP = 0x03FFFB7C
+```
+
+The stack is therefore at the top of the `0x03xxxxxx` NWRAM region, not in
+Astronaut's `0x03803040` window. Mapping WRAM-A, WRAM-B or WRAM-C at
+`0x03FC0000` and filling the top 64 KiB (`0x03FF0000..0x04000000`) did not make
+the ARM7 jump either. That points at one of:
+
+* the firmware stack lives in ARM7-private / old shared WRAM that the ARM9
+  cannot reach through MBK;
+* the ARM7 is parked in a state that does not pop the window (its IRQs may be
+  masked, or it is halted awaiting a specific event).
+
+The next step is to identify the live ARM7 stack mapping (ARM7 GDB stub, a
+different hijack target, or an IPC/IRQ wake-up after the slide), or to boot
+OpenLaunch as a title so stage 2 starts both CPUs through its normal flow. The
+slide itself is armed correctly; the open question is the target window.
 
 `make openlaunch-payload` builds the wired container; `make verify` and
 `scripts/verify_openlaunch_payload.py` check it structurally.

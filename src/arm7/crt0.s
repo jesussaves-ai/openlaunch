@@ -36,6 +36,15 @@ arm7_vectors:
     .global arm7_reset
     .type   arm7_reset, %function
 arm7_reset:
+    /*
+     * Diagnostic: prove the stage-2 jumpslide reached our entry. These
+     * constants mirror include/common/arm7_handoff.h (ARM7_JUMP_MARKER_*).
+     * Kept before the stack setup so it works even if the stacks are bad.
+     */
+    ldr     r0, =0x0237FFE8
+    ldr     r1, =0x44504D4A          @ "JMPD"
+    str     r1, [r0]
+
     msr     cpsr_c, #0xD3            @ SVC mode, IRQ+FIQ disabled
     ldr     sp, =__sp_svc__
 

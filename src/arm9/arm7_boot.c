@@ -130,8 +130,9 @@ bool arm9_arm7_takeover(void)
         return false;
     }
 
-    /* Clear the diagnostic marker our ARM7 will write once it is alive. */
+    /* Clear the diagnostic markers our ARM7 will write once it is alive. */
     REG32(ARM7_READY_MARKER_ADDR) = 0u;
+    REG32(ARM7_JUMP_MARKER_ADDR) = 0u;
 
     /* The NWRAM page is DSi-only; on a legacy DS this is a no-op. */
     if (!scfg_is_twl_mode()) {

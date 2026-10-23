@@ -220,8 +220,10 @@ OpenLaunch-format container is written into the **backup** launcher (`HNAA`) TMD
 its header is overlaid so that the clobbered IPC table plus a small in-place stub
 (`src/arm9/overflow_bootstrap.s`) relocate the ARM9/ARM7 images and jump to the
 ARM9 entry (`0x02200800`). The overflow entry and the relocate/jump handoff are
-verified end-to-end in melonDS; the ARM7 is taken over with an Astronaut-style
-jumpslide, which still needs a melonDS/hardware run to validate its timing.
+verified end-to-end in melonDS; the ARM7 jumpslide takeover is implemented, but
+an initial melonDS run on the test NAND shows the firmware stack is not in
+Astronaut's window, so the slide does not reach the ARM7 yet (see
+`docs/stage2_re.md`).
 
 ```sh
 make openlaunch-payload     # -> build/openlaunch_payload.bin (Unlaunch-format container)

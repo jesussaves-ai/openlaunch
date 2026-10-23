@@ -139,18 +139,24 @@ Consequences:
    `ENABLE_CHAINLOAD_BOOT` (dry run by default) — see
    docs/hardware_notes.md §25. Remaining polish: a hardware/emulator run of a
    real multi-MiB image and the ARM7-WRAM self-copy edge case.)*
-8. ARM7 hand-off for the overflow boot — **solved with a jumpslide takeover**.
-   Stage 2's own IPCSYNC flow is unreachable from the overflow (its boot-mode
-   ring at `0x037DF6D8` is already past messages `4`/`5`/`6`), so the ARM9
-   hijacks the running firmware ARM7 instead: the overflow bootstrap stages our
-   ARM7 at `0x02380000`, and `arm9_arm7_takeover()` (`src/arm9/arm7_boot.c`)
-   briefly maps NWRAM-C and overwrites the firmware's return/stack window at
-   `0x03803040` with `0x02380000` (mechanism adapted from Astronaut,
-   GPL-3.0-or-later). The takeover is marker-gated, runs before `scfg_init()`,
-   and skips `mbk_init()` so WRAM-C stays with the ARM7. The ARM7 writes a ready
+8. ARM7 hand-off for the overflow boot — **implemented; validation negative on
+   the current test firmware**. Stage 2's own IPCSYNC flow is unreachable from
+   the overflow (its boot-mode ring at `0x037DF6D8` is already past messages
+   `4`/`5`/`6`), so the ARM9 hijacks the running firmware ARM7 instead: the
+   overflow bootstrap stages our ARM7 at `0x02380000`, and
+   `arm9_arm7_takeover()` (`src/arm9/arm7_boot.c`) briefly maps NWRAM-C and
+   overwrites the firmware's return/stack window at `0x03803040` with
+   `0x02380000` (mechanism adapted from Astronaut, GPL-3.0-or-later). The
+   takeover is marker-gated, runs before `scfg_init()`, and only keeps WRAM-C
+   with the ARM7 when the ARM7 ready marker appears. The ARM7 writes a ready
    marker at `0x0237FFF4`; the old IPCSYNC path remains as
-   `make ARM7_HANDOFF=1`. Remaining: a melonDS/hardware run (timing sensitive).
-   See `docs/stage2_re.md`.
+   `make ARM7_HANDOFF=1`.
+   A melonDS run shows the slide arms but the firmware ARM7 never reaches our
+   entry: the firmware's reset code uses stacks at `0x03FFFFC0` /
+   `0x03FFFF80` / `0x03FFFB7C`, not the Astronaut window, and mapping
+   WRAM-A/B/C at the top of the NWRAM range did not hit it. Next: find the live
+   ARM7 stack mapping, add an IPC/IRQ wake-up, or boot as a title so stage 2
+   starts both CPUs. See `docs/stage2_re.md`.
 
 ## 3. Recent work (C99 bootloader bring-up)
 
