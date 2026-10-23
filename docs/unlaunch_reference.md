@@ -315,3 +315,29 @@ Starting our ARM7 requires the **title-boot path** that Unlaunch uses when it
 launches a title from its menu (build the boot info, then trigger the system
 firmware's title boot). That is the next reverse target, in Unlaunch's ARM9
 menu/loader code rather than the boot path.
+
+## Unlaunch's title-launch path (live VRAM dump)
+
+The instrumented build dumps the live menu code to
+`/tmp/opencode/unlaunch_vram_live.bin` when the ARM9 reaches `0x0602572C`
+(37,660 bytes at `0x06023C90`).
+
+Key sites:
+
+* `0x060240BC`: disables IRQs, clears `IME`/`IE`/`IF`, sets the SVC/IRQ/SYS
+  stacks at `0x04000000-0x40/0x80/0x280`, copies `0x48` bytes from
+  `0x06024218` to **`0x0380F700`** and jumps there. This is the
+  reset/relaunch path used to boot a title.
+* `0x06024218`: the copied stub - `SWI`-ish init (`bl 0x0602423C` with 15/0),
+  `msr CPSR_f`, then `ldr ip,[...]; ldr ip,[ip]; bx ip`.
+* `0x06025080`..`0x060251CC`: data pool with the launcher title ID
+  (`0x484E4100` "HNA", `0x00030017`), the boot-info pointers
+  (`0x02FFE000`, `0x02FFFE00`, `0x02804000`) and `0x023FE27C` - the likely
+  title ARM7/entry descriptor.
+* `0x06025988`: the MBK/`WRAMSTAT` setup we already reversed
+  (`FUN_06027070/90`).
+
+So Unlaunch boots a title by rebuilding the boot info and **relaunching both
+CPUs through a stub at `0x0380F700`**, not by the stage-2 boot manager. The
+next reverse targets are the `0x06024218` stub and the `0x023FE27C`
+descriptor.
