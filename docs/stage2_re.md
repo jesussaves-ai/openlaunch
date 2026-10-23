@@ -267,17 +267,39 @@ So the intended sequence is: publish an NDS header at `0x02FFFE00` whose offset
 `0x02380000`), copies 352 bytes to `0x02FFFE00`, then waits for `IPCSYNC == 6`
 (bounded) and writes `0x600`.
 
-**Status: the header is published correctly, but the ARM7 still does not boot.**
-In melonDS the ARM9 reaches `0x02200800` and `mem[0x02FFFE34]` reads back
-`0x02380000` (the entry we wrote), yet the ARM7 marker never appears. So the
-missing piece is the exact IPCSYNC sequence/value (the ARM7 side waits on a value
-that `0x600` may not satisfy), or additional ARM7-side state. The next step is to
-watch the ARM7 at `0x0238091C`/`0x02381134` in the no$gba debugger (a real ARM7
-debugger) and read off the value it is waiting for.
+**Status: the hand-off is a dead end — the ARM7 is not listening.** The header is
+published correctly (melonDS reads `0x02380000` back from `0x02FFFE34`) and the
+staged ARM7 image is in place at `0x02380000`, but the ARM7 never runs it, and a
+GDB-stub read of ARM7 state at the exploit shows exactly why:
 
-Until then the ARM9 runs against the firmware ARM7 (the menu's IPC self-test
-reports a timeout rather than hanging), and `arm9_boot_arm7()` is off by default
-because it overwrites the boot-info at `0x02FFFE00`.
+* the ARM7's IPCSYNC rounds are driven by its own **boot-mode message ring**
+  (`0x037DF6D8` = write index, `0x037DF6DC` = read index, 8-byte ring at
+  `0x037DF6E0`). Its boot path `0x02380164` consumes messages `4`, then `5`, then
+  `6`; only on `6` does it call the boot manager `0x02381124` -> `0x02381000`
+  (which sends `IPCSYNC = 0x600` and waits for `6`, rendezvousing with the ARM9's
+  `0x037B9AC4` hand-off);
+* at the moment of the overflow that ring is **untouched** (`write == read == 0`,
+  all bytes zero) - i.e. the ARM7 is not parked in its boot-mode flow waiting for
+  a message; it is already past it and running the system firmware.
+
+So no ARM9-side IPCSYNC write can make the running firmware ARM7 jump: the
+decision to boot a title ARM7 lives in the ARM7's **boot** path, which has long
+since run. Reaching it would mean re-entering the ARM7's boot flow (an ARM7
+reset), which the ARM9 cannot trigger and which would be far riskier than useful.
+This is precisely why the reference (`unlaunch.dsi`) never boots its own ARM7 and
+instead talks to the firmware ARM7.
+
+`arm9_boot_arm7()` is therefore kept but off by default (`make ARM7_HANDOFF=1`),
+and the work moves to option (2): driving the **firmware** ARM7's own IPC
+services from the ARM9. Two consequences matter for that:
+
+* our staged ARM7 image at `0x02380000` overwrites the firmware ARM7's own image
+  in shared WRAM, so staging it (and thus the payload's ARM7 section) must be
+  dropped before the ARM9 can rely on the firmware ARM7;
+* the ARM9's IPC registers follow GBATEK (`IPCSYNC`/`IPCFIFOCNT`/`IPCFIFOSEND` at
+  `0x04000180`/`84`/`88`, ARM9 receive at `0x04100000`), but the firmware ARM9
+  itself receives at `0x04100010` in at least one path, so the receive-register
+  base must be confirmed against the firmware before trusting our IPC layer.
 
 `make openlaunch-payload` builds the wired container; `make verify` and
 `scripts/verify_openlaunch_payload.py` check it structurally. The remaining item

@@ -139,14 +139,15 @@ Consequences:
    `ENABLE_CHAINLOAD_BOOT` (dry run by default) — see
    docs/hardware_notes.md §25. Remaining polish: a hardware/emulator run of a
    real multi-MiB image and the ARM7-WRAM self-copy edge case.)*
-8. ARM7 hand-off for the overflow boot. The exploit is ARM9-only, so the ARM7
-   keeps running the system firmware. The trigger is now recovered: the ARM9
-   waits for `IPCSYNC == 6`, writes `0x600`, and publishes an NDS header (ARM7
-   entry at offset `0x34`) at `0x02FFFE00`; the ARM7 side reads it at
-   `0x02381134`. Implemented (gated behind `make ARM7_HANDOFF=1`) in
-   `src/arm9/arm7_boot.c`; the header is published correctly but the firmware
-   ARM7 does not yet take the hand-off, so the exact IPCSYNC value still needs
-   pinning down (use no$gba's ARM7 debugger). See `docs/stage2_re.md`.
+8. ARM7 hand-off for the overflow boot — **concluded not viable**. The trigger is
+   the ARM7's *boot-mode* flow: its boot path `0x02380164` consumes messages
+   `4`/`5`/`6` from a ring at `0x037DF6D8`, and only on `6` calls the boot manager
+   `0x02381000`/`0x02381124`, which rendezvouses with the ARM9's `0x037B9AC4`.
+   At the exploit that ring is untouched, so the ARM7 is already past that flow:
+   no ARM9-side write can make the running firmware ARM7 jump. Implemented and
+   gated (`make ARM7_HANDOFF=1`, `src/arm9/arm7_boot.c`) for the record. The way
+   forward is option (2) — drive the firmware ARM7's own IPC services. See
+   `docs/stage2_re.md`.
 
 ## 3. Recent work (C99 bootloader bring-up)
 
