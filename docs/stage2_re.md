@@ -239,21 +239,45 @@ loader 0x037BAA18 x2 (HNAE, HNAA), read helper 0x037B9C30 x4 (the overflow)
 -> 0x02200800   OpenLaunch ARM9 entry          [reached]
 ```
 
-### The ARM7 is **not** handed off
+### The ARM7 hand-off (mechanism recovered; not yet effective)
 
-The overflow is entirely on the ARM9; the ARM7 keeps running the system firmware.
-Verified in melonDS with a temporary marker write at the top of our `arm7_main()`,
-read back through the ARM9 stub: the marker never appears. Our ARM7 image is
-staged at `0x02380000` by the stub but never executed.
+The overflow is entirely on the ARM9: the ARM7 keeps running the system
+firmware. Verified in melonDS with a marker write at the top of our
+`arm7_main()` (read back through the ARM9 stub): the marker never appears, so
+our ARM7 image is staged at `0x02380000` by the stub but never executed.
 
-This matches the reference: `unlaunch.dsi`'s ARM9 code contains **no** reference
-to `0x02380000` (or `0x03800000`) - it uses the existing firmware ARM7. Stage 2's
-own launcher boot uses the `0x02FFFE00` boot-info block (`0x037C149C`,
-`0x037C14F4`) plus an IPCSYNC handshake to make the firmware ARM7 jump to a
-title's ARM7 entry; that is the mechanism to reuse if OpenLaunch needs its own
-ARM7, and reversing the firmware ARM7's trigger is the outstanding work. Until
-then the ARM9 runs against the firmware ARM7 (the menu's IPC self-test just
-reports a timeout rather than hanging).
+The reference does the same (`unlaunch.dsi`'s ARM9 has **no** reference to
+`0x02380000`), so it also relies on the existing firmware ARM7.
+
+**The trigger**, recovered from the decrypted stage 2 (`docs` pipeline +
+`scripts/dsi_stage2_decrypt.py`), is a two-sided handshake:
+
+| side | address | behaviour |
+| --- | --- | --- |
+| ARM9 | `0x037B9AC4` | wait for `IPCSYNC` (`0x04000180`) low byte `== 6`, then write **`0x600`**; then `memcpy 0x200 0x037B91F8 -> 0x023FEE00` and `blx` it (the ARM9 hand-off) |
+| ARM9 | `0x037C13E8` | copies **`0x160` (352) bytes to `0x02FFFE00`** - the canonical NDS boot-info |
+| ARM7 | `0x02380970` / `0x0238091C` | writes `0x400` to IPCSYNC, waits on IPCSYNC, reads the boot-info at `0x02FFFE00` |
+| ARM7 | `0x02381134` | `ldr r4, [r6, #0x34]` - the **ARM7 entry field** (standard NDS header offset `0x34`) |
+
+So the intended sequence is: publish an NDS header at `0x02FFFE00` whose offset
+`0x34` is the ARM7 entry, then ring IPCSYNC.
+
+**Implemented** in `src/arm9/arm7_boot.c` (`arm9_boot_arm7()`, gated behind
+`make ARM7_HANDOFF=1`): it builds a valid header (logo + both CRC16s, ARM7 entry
+`0x02380000`), copies 352 bytes to `0x02FFFE00`, then waits for `IPCSYNC == 6`
+(bounded) and writes `0x600`.
+
+**Status: the header is published correctly, but the ARM7 still does not boot.**
+In melonDS the ARM9 reaches `0x02200800` and `mem[0x02FFFE34]` reads back
+`0x02380000` (the entry we wrote), yet the ARM7 marker never appears. So the
+missing piece is the exact IPCSYNC sequence/value (the ARM7 side waits on a value
+that `0x600` may not satisfy), or additional ARM7-side state. The next step is to
+watch the ARM7 at `0x0238091C`/`0x02381134` in the no$gba debugger (a real ARM7
+debugger) and read off the value it is waiting for.
+
+Until then the ARM9 runs against the firmware ARM7 (the menu's IPC self-test
+reports a timeout rather than hanging), and `arm9_boot_arm7()` is off by default
+because it overwrites the boot-info at `0x02FFFE00`.
 
 `make openlaunch-payload` builds the wired container; `make verify` and
 `scripts/verify_openlaunch_payload.py` check it structurally. The remaining item

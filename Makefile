@@ -75,6 +75,14 @@ ifeq ($(AUTOBOOT),1)
 CFLAGS_COMMON += -DENABLE_AUTOBOOT
 endif
 
+# ARM7 hand-off for the boot-stage-2 overflow path. EXPERIMENTAL / not yet
+# working: it publishes the boot header at 0x02FFFE00 and rings IPCSYNC, but the
+# firmware ARM7 does not yet take the hand-off (see docs/stage2_re.md). Disabled
+# by default because it overwrites the boot-info the running firmware may use.
+ifeq ($(ARM7_HANDOFF),1)
+CFLAGS_COMMON += -DENABLE_ARM7_HANDOFF
+endif
+
 # NAND installer write path. DISABLED by default: the eMMC is read-only
 # (the project conventions, scripts/verify_rom.py). Build with `make NAND_WRITE_DANGER=1`
 # to compile in the guarded backup + flash pipeline (menu item [10]).

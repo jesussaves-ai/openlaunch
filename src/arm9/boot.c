@@ -10,6 +10,7 @@
  * See include/arm9/boot.h and docs/hardware_notes.md §ARM9 image layout.
  */
 #include "arm9/boot.h"
+#include "arm9/arm7_boot.h"
 #include "arm9/console.h"
 #include "arm9/dma.h"
 #include "arm9/input.h"
@@ -195,6 +196,24 @@ void arm9_main(void)
     arm9_ipc_fifo_init();
     REG32(IRQ_IF) = 0xFFFFFFFFu;
     arm9_irq_unmask_all();
+
+    /*
+     * 5b. ARM7 hand-off (opt-in: `make ARM7_HANDOFF=1`).
+     *
+     * Stage 2 normally performs this while booting a title, but the TMD-overflow
+     * exploit bypasses that, so the ARM7 is still running the system firmware.
+     * This publishes the boot header at 0x02FFFE00 and rings IPCSYNC so the
+     * firmware ARM7 would jump to OpenLaunch's ARM7 (0x02380000).
+     *
+     * NOTE: experimental / not yet working. The header is published correctly
+     * (header+0x34 == 0x02380000 verified) but the firmware ARM7 does not take
+     * the off, so the exact IPCSYNC handshake still needs pinning down (see
+     * docs/stage2_re.md). Off by default: it overwrites the boot-info at
+     * 0x02FFFE00, which the running firmware may itself use.
+     */
+#ifdef ENABLE_ARM7_HANDOFF
+    arm9_boot_arm7();
+#endif
 
     /* 6. Text console + interactive diagnostics menu (never returns). */
     console_init();
