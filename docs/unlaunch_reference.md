@@ -214,3 +214,25 @@ Our live boot manager instead ends with `MBK6/7/8 = 0` and a zero block, so
 it is taking a different path from the official one (the loader/header setup
 differs). The next step is to find which branch fills/copies the block from
 `0x02FFFE00`/`0x02FFE000` and make our boot-info match what it expects.
+
+### The real boot-info address and the last gate
+
+The boot manager is called with **`r0 = 0x02FFE000`** (not `0x02FFFE00`):
+the literals at `0x02380300` / `0x023802FC` are `0x02FFE000` and
+`0x02FFE00C`. The ARM7 entry it uses is `[0x02FFE034]`.
+
+The boot path at `0x02380240` has two branches:
+
+* if `0x02381494` (the IPCSYNC input) returns **6**, it calls the boot
+  manager with `0x02FFE000` and keeps the header;
+* otherwise it falls through to `0x023802B4`, which does
+  **`memset(0x02FFE000, 0, 0x1000)`**, then calls the boot manager with the
+  now-zeroed header.
+
+Our title-boot ARM9 starts *after* the ARM7 has already taken the fallback
+branch, so the header is wiped and the parameter block gets entry `0`. The
+official flow has the stage-2 ARM9/loader put IPCSYNC `6` and the boot info in
+place *before* that check.
+
+This is the last gate: either get the boot info + IPCSYNC 6 in place before
+`0x02380240` runs (loader-side timing), or force the first branch.
