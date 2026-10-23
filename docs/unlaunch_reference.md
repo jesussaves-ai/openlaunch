@@ -256,3 +256,23 @@ starts.
 The ARM9 counterpart of the boot manager is `0x022087B0` (called by the
 stage-2 ARM9 with `r0 = 0x02FFE000`); it reads the ARM9 entry at `[+0x24]`,
 matching the standard NDS header layout (ARM7 entry at `[+0x34]`).
+
+### Status of the two routes (2026-10-23, end of session)
+
+Both routes reach our ARM9 and drive the ARM7 ring/echo handshake:
+
+* **real-launcher (`HNAE`)**: loader boots our ARM9, ARM7 stays in the stage-2
+  boot manager;
+* **TMD overflow (`HNAA`)**: our ARM9 runs from the overflow, ARM7 in the same
+  boot manager.
+
+In both, publishing the header at `0x02FFE000`/`0x02FFFE00` and setting
+IPCSYNC `6` before pushing `4/5/6` still leaves the parameter block entry at
+`0` and the stub parked at `0x03FFF6E8`. The ARM7's early gate
+(`0x02381A78` + IPCSYNC 6) is evaluated before our ARM9 can influence it, so
+the header is zeroed.
+
+The official NAND does not boot under melonDS (the GDB stub never reaches its
+first `Enter`, even with break-on-startup), so the official loader state cannot
+be traced there. The remaining options are a different emulator/debug setup, a
+hardware trace, or a different takeover point.
