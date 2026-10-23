@@ -92,3 +92,31 @@ Routes forward:
 2. or make the overflow path start the ARM7 the same way the loader does
    (publish the boot info at `0x02FFFE00`, then drive the boot handshake);
 3. hardware validation, where the ARM7/loader timing may differ from melonDS.
+
+## Live real-title boot (2026-10-23)
+
+Test: pristine decrypted NAND, container written to the **real launcher**
+(`HNAE`) with the stock 520-byte TMD prefix, re-encrypted, melonDS + GDB.
+
+* The loader boots the container's ARM9: live PC `0x022022E8`, and the
+  container's ARM7 image is present at `0x02380000`.
+* The boot-info at `0x02FFFE00` is **not** populated by the loader (all zero);
+  publishing the container's first `0x200` bytes there ourselves gives the
+  boot manager its ARM7 entry (`+0x34 = 0x02380000`).
+* The stage-2 ARM7 is still in its boot path: it spins in the ring consumer
+  `arm7_get_ring_byte` (`0x037B9494`), i.e. it is waiting for messages.
+* Pushing bytes `4,5,6` through the IPC command handler (command `2`,
+  word = `2 | (byte << 6)`) advances it: it consumes `4` and writes
+  **IPCSYNC `0x0600`**.
+* The handshake is an echo: the ARM7 writes a nibble and waits for the ARM9
+  to write the same value (`wait_for_sync` at `0x0238091C`, called with `6`
+  from `0x02381038`). Echoing `6, 5, 8, 4` advances it through the stages.
+* After the final echo the ARM7 runs a loader routine at the top of its
+  **private WRAM** (`PC 0x03FFF7D0`, `LR 0x03FFF6D8`, `SP 0x03FFFF80`) and
+  does not reach `0x02380000`.
+
+So the real-title route succeeds in getting the ARM9 running and the ARM7
+image loaded, but the stage-2 ARM7 boot manager still has to finish its
+private-WRAM loader before it jumps to the title entry. The next reverse
+targets are `0x0238103C` onward (post-handshake setup) and the private-WRAM
+loader at `0x03FFF6D8`/`0x03FFF7D0`.

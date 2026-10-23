@@ -182,9 +182,13 @@ Consequences:
    `UNLAUNCH.DSI`): Unlaunch's ARM9 entry waits for IPCSYNC nibble 14 and
    acks `0x4E00`; its ARM7 writes 14/13 and then jumps to VRAM `0x06023C90`.
    The ARM9 never loads the ARM7 - a real title boot has the loader start
-   both CPUs. Next: install the container as the **real launcher** (`HNAE`,
-   520-byte TMD prefix) or reproduce the loader's ARM7 start from the
-   overflow.
+   both CPUs. A live real-launcher install (container in `HNAE`, 520-byte TMD
+   prefix) boots our ARM9 and leaves our ARM7 image at `0x02380000`. The
+   stage-2 ARM7 is still in its boot path: publishing the boot info at
+   `0x02FFFE00` and pushing ring messages 4/5/6 starts the echo handshake
+   (IPCSYNC 6,5,8,4), after which it runs a loader at the top of private WRAM
+   (`0x03FFF6D8`/`0x03FFF7D0`) and does not reach our entry yet. Next:
+   reverse the post-handshake loader (`0x0238103C` onward).
 
 ## 3. Recent work (C99 bootloader bring-up)
 
