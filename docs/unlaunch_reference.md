@@ -372,3 +372,38 @@ pointers (`0x02FFE000`, `0x02FFFE00`, `0x02804000`).
 Next: capture the 15/0 handshake in the real title-launch flow (needs input to
 the Unlaunch menu, or an input-injecting emulator patch), then replicate the
 relaunch from our ARM9.
+
+## Live title launch (breakthrough)
+
+With a ROM on the emulated SD and injected menu input, Unlaunch launched a
+title (no$gba Wifiboot). The trace at the title ARM9 entry (`0x02200800`)
+captured the **boot info at `0x02FFE000`**, which is simply the title's NDS
+header:
+
+```
++0x00  "WIFIBOOT " ...        title/header data
++0x20  0x00020000
++0x24  0x02200800             ARM9 entry
++0x28  0x02200000             ARM9 load
++0x2C  0x0000E844             ARM9 size
++0x30  0x00012A00             ARM7 rom offset
++0x34  0x037F8000             ARM7 entry  <-- tiny 0xB4-byte WRAM stub
++0x38  0x037F8000             ARM7 load
++0x3C  0x000000B4             ARM7 size
+```
+
+IPCSYNC read `0x000E`: the title's ARM7 stub wrote **14** and the ARM9 entry
+sees it (the 14/13 handshake).
+
+So the rule is now clear:
+
+* a **launcher** boot (our current install, official Unlaunch, etc.) never
+  starts its own ARM7 - the ARM7 is the system firmware;
+* a **title** boot builds the boot info at `0x02FFE000` from the title header
+  and starts the ARM7 at the header's ARM7 entry, which does the 14/13
+  handshake.
+
+Therefore, to run our ARM7, our ARM9 must **launch our ARM7 as a title**:
+publish a boot info at `0x02FFE000` whose `+0x24` is a relay ARM9 entry and
+whose `+0x34` is `0x02380000`, then invoke the relaunch (the `0x0380F700`
+stub / 15/0 handshake or the 14/13 title handshake).
