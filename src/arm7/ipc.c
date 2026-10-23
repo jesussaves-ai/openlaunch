@@ -196,7 +196,7 @@ static sdmmc_t *ipc_sd_open(bool emmc, bool *present)
  *
  * The controller is programmed and the card identified (read-only) so the
  * reply can report SDSC vs SDHC/SDXC via the OCR CCS bit. No write command is
- * ever issued (AGENTS.md §5).
+ * ever issued (the project conventions).
  */
 static void ipc_reply_sdmmc(void)
 {
@@ -290,7 +290,7 @@ static void ipc_reply_extkey(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* ARM7-gated hardware delegation (AGENTS.md architectural rule)       */
+/* ARM7-gated hardware delegation (architectural rule)       */
 /* ------------------------------------------------------------------ */
 
 /*
@@ -314,7 +314,7 @@ static void ipc_reply_read(u32 cmd, u32 flags, u32 transferred)
  * The ARM7 owns the TMIO register block (0x04004800 / 0x04004A00), so this is
  * the only place a sector read is issued. The eMMC path is read-only:
  * sdmmc_read() never writes and IPC_CMD_WRITE_SECTOR stays unimplemented
- * (AGENTS.md §5).
+ * (the project conventions).
  *
  * Cache note: the ARM7TDMI has no data cache, so no ARM7-side maintenance is
  * required. The ARM9 is responsible for flushing the buffer before the request
@@ -537,7 +537,7 @@ static void ipc_handle_boot_handoff(const u32 *args, u32 nargs)
 }
 
 /* ------------------------------------------------------------------ */
-/* Guarded NAND write path (ENABLE_NAND_WRITE_DANGER only, AGENTS.md §5) */
+/* Guarded NAND write path (ENABLE_NAND_WRITE_DANGER only, the project conventions) */
 /* ------------------------------------------------------------------ */
 #ifdef ENABLE_NAND_WRITE_DANGER
 

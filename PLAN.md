@@ -5,8 +5,7 @@
 **OpenLaunch** (`https://github.com/jesussaves-ai/openlaunch`) is the
 clean-room, open-source C99 alternative to Unlaunch. Reference material:
 `asm/decompiled/*.c` (ARM7) and `asm/decompiled/arm9/*.c` (ARM9, 271
-functions). Extraction pipeline: `scripts/run_ghidra.sh`. Rules of engagement:
-see `AGENTS.md`.
+functions). Extraction pipeline: `scripts/run_ghidra.sh`.
 
 ### What the reference dump actually is
 
@@ -140,6 +139,12 @@ Consequences:
    `ENABLE_CHAINLOAD_BOOT` (dry run by default) — see
    docs/hardware_notes.md §25. Remaining polish: a hardware/emulator run of a
    real multi-MiB image and the ARM7-WRAM self-copy edge case.)*
+8. ARM7 hand-off for the overflow boot. The exploit is ARM9-only: the ARM7 keeps
+   running the system firmware (verified in melonDS; the reference does the
+   same). To run our own ARM7 either (a) reverse the firmware's own ARM7-boot
+   trigger — stage 2 uses the `0x02FFFE00` boot-info block plus an IPCSYNC
+   handshake — or (b) make the ARM9 use the firmware ARM7's reference IPC
+   services (`include/common/ipc_protocol.h`). See `docs/stage2_re.md`.
 
 ## 3. Recent work (C99 bootloader bring-up)
 
@@ -191,7 +196,7 @@ Consequences:
   `arm9_storage_probe()` now reports the LBA-0 `0xAA55` signature, the MBR
   partition type, the FAT16/FAT32 volume type and capacity. `[3]` and `[6]`
   render all of it or a specific failure reason. No write command exists outside
-  `ENABLE_NAND_WRITE_DANGER` (docs §24, AGENTS.md §5). Covered by the extended
+  `ENABLE_NAND_WRITE_DANGER` (docs §24). Covered by the extended
   `tests/test_sdmmc.c` and `tests/test_fat_ro.c`.
 * **Homebrew argv + TWL extended segments + BOOT.NDS autoboot** —
   `loader_build_argv()`/`loader_stage_argv()` publish the canonical
@@ -321,3 +326,16 @@ Consequences:
   `SD:/NANDBACK.BIN` recovery image. `scripts/make_installer_token.py` produces
   and self-verifies the signed package. Covered by `tests/test_installer.c`
   (suite 14) and `tests/test_installer_ui.c` (suite 15), and docs §34.
+* **DSi boot-stage-2 exploit + `HNAA` payload** — the launcher-`title.tmd`
+  overflow is reversed end to end (`docs/stage2_re.md`): stage 2's oversized TMD
+  overruns the fixed buffer `0x037DF06C` and clobbers its ARM9 **IPC handler
+  table** at `0x037F3B68` (dispatch `0x037CA720`). `scripts/make_openlaunch_payload.py`
+  builds a Unlaunch-format container that arms that table (plus two callback
+  slots) with a pointer to an in-place bootstrap
+  (`src/arm9/overflow_bootstrap.s`), which relocates the ARM9/ARM7 images and
+  branches to the ARM9 entry (`0x02200800`); `tools/stage2_dataflow.py` is the
+  static data-flow pass that located the transfer, and
+  `scripts/verify_openlaunch_payload.py` checks the container (`make verify`).
+  The overflow entry, the relocate/jump and the final ARM9 hand-off are verified
+  in melonDS against a patched `HNAA` TMD. The ARM7 is not replaced (neither is
+  Unlaunch's).

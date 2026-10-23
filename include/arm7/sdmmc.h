@@ -13,7 +13,7 @@
  * "SD/MMC/SDIO Registers" page and cross-checked against the reference
  * disassembly (see docs/hardware_notes.md §4 and §20).
  *
- * SAFETY (AGENTS.md §5): the internal eMMC is READ-ONLY by default. No code in
+ * SAFETY (the project conventions): the internal eMMC is READ-ONLY by default. No code in
  * this module issues a write/erase command unless ENABLE_NAND_WRITE_DANGER is
  * defined at build time.
  */
@@ -22,7 +22,7 @@
 
 #include "../common/types.h"
 
-/* ---- Controller base addresses (AGENTS.md §3) ---- */
+/* ---- Controller base addresses (the project conventions) ---- */
 #define TMIO_SD_BASE    0x04004800u   /* SD/MMC: SD card + onboard eMMC    */
 #define TMIO_SDIO_BASE  0x04004A00u   /* SDIO (wifi): same register model  */
 
@@ -115,7 +115,7 @@ typedef struct {
 
 /*
  * Read-only snapshot of the controller / card state. All fields come from
- * reads only (AGENTS.md §5).
+ * reads only (the project conventions).
  */
 typedef struct {
     bool present;          /* slot reports a card (SIGSTATE)              */
@@ -188,7 +188,7 @@ void sdmmc_init_instance(sdmmc_t *c, uintptr_t base, bool is_emmc);
  * Enable the DSi SD/MMC controller block on the ARM7: set
  * SCFG_EXT7.bit18 (register-window access) and SCFG_CLK7.bit0 (block clock).
  * Self-gating: a no-op on a legacy DS (no SCFG page) or when the DSi is
- * running an NDS title. Read-only with respect to the card (AGENTS.md §5).
+ * running an NDS title. Read-only with respect to the card (the project conventions).
  *
  * Compiles to an empty stub under the host mock (SDMMC_IO_HOOKS).
  */

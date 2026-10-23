@@ -4,7 +4,7 @@
  * Fixed-width integer and volatile-register type vocabulary shared by the
  * ARM9 and ARM7 halves of the bootloader.
  *
- * Rules (AGENTS.md §2, §3):
+ * Rules (the project conventions, §3):
  *   - Strict C99, freestanding. Only <stdint.h> / <stdbool.h> / <stddef.h>.
  *   - Every hardware register access must go through a volatile-qualified
  *     lvalue (see REG8/REG16/REG32 below).
@@ -34,7 +34,7 @@ typedef volatile uint32_t  vu32;
 /*
  * Memory-mapped register accessors.
  *
- * AGENTS.md §3: hardware I/O must be touched through volatile pointers so the
+ * the project conventions: hardware I/O must be touched through volatile pointers so the
  * compiler cannot reorder or delete hardware handshakes. These macros expand
  * to a volatile lvalue, so `REG32(SCFG_EXT) |= 1u;` performs a read-modify-write
  * on the actual bus.

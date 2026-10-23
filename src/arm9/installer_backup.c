@@ -16,6 +16,9 @@
 /* Shared-RAM staging sector. Never DTCM: the ARM7 fills it over IPC. */
 static u8 s_backup_sector[INSTALLER_SECTOR_SIZE];
 
+/* Scratch for the SD read-back verification (shared Main RAM on the target). */
+static u8 s_sd_verify_sector[INSTALLER_SECTOR_SIZE];
+
 /* ---- Streaming core (host-testable) ----------------------------------- */
 
 installer_error_t installer_backup_stream(installer_read_fn read, void *read_ctx,
@@ -83,6 +86,75 @@ installer_error_t installer_backup_verify(installer_read_fn read, void *read_ctx
 
     return sha256_digest_equal(digest, expected) ? INSTALLER_ERR_NONE
                                                  : INSTALLER_ERR_BACKUP_MISMATCH;
+}
+
+/* ---- SD file read-back verification (host-testable) ------------------- */
+
+installer_error_t installer_backup_verify_sd(fat_volume_t *vol,
+                                             const u8 expected[SHA256_DIGEST_SIZE],
+                                             u32 expected_bytes,
+                                             installer_transfer_t *out)
+{
+    fat_file_entry_t entry;
+    sha256_ctx_t sha;
+    u8 digest[SHA256_DIGEST_SIZE];
+    u32 total_sectors;
+    u32 i;
+
+    if (out != NULL) {
+        dsi_memset(out, 0, sizeof(*out));
+        out->error = INSTALLER_ERR_BACKUP_MISMATCH;
+    }
+    /* Sector-aligned non-empty requests only (the backup is always aligned). */
+    if (vol == NULL || expected == NULL || expected_bytes == 0u ||
+        (expected_bytes % INSTALLER_SECTOR_SIZE) != 0u) {
+        return INSTALLER_ERR_BACKUP_FAILED;
+    }
+
+    /*
+     * The file must exist with the exact expected size. A dropped or truncated
+     * SD write (e.g. a read-only emulated card) fails closed right here, before
+     * any byte is hashed.
+     */
+    if (!fat_find_path(vol, INSTALLER_BACKUP_FILE, &entry) || entry.is_dir) {
+        return INSTALLER_ERR_BACKUP_MISMATCH;
+    }
+    if (entry.file_size != expected_bytes) {
+        return INSTALLER_ERR_BACKUP_MISMATCH;
+    }
+
+    total_sectors = expected_bytes / INSTALLER_SECTOR_SIZE;
+    sha256_init(&sha);
+    for (i = 0u; i < total_sectors; i++) {
+        u32 got = 0u;
+        fat_chain_status_t st = FAT_CHAIN_ERR_ARG;
+
+        if (!fat_read_file_range(vol, &entry, i * INSTALLER_SECTOR_SIZE,
+                                 s_sd_verify_sector, INSTALLER_SECTOR_SIZE,
+                                 &got, &st) ||
+            st != FAT_CHAIN_OK || got != INSTALLER_SECTOR_SIZE) {
+            return INSTALLER_ERR_BACKUP_FAILED;
+        }
+        sha256_update(&sha, s_sd_verify_sector, INSTALLER_SECTOR_SIZE);
+        installer_progress_step(INSTALLER_STATE_VERIFY_BACKUP, i + 1u,
+                                total_sectors, "verify SD backup");
+    }
+    sha256_final(&sha, digest);
+    if (out != NULL) {
+        dsi_memcpy(out->digest, digest, SHA256_DIGEST_SIZE);
+    }
+
+    if (!sha256_digest_equal(digest, expected)) {
+        return INSTALLER_ERR_BACKUP_MISMATCH;
+    }
+
+    if (out != NULL) {
+        out->ok = true;
+        out->sectors = total_sectors;
+        out->bytes = expected_bytes;
+        out->error = INSTALLER_ERR_NONE;
+    }
+    return INSTALLER_ERR_NONE;
 }
 
 /* ---- FAT-file source adapter (read-only, always compiled) ------------- */

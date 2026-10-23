@@ -380,6 +380,31 @@ static void test_policy(void)
     d = installer_preflight(&req);
     assert(d.proceed && d.next_state == INSTALLER_STATE_UNLOCK);
 
+    /* A retail, AES-CTR encrypted image is refused with a specific status that
+     * the UI can explain, and it outranks the layout/token checks. */
+    req.retail_encrypted = true;
+    d = installer_preflight(&req);
+    assert(!d.proceed && d.error == INSTALLER_ERR_ENCRYPTED_NAND);
+    assert(strcmp(installer_error_text(INSTALLER_ERR_ENCRYPTED_NAND),
+                  "retail encrypted NAND (AES/TMD required)") == 0);
+    req.retail_encrypted = false;
+
+    /*
+     * The opt-in retail raw-write path proceeds only when explicitly armed
+     * (compile flag + retail token + runtime confirmation): it then bypasses
+     * the (unreadable) layout check but is still bounded by the retail boot
+     * guard computed at the call site.
+     */
+    req.retail_encrypted = true;
+    req.retail_write_armed = true;
+    req.layout_ok = false;
+    req.backup_verified = false;
+    d = installer_preflight(&req);
+    assert(d.proceed && d.next_state == INSTALLER_STATE_BACKUP);
+    req.retail_write_armed = false;
+    req.retail_encrypted = false;
+    req.layout_ok = true;
+
     req.write_enabled = false;
     d = installer_preflight(&req);
     assert(!d.proceed && d.error == INSTALLER_ERR_DISABLED);
@@ -666,14 +691,26 @@ static bool img_write(void *ctx, u32 lba, const u8 sector[FAT_SECTOR_SIZE])
     return true;
 }
 
+/* Reports success but silently drops every sector, like a read-only emulated
+ * SD card: the file never actually appears on the volume. */
+static bool img_drop_write(void *ctx, u32 lba, const u8 sector[FAT_SECTOR_SIZE])
+{
+    (void)ctx;
+    (void)lba;
+    (void)sector;
+    return true;
+}
+
 static void test_fat_writer(const char *path)
 {
     static fat_volume_t vol;
     static fat_writer_t w;
     static installer_sd_source_t src;
-    static u8 pattern[13000];
-    static u8 readback[13000];
+    static u8 pattern[13312];   /* 26 sectors: sector-aligned for the backup */
+    static u8 readback[13312];
     fat_file_entry_t e;
+    installer_transfer_t out;
+    u8 digest[SHA256_DIGEST_SIZE];
     u32 got = 0u;
     u32 out_size = 0u;
     u32 i;
@@ -723,6 +760,26 @@ static void test_fat_writer(const char *path)
     assert(memcmp(readback, pattern, sizeof(pattern)) == 0);
 
     /*
+     * SD persistence verification: the file we just wrote must hash to the
+     * source digest, and a wrong digest or a wrong size must be rejected.
+     */
+    sha256(pattern, sizeof(pattern), digest);
+    assert(installer_backup_verify_sd(&vol, digest, sizeof(pattern), &out) ==
+           INSTALLER_ERR_NONE);
+    assert(out.ok && out.bytes == sizeof(pattern) &&
+           out.error == INSTALLER_ERR_NONE);
+    assert(sha256_digest_equal(out.digest, digest));
+
+    digest[0] ^= 0xFFu;
+    assert(installer_backup_verify_sd(&vol, digest, sizeof(pattern), NULL) ==
+           INSTALLER_ERR_BACKUP_MISMATCH);
+
+    sha256(pattern, sizeof(pattern), digest);
+    assert(installer_backup_verify_sd(&vol, digest,
+                                      sizeof(pattern) + 512u, NULL) ==
+           INSTALLER_ERR_BACKUP_MISMATCH);
+
+    /*
      * The read-only installer source adapter must stream the same bytes and
      * zero-pad a read past EOF.
      */
@@ -735,6 +792,59 @@ static void test_fat_writer(const char *path)
                                     512u));
     assert(memcmp(readback, pattern + sizeof(pattern) - 4u, 4u) == 0);
     assert(readback[4] == 0x00u && readback[511] == 0x00u);
+
+    free(g_img);
+    g_img = NULL;
+}
+
+/* Re-open NANDBACK.BIN through the FAT reader and prove persistence. */
+static void test_backup_verify_sd(const char *path)
+{
+    static fat_volume_t vol;
+    static fat_writer_t w;
+    static u8 pattern[13312];   /* 26 sectors: sector-aligned for the backup */
+    installer_transfer_t out;
+    u8 digest[SHA256_DIGEST_SIZE];
+    u32 i;
+
+    if (!img_load(path)) {
+        printf("test_installer: skipping SD verify test (%s not found)\n",
+               path);
+        return;
+    }
+    assert(fat_mount(&vol, img_read, NULL));
+
+    /* A missing NANDBACK.BIN is a persistence failure, not a success. */
+    sha256(pattern, 512u, digest);
+    assert(installer_backup_verify_sd(&vol, digest, 512u, &out) ==
+           INSTALLER_ERR_BACKUP_MISMATCH);
+    assert(!out.ok);
+
+    /* Argument safety. */
+    assert(installer_backup_verify_sd(NULL, digest, 512u, NULL) ==
+           INSTALLER_ERR_BACKUP_FAILED);
+    assert(installer_backup_verify_sd(&vol, NULL, 512u, NULL) ==
+           INSTALLER_ERR_BACKUP_FAILED);
+    assert(installer_backup_verify_sd(&vol, digest, 0u, NULL) ==
+           INSTALLER_ERR_BACKUP_FAILED);
+    assert(installer_backup_verify_sd(&vol, digest, 511u, NULL) ==
+           INSTALLER_ERR_BACKUP_FAILED);
+
+    /*
+     * Simulate a read-only emulated SD card: every write reports success but is
+     * dropped, so NANDBACK.BIN never actually appears. The SD read-back verify
+     * must catch it deterministically (this is the melonDS ReadOnly case).
+     */
+    for (i = 0u; i < sizeof(pattern); i++) {
+        pattern[i] = (u8)((i * 13u + 5u) & 0xFFu);
+    }
+    assert(fat_create_file(&vol, img_drop_write, NULL, INSTALLER_BACKUP_FILE,
+                           &w) == FAT_WR_OK);
+    assert(fat_writer_write(&w, pattern, sizeof(pattern)) == FAT_WR_OK);
+    assert(fat_writer_end(&w, NULL) == FAT_WR_OK);
+    sha256(pattern, sizeof(pattern), digest);
+    assert(installer_backup_verify_sd(&vol, digest, sizeof(pattern), NULL) ==
+           INSTALLER_ERR_BACKUP_MISMATCH);
 
     free(g_img);
     g_img = NULL;
@@ -931,6 +1041,7 @@ int main(int argc, char **argv)
     test_locked_run();
 
     if (argc > 1) {
+        test_backup_verify_sd(argv[1]);
         test_fat_writer(argv[1]);
         test_no_token_preflight(argv[1]);
     }

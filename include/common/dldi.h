@@ -37,7 +37,7 @@
  *   0x7C  u32   shutdown        ]
  *   0x80  ...   driver code
  *
- * Safety (AGENTS.md §4/§5): every routine is pure and fully bounds-checked; no
+ * Safety (the project conventions§5): every routine is pure and fully bounds-checked; no
  * hardware register, DMA engine or eMMC/NAND path is involved. The built-in
  * stub is read-only and returns a safe failure for every I/O request.
  */

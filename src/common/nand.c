@@ -391,6 +391,63 @@ bool nand_region_is_protected(const nand_layout_t *layout, u32 lba, u32 count)
     return (lba < layout->protected_end);
 }
 
+/* ---- Retail-encrypted vs decrypted-sandbox image classification -------- */
+
+bool nand_detect_unlaunch_footer(const u8 *footer_sector)
+{
+    if (footer_sector == NULL) {
+        return false;
+    }
+    return dsi_memcmp(footer_sector, NAND_FOOTER_MAGIC,
+                      NAND_FOOTER_MAGIC_LEN) == 0;
+}
+
+nand_image_kind_t nand_classify_image(const u8 *mbr_sector,
+                                      const u8 *footer_sector)
+{
+    /*
+     * A no$gba / Unlaunch footer only accompanies a raw, per-console encrypted
+     * eMMC dump, so its mere presence is treated as retail (fail closed) even
+     * if sector 0 happens to look like a plaintext MBR.
+     */
+    if (nand_detect_unlaunch_footer(footer_sector)) {
+        return NAND_IMAGE_ENCRYPTED_RETAIL;
+    }
+    if (mbr_sector == NULL) {
+        /* Unreadable MBR: cannot prove this is a decrypted staging image. */
+        return NAND_IMAGE_UNKNOWN;
+    }
+    /* A retail MBR is AES-CTR encrypted, so the 0x55AA signature is absent. */
+    if (dsi_read_le16(mbr_sector + NAND_MBR_SIG_OFF) != NAND_MBR_SIGNATURE) {
+        return NAND_IMAGE_ENCRYPTED_RETAIL;
+    }
+    return NAND_IMAGE_DECRYPTED_SANDBOX;
+}
+
+const char *nand_image_kind_text(nand_image_kind_t kind)
+{
+    switch (kind) {
+    case NAND_IMAGE_DECRYPTED_SANDBOX: return "decrypted sandbox NAND";
+    case NAND_IMAGE_ENCRYPTED_RETAIL:  return "retail encrypted NAND";
+    case NAND_IMAGE_UNKNOWN:
+    default:                           return "unknown NAND image";
+    }
+}
+
+/* ---- Retail raw-write safety floor ------------------------------------ */
+
+bool nand_retail_region_is_safe(u32 lba, u32 count)
+{
+    if (count == 0u || count > NAND_RETAIL_USABLE_SECTORS) {
+        return false;
+    }
+    /* The whole range must sit at or above the boot guard and inside the chip. */
+    if (lba < NAND_RETAIL_BOOT_GUARD_SECTORS) {
+        return false;
+    }
+    return lba <= NAND_RETAIL_USABLE_SECTORS - count;
+}
+
 /* ---- Boot-redirect policy --------------------------------------------- */
 
 void boot_resolve_nand_target(const nand_boot_context_t *ctx,

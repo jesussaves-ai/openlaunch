@@ -18,7 +18,7 @@
  * tooling; the default is a documented, non-secret development key so the
  * pipeline is reproducible. This gate hardens the *runtime* authorisation; the
  * authoritative safety boundary remains the ENABLE_NAND_WRITE_DANGER build
- * flag (AGENTS.md §5).
+ * flag (the project conventions).
  */
 #ifndef INSTALLER_AUTH_KEY
 #define INSTALLER_AUTH_KEY "OpenLaunch-NAND-installer-dev-key"
@@ -274,6 +274,7 @@ const char *installer_error_text(installer_error_t error)
     case INSTALLER_ERR_NO_SD:           return "no SD card for backup";
     case INSTALLER_ERR_BAD_TOKEN:       return "installer package not authorized";
     case INSTALLER_ERR_BAD_LAYOUT:      return "NAND layout not recognized";
+    case INSTALLER_ERR_ENCRYPTED_NAND:  return "retail encrypted NAND (AES/TMD required)";
     case INSTALLER_ERR_PROTECTED:       return "target overlaps protected boot";
     case INSTALLER_ERR_TARGET_RANGE:    return "target outside the FAT volume";
     case INSTALLER_ERR_BACKUP_FAILED:   return "NAND backup failed";
@@ -308,7 +309,20 @@ installer_decision_t installer_preflight(const installer_request_t *req)
         d.error = INSTALLER_ERR_NO_SD;
         return d;
     }
-    if (!req->layout_ok) {
+    /*
+     * A retail, per-console AES-CTR encrypted image is refused before the
+     * layout/token checks unless the opt-in retail write path is armed (loud
+     * compile flag + retail token + runtime confirmation). Raw plaintext
+     * staging can never produce a valid retail install, so this is a
+     * last-resort diagnostic path only.
+     */
+    if (req->retail_encrypted && !req->retail_write_armed) {
+        d.error = INSTALLER_ERR_ENCRYPTED_NAND;
+        return d;
+    }
+    /* An armed retail write cannot use the (unreadable) MBR layout; the target
+     * is validated against the hardcoded retail boot guard instead. */
+    if (!req->layout_ok && !req->retail_write_armed) {
         d.error = INSTALLER_ERR_BAD_LAYOUT;
         return d;
     }

@@ -4,7 +4,7 @@
  * Safe read-only .nds / .srl image loader, RAM stager and dual-CPU chainload
  * handoff. See include/arm9/loader.h.
  *
- * Safety properties (AGENTS.md §4/§5):
+ * Safety properties (the project conventions§5):
  *   - the header is fully validated (CRC + aligned, in-range ARM9/ARM7 load
  *     ranges that avoid the bootloader reservation) before any RAM is written;
  *   - the ARM7 payload is never staged directly over the running ARM7 loader:

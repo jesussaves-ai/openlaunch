@@ -7,8 +7,13 @@ dual-core ARM946E-S (ARM9) and ARM7TDMI (ARM7).
 
 The project translates documented hardware behaviour and the reference logic
 disassembled from `asm/UNLAUNCH.DSI` into readable, strictly typed C99. See
-[`AGENTS.md`](AGENTS.md) for the architectural rules and
-[`docs/hardware_notes.md`](docs/hardware_notes.md) for the register-level notes.
+[`docs/hardware_notes.md`](docs/hardware_notes.md) for the register-level notes
+and [`PLAN.md`](PLAN.md) for the translation roadmap.
+
+> Development note: this codebase is developed with heavy AI assistance — the
+> hardware reverse-engineering, architecture and review are directed by the
+> maintainer, and the C99/assembly is largely machine-written and verified by the
+> test suites in `tests/` and `make verify`.
 
 ## Features
 
@@ -48,19 +53,28 @@ disassembled from `asm/UNLAUNCH.DSI` into readable, strictly typed C99. See
   (PC-style MBR and HiyaCFW TWL `{offset,size}`), reached through the
   ARM7-gated eMMC IPC, plus a boot policy that falls back to the DSi System
   Menu (`00030004`/`484e4c41`) when no SD boot target is present.
-* **Guarded NAND installer (opt-in)** — menu item `[10] Install to NAND`
-  drives a signed, sandboxed installation pipeline: pre-flight MBR/TWL layout
-  validation with a permanently protected boot prefix, a **mandatory** full
-  raw NAND backup (`NANDBACK.BIN`, SHA-256 verified) on the SD card, an
+* **Guarded NAND installer (opt-in, SANDBOX ONLY)** — menu item
+  `[10] Install to NAND` drives a signed, sandboxed staging pipeline:
+  pre-flight MBR/TWL layout validation with a permanently protected boot
+  prefix, a **mandatory** raw NAND backup (`NANDBACK.BIN`, SHA-256 verified
+  against live NAND **and by reading the file back from the SD card**), an
   HMAC-SHA-256 authenticated installer token (`INSTALL.KEY`), then a guarded
-  eMMC write with byte-for-byte read-back verification and unconditional
-  guard release. A modal progress screen walks the six stages
+  eMMC write with byte-for-byte read-back verification and unconditional guard
+  release. A modal progress screen walks the six stages
   (`PREFLIGHT → BACKUP → VERIFY_BACKUP → UNLOCK → WRITE → VERIFY_WRITE`) with
   live percentages; an abort paints a high-visibility failure screen naming the
   exact failed stage and the `SD:/NANDBACK.BIN` recovery image. The write glue
   is compiled **only** with `make NAND_WRITE_DANGER=1` (isolated tree:
   `make nand-installer`); the default build reports `GUARD: NAND WRITE LOCKED`
   and refuses `[10]` safely.
+* **Retail-NAND refusal** — the installer classifies the eMMC image before
+  touching it. A real DSi NAND is AES-CTR encrypted with a **per-console key**
+  (derived from the CID + Console ID) and its boot chain is RSA/`.tmd`
+  validated, so raw plaintext staging can never be valid there. Such an image
+  (or a NAND carrying a `no$gba` / Unlaunch CID+CPU footer) is refused at
+  PREFLIGHT with `retail encrypted NAND (AES/TMD required)`. Only a decrypted
+  sandbox image (a plaintext MBR) can proceed. **Never run `[10]` on a retail
+  console.**
 * **Reproducible release** — `make release` builds the diagnostic,
   live-chainload and autoboot variants (plus a ready-to-copy SD card template)
   into `build/release/` with a deterministic `SHA256SUMS.txt` and
@@ -69,10 +83,30 @@ disassembled from `asm/UNLAUNCH.DSI` into readable, strictly typed C99. See
   real, loadable and negative-test payloads (including `NDS/SUBAPP.NDS` and a
   root `BOOT.CFG`) for emulator and CI verification.
 
-No eMMC/NAND write path exists outside the `ENABLE_NAND_WRITE_DANGER` build
-(AGENTS.md §5); the storage pipeline is read-only by default. The opt-in
+No eMMC/NAND write path exists outside the `ENABLE_NAND_WRITE_DANGER` build;
+the storage pipeline is read-only by default. The opt-in
 installer keeps that guarantee: even an armed build refuses to write until a
-signed package authenticates *and* a full, SHA-256-verified NAND backup exists.
+signed package authenticates *and* a full, SHA-256-verified NAND backup exists
+*and* the target image is classified as a decrypted sandbox rather than a retail
+encrypted NAND.
+
+> **Retail consoles: do not use `[10]`.** The installer is an unencrypted
+> sandbox staging harness, not a production NAND installer. On real hardware it
+> refuses a retail (encrypted) NAND with `retail encrypted NAND (AES/TMD
+> required)` and writes nothing. Real-install support requires per-console
+> AES-CTR (`twln`) and `.tmd` exploit code that does not exist yet. To run
+> OpenLaunch on a real Unlaunch DSi **safely, write nothing to NAND**, and
+> chainload it from the SD card instead:
+>
+> 1. `make CHAINLOAD_BOOT=1 rom` (or just `make rom` for the dry-run diagnostics
+>    build).
+> 2. Copy `build/openlaunch.nds` to the SD card root as `BOOT.NDS`, **or** copy
+>    it under any name and pick it from Unlaunch's file menu. Unlaunch loads it
+>    from SD into RAM.
+> 3. Boot and use the on-screen menu. `[10]` is safe there too: the default
+>    build reports `GUARD: NAND WRITE LOCKED` and refuses it.
+>
+> Never build/run `make nand-installer` on a real console.
 
 ## Requirements
 
@@ -87,7 +121,9 @@ signed package authenticates *and* a full, SHA-256-verified NAND backup exists.
 make            # build build/openlaunch.nds (+ the legacy dsi_bootloader.nds alias)
 make rom        # alias for the above
 make sd-image   # build build/hello_payload.nds + build/sdcard.img
-make verify     # validate the ROM, the payload and the SD image
+make openlaunch-payload # build the HNAA exploit container (see below)
+make nand-tool  # build the offline NAND decrypt/encrypt tool
+make verify     # validate the ROM, the payload, the SD image and the container
 make host-test  # host unit/integration tests
 make release    # build build/release/ + build/openlaunch_release.tar.gz
 make configure-emulator # point the local melonDS config at build/sdcard.img
@@ -103,18 +139,102 @@ make clean
 make CHAINLOAD_BOOT=1 rom sd-image
 ```
 
-To build the guarded NAND installer (DISABLED by default, AGENTS.md §5):
+To build the guarded NAND installer (DISABLED by default):
 
 ```sh
-make nand-installer     # -> build/nand/openlaunch.nds (+ build/nand/sdcard.img)
-python3 scripts/make_installer_token.py --payload <image> --target-lba 0x100 \
-        --out INSTALL.KEY
+make nand-installer     # -> build/nand/openlaunch.nds
+                        #    + build/nand/sdcard.img (clean)
+                        #    + build/nand/sdcard_installer.img (sandbox fixtures)
+
+# Separate WRITE-ENABLED test build (sandbox): arms the eMMC write path but
+# still refuses retail encrypted NAND. Use this to exercise the six stages and
+# their error paths against a decrypted sandbox NAND / emulator.
+make installer-test     # -> build/installer-test/openlaunch.nds + fixtures
+
+# Or build just the sandbox fixtures onto the default tree:
+make sd-image-installer # -> build/sdcard_installer.img (INSTALL.KEY + OLBOOT.NDS)
+
+# Standalone token (mark it --sandbox so the backup fits a small SD image):
+python3 scripts/make_installer_token.py --payload <image> --target-lba 0x1000 \
+        --sandbox --out INSTALL.KEY
 ```
 
 `make nand-installer` builds in an isolated `build/nand/` tree so the default
 `build/` keeps its read-only guarantee. The installer requires an authenticated
-`INSTALL.KEY` on the SD root and writes a full `NANDBACK.BIN` backup before any
-eMMC write; see docs/hardware_notes.md §34.
+`INSTALL.KEY` on the SD root and writes a `NANDBACK.BIN` backup (verified by
+reading it back from the SD card) before any eMMC write. The emulated SD card
+must be **writable**: `scripts/configure_emulator.py` now writes
+`[DSi.SD] ReadOnly = false` by default (opt out with `--read-only`); melonDS
+silently drops writes to a read-only card, which stage `3/6 VERIFY_BACKUP` will
+now detect and abort. See docs/hardware_notes.md §34.
+
+### Retail raw-write test build (DANGER)
+
+```sh
+make installer-retail   # -> build/installer-retail/openlaunch.nds + retail token
+```
+
+`make installer-retail` is the **only** build that can raw-write a real, retail
+(encrypted) DSi eMMC. It is a last-resort diagnostic path, not an installer:
+plaintext bytes written into the AES-CTR-encrypted filesystem will not produce a
+working image and may corrupt the System Menu. To limit the damage to the
+absolute minimum it (a) still requires an `INSTALL.KEY` signed with `--retail`,
+(b) requires a runtime `L + R + START` hold on a red warning screen, (c) writes a
+verified full-chip `NANDBACK.BIN` first, and (d) is hard-limited to the
+**bootsafe window** `[0x877, 0x78000)` sectors (byte `0x10EE00`..`0xF000000`), so
+stage1/stage2 and any existing Unlaunch install are never touched — the console
+stays bootable and recoverable. It is **not** a substitute for a real Unlaunch
+implementation; see the roadmap in docs/hardware_notes.md §34.11.
+
+### Offline NAND tool (safe — never touches a console)
+
+```sh
+make nand-tool                    # -> build/tools/dsi_nand_tool
+
+build/tools/dsi_nand_tool info    nand.bin          # key + MBR partition table
+build/tools/dsi_nand_tool decrypt nand.bin dec.bin  # full-image decrypt
+build/tools/dsi_nand_tool encrypt dec.bin nand.bin  # full-image encrypt
+build/tools/dsi_nand_tool verify  nand.bin          # decrypt+re-encrypt==identity
+
+python3 scripts/dsi_nand_install.py list dec.bin    # System Menu launchers + TMDs
+python3 scripts/dsi_nand_install.py extract dec.bin 484E4141 hnaa_tmd.bin
+python3 scripts/dsi_nand_install.py replace dec.bin dec_out.bin 484E4141 \
+        --payload OLBOOT.BIN
+```
+
+The tool derives the per-console key from the `0xFF800` no$gba/Unlaunch footer
+(or `--cid`/`--console`). The crypto is validated against a real retail dump;
+see docs/hardware_notes.md §34.13.
+
+## DSi boot-stage-2 exploit (the `HNAA` payload)
+
+Boot stage 2 loads the launcher's `title.tmd` with a broken `filesize > filesize`
+check, so an oversized TMD overruns a fixed Main-RAM buffer (`0x037DF06C`) and
+overwrites stage-2's own IPC handler table (`0x037F3B68`, dispatched at
+`0x037CA720`). OpenLaunch reproduces the Unlaunch/SafeUnlaunch exploit: an
+OpenLaunch-format container is written into the **backup** launcher (`HNAA`) TMD;
+its header is overlaid so that the clobbered IPC table plus a small in-place stub
+(`src/arm9/overflow_bootstrap.s`) relocate the ARM9/ARM7 images and jump to the
+ARM9 entry (`0x02200800`). The overflow entry and the relocate/jump handoff are
+verified end-to-end in melonDS; the ARM7 is not replaced (as in Unlaunch).
+
+```sh
+make openlaunch-payload     # -> build/openlaunch_payload.bin (Unlaunch-format container)
+python3 scripts/verify_openlaunch_payload.py --payload build/openlaunch_payload.bin
+```
+
+Reverse-engineering tooling: `tools/stage2_dataflow.py` (a Capstone-based
+recursive-descent disassembler plus an abstract interpreter that finds control
+transfers anchored in the overflow range); `docs/stage2_re.md` has the full
+write-up of the exploit, the differential that pinned it down, and the offsets.
+
+Installing the container into an offline NAND dump (never touches a console) —
+`scripts/dsi_nand_install.py patch` does the full decrypt → rewrite → encrypt:
+
+```sh
+python3 scripts/dsi_nand_install.py patch nand.bin nand_patched.bin 484E4141 \
+        --payload build/openlaunch_payload.bin
+```
 
 ## Repository layout
 
@@ -125,6 +245,7 @@ include/      shared / ARM9 / ARM7 headers
 src/          common, ARM9 and ARM7 C99 + crt0 assembly
 payload/      sources for the chainload test payload
 scripts/      packaging, SD image builder and verification tools
+tools/        reverse-engineering + host tools (stage-2 data-flow pass, NAND tool)
 tests/        host test suites and melonDS notes
 ld/           linker scripts for the bootloader
 ```

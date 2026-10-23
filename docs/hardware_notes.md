@@ -149,7 +149,7 @@ NDMA block `0x04004100` (used by the reference DMA path): `[0x04]` = source,
 `[0x08]` = destination, `[0x0C]` = word count, `[0x10]` = 0x20, `[0x1C]` =
 trigger/status (`& 0x80000000` = busy).
 
-> **Safety** — `AGENTS.md` §5 requires eMMC to be read-only by default.
+> **Safety** — the project conventions requires eMMC to be read-only by default.
 > `src/arm7/sdmmc.c` therefore only implements the read/`CMD` path; the
 > write helper is compiled out unless `ENABLE_NAND_WRITE_DANGER` is defined.
 
@@ -176,7 +176,7 @@ RTC/PMIC transport at `0x04000138`:
   `SWI 3` delay between edges.
 * `FUN_0001cf1c` additionally pokes `0x77` — register select step.
 
-This transport is shared with the BPTWL power-management IC. `AGENTS.md` §5
+This transport is shared with the BPTWL power-management IC. the project conventions
 restricts writes to documented registers only.
 
 ## 7. Memory primitives
@@ -594,7 +594,7 @@ written back over the ARM7's data) and `dc_invalidate_range()` after the reply
 
 The eMMC path stays read-only: `sdmmc_read()` never writes, and
 `IPC_CMD_WRITE_SECTOR` is deliberately left unimplemented until a write path is
-reviewed and gated behind `ENABLE_NAND_WRITE_DANGER` (AGENTS.md §5).
+reviewed and gated behind `ENABLE_NAND_WRITE_DANGER` (the project conventions).
 `spi_firmware_read_buf()` only issues the standard SPI `READ` (0x03) command; it
 never programs or erases the flash.
 
@@ -861,7 +861,7 @@ mask. `src/common/nds_header.c` also decodes the field (`unit_code`,
 
 No write command (`CMD24`/`CMD25`) exists outside the
 `ENABLE_NAND_WRITE_DANGER` build, and `IPC_CMD_WRITE_SECTOR` remains
-unimplemented, so the whole pipeline is read-only (AGENTS.md §5).
+unimplemented, so the whole pipeline is read-only (the project conventions).
 
 ### Verification
 
@@ -935,7 +935,7 @@ corrupt FAT chains:
    and DMA channels, copies the payload to its final address and branches.
 
 The actual CPU handoff is compiled in only when `ENABLE_CHAINLOAD_BOOT` is
-defined (AGENTS.md §5 sandbox-first policy). By default `loader_stage_and_boot()`
+defined (the project conventions sandbox-first policy). By default `loader_stage_and_boot()`
 performs the entire staging + IPC preparation and returns with
 `result.dry_run` set, so melonDS/host diagnostics can exercise the pipeline
 without jumping into arbitrary RAM.
@@ -1575,7 +1575,7 @@ reader. `src/arm9/nand_boot.c` provides `arm9_nand_read_sectors()`,
 `arm9_nand_probe()`, `arm9_nand_mount_fat()` and `arm9_nand_find_launcher()`.
 
 No NAND write command exists: the module is strictly read-only, preserving the
-anti-brick guard (AGENTS.md §5). `IPC_CMD_WRITE_SECTOR` remains unimplemented.
+anti-brick guard (the project conventions). `IPC_CMD_WRITE_SECTOR` remains unimplemented.
 
 ### 32.2 Two partition-table layouts (`src/common/nand.c`)
 
@@ -1710,12 +1710,23 @@ now installs a deterministic gradient `SPLASH.RAW` and a themed `BOOT.CFG`, and
 ## 34. Safe NAND installer (`src/common/installer.c`, `src/arm9/installer_*.c`)
 
 A guarded, sandboxed installer pipeline for the internal DSi eMMC, exposed as
-menu item `[10] Install to NAND`. The design follows AGENTS.md §5 to the letter:
+menu item `[10] Install to NAND`. The design follows the project conventions to the letter:
 the default build is physically incapable of writing the eMMC, the mandatory
 compile-time gate is `-DENABLE_NAND_WRITE_DANGER` (knob: `make NAND_WRITE_DANGER=1`,
 isolated tree: `make nand-installer`), and even in an armed build the write path
 stays locked until a signed package authenticates **and** a full NAND backup has
 been written and verified.
+
+> **Scope (read this first).** `[10]` is an **unencrypted sandbox staging
+> harness**, not a production installer. A retail DSi NAND is encrypted with a
+> per-console AES-CTR key (keyX from the Console ID, IV from `SHA1(CID)`) and
+> its boot chain is RSA/`.tmd` checked, so writing raw plaintext there can never
+> install anything and will corrupt or brick the console. The installer now
+> classifies the image up front and refuses a retail image with
+> `INSTALLER_ERR_ENCRYPTED_NAND` (`"retail encrypted NAND (AES/TMD required)"`).
+> On real hardware, run OpenLaunch by SD chainloading (`BOOT.NDS` / the Unlaunch
+> file menu) - it never writes NAND. Real-install support needs an AES-CTR +
+> decrypted-`twln` + `.tmd` layer that does **not** exist yet (see §34.10).
 
 ### 34.1 Layers
 
@@ -1750,10 +1761,18 @@ partition at least `NAND_MIN_FAT_SECTORS` (128 KiB) large, bounds it against
 arithmetic fails closed, and these checks run **before** the installer reads a
 single payload byte.
 
+`nand_classify_image()` (with `nand_detect_unlaunch_footer()`) classifies the
+image from its sector 0 and its byte-`0xFF800` footer: a `no$gba`/Unlaunch
+footer (`"DSi eMMC CID/CPU"`), or an MBR whose `0x55AA` signature is absent
+because it is still AES-CTR encrypted, marks the image
+`NAND_IMAGE_ENCRYPTED_RETAIL`; only a plaintext `0x55AA` MBR with no footer is
+`NAND_IMAGE_DECRYPTED_SANDBOX`. The classification is fail-closed (an
+unreadable MBR is `NAND_IMAGE_UNKNOWN`) and is fed to the pre-flight gate.
+
 > **Sandbox scope.** The installer never writes the protected prefix that
 > physically precedes the user FAT volume (the stage-1/stage-2 bootstrap area).
 > The target region must lie inside the user FAT volume; the boot prefix is
-> permanently off-limits. This is the AGENTS.md §5 "sandbox-first" posture: the
+> permanently off-limits. This is the project conventions "sandbox-first" posture: the
 > installer is a safe in-volume staging mechanism, not a factory-boot overwriter.
 
 ### 34.4 Signed installer token + pre-flight state machine
@@ -1777,11 +1796,23 @@ writing in a build that did not define `ENABLE_NAND_WRITE_DANGER`.
 
 ### 34.5 Mandatory backup + FAT writer
 
-Before any write, `installer_run()` streams the whole NAND (from LBA 0 to the
-layout's `total_backup_sectors`) through `installer_backup_stream()` into the SD
-root file `NANDBACK.BIN`, hashing with SHA-256, then re-reads the NAND and
-compares digests with `installer_backup_verify()`. A mismatch, a short write or
-an I/O error aborts the installation with the backup's clusters freed.
+Before any write, `installer_run()` streams the NAND (from LBA 0 to the
+layout's `total_backup_sectors`, or to `INSTALLER_SANDBOX_BACKUP_SECTORS` when
+the token carries the sandbox flag) through `installer_backup_stream()` into the
+SD root file `NANDBACK.BIN`, hashing with SHA-256. Stage `3/6 VERIFY_BACKUP`
+then proves the backup two ways:
+
+1. `installer_backup_verify()` re-reads the **live NAND** and compares digests
+   (proves the source was stable); and
+2. `installer_backup_verify_sd()` re-opens `NANDBACK.BIN` on the mounted **SD**
+   volume (`fat_find_path()` + `fat_read_file_range()`), checks the on-disk size
+   and streams the file back through SHA-256, comparing it to the NAND digest.
+
+The second check is the one that matters: a dropped or truncated SD write (for
+example a read-only emulated card, which melonDS silently discards) leaves a
+missing or short file and is caught deterministically before `4/6 UNLOCK`. A
+mismatch, a short write or an I/O error aborts the installation with the
+backup's clusters freed.
 
 `src/common/fat_rw.c` is a bounded FAT16/FAT32 root-file writer
 (`fat_create_file()` → `fat_writer_write()` → `fat_writer_end()`, plus
@@ -1823,7 +1854,11 @@ build flag is set. The eMMC write is issued only from
   `NAND write path not built`.
 * Armed (`make nand-installer`, i.e. `BUILD=build/nand
   NAND_WRITE_DANGER=1`): the full pipeline links, `[10]` runs the backup +
-  verified flash and the top screen shows `GUARD: WRITE PATH ARMED`.
+  verified flash and the top screen shows `GUARD: WRITE PATH ARMED`. It also
+  produces `build/nand/sdcard_installer.img`, a sandbox SD image carrying
+  `INSTALL.KEY` + `OLBOOT.NDS` (`make sd-image-installer` builds the same on the
+  default tree). The clean `build/sdcard.img` deliberately ships **no**
+  `INSTALL.KEY`, which `tests/test_installer.c` asserts.
 
 ### 34.8 Verification
 
@@ -1876,6 +1911,147 @@ Menu item `[10]` (`menu_install_view()`) drives this with
 In the default (locked) build `installer_run()` reports the PREFLIGHT →
 ABORTED transition and the abort screen shows
 `BUILD: READ-ONLY (AGENTS 5)`, so selecting `[10]` is a safe no-op.
+
+### 34.10 Retail-NAND refusal, SD persistence, and safe real-hardware use
+
+Three safety additions close the gaps found in the raw-staging skeleton:
+
+* **Static shared-RAM mount volume.** `installer_run()` used to declare
+  `fat_volume_t vol` on the ARM9 stack, which lives in DTCM (`0x0B000000`).
+  `arm9_storage_read_sectors()` rejects any buffer outside shared Main RAM
+  (`IPC_SHARED_RAM_BASE..IPC_SHARED_RAM_END`) via `ipc_addr_is_shared_ram()`, so
+  the mount failed and the installer aborted at `1/6 PREFLIGHT` with
+  `no SD/FAT`. The volume is now the static `s_installer_vol` (like
+  `menu.c::s_fat_vol` and `storage.c::s_probe_vol`), and the invariant is
+  re-checked at runtime before the first delegated read.
+* **Real SD backup persistence.** See §34.5: stage `3/6` now reads
+  `NANDBACK.BIN` back from the SD FAT volume and compares its size and SHA-256,
+  so a dropped/`ReadOnly` SD write cannot pass unnoticed.
+* **Retail/encrypted image refusal.** `nand_classify_image()` (see §34.3) feeds
+  `installer_preflight()`: a retail image (absent plaintext MBR signature, or a
+  `no$gba`/Unlaunch footer) is refused with
+  `INSTALLER_ERR_ENCRYPTED_NAND` before the layout/token checks, and the abort
+  screen names the reason.
+
+The emulated DSi SD card must be writable for the backup to persist;
+`scripts/configure_emulator.py` now writes `[DSi.SD] ReadOnly = false` by
+default (and to isolated configs), with `--read-only` to opt back in.
+
+**Safe real-hardware use (zero NAND writes).** On a console that already has
+Unlaunch, chainload OpenLaunch from the SD card:
+
+1. Build the chainload variant (`make CHAINLOAD_BOOT=1 rom`) - or plain
+   `make rom` for the dry-run diagnostics build.
+2. Put `build/openlaunch.nds` on the SD card as `BOOT.NDS`, or select it from
+   Unlaunch's file menu. Unlaunch loads it from SD into RAM; no NAND byte is
+   touched.
+3. In the menu, `[10]` is safe: the default build reports
+   `GUARD: NAND WRITE LOCKED` and refuses. Never build/run
+   `make nand-installer` against a retail console.
+
+Real Unlaunch-style installation (decrypted `twln`, appending to
+`title/00030017/.../title.tmd`, read-only FAT attributes) is **not**
+implemented; it requires the per-console AES-CTR layer (`PLAN.md` still lists
+`AES / crypto` as TODO) plus `.tmd` handling. This subsystem intentionally
+remains a sandbox harness until that exists.
+
+### 34.11 Write-enabled test builds (incl. the DANGEROUS retail path)
+
+Two additional targets exist solely for testing:
+
+* `make installer-test` (`BUILD=build/installer-test NAND_WRITE_DANGER=1`): the
+  full six-stage write pipeline, but the retail-encryption guard still applies.
+  Use it with a **decrypted sandbox NAND**, or the `sdcard_installer.img`
+  fixture (sandbox token), to exercise every stage and its error paths safely.
+* `make installer-retail`
+  (`... NAND_WRITE_DANGER=1 RETAIL_NAND_WRITE=1`): **DANGER.** The only build
+  that can raw-write a retail, AES-CTR encrypted eMMC.
+
+The retail path is the most dangerous code in the tree and is fenced four ways;
+all four must hold before a byte is written:
+
+1. **Compile flag** `ENABLE_RETAIL_NAND_WRITE` (only `make installer-retail`);
+   `installer_install.c` `#error`s unless `ENABLE_NAND_WRITE_DANGER` is also set.
+2. **Retail token** - the authenticated `INSTALL.KEY` must carry
+   `INSTALLER_TOKEN_FLAG_RETAIL` (`make_installer_token.py --retail`).
+3. **Runtime confirmation** - `menu_install_view()` shows a red DANGER screen and
+   `installer_ui_confirm_retail()` blocks until the user holds `L + R + START`
+   for ~2 s (B cancels).
+4. **Bootsafe window** - because the retail MBR is AES-CTR encrypted,
+   `nand_validate_layout()` cannot derive a protected prefix, so
+   `nand_retail_region_is_safe()` hard-limits every write to sectors
+   `[NAND_RETAIL_BOOT_GUARD_SECTORS, NAND_RETAIL_USABLE_SECTORS)` =
+   `[0x877, 0x78000)` (byte `0x10EE00`..`0xF000000`). That keeps stage1, stage2,
+   the boot-info blocks and the `0xFF800` footer - and therefore an existing
+   Unlaunch install - **untouched**, so the console stays bootable.
+
+Even with all four, a retail write is still plaintext into an encrypted
+filesystem: it cannot install a working image and may corrupt the System Menu.
+The mandatory, verified `NANDBACK.BIN` is the recovery path (restore with a
+hardmod).
+
+### 34.12 Roadmap: the real Unlaunch feature set
+
+A production, safe retail installer is a multi-phase project; the raw path above
+is a diagnostic placeholder. The intended phases (tracked in `PLAN.md`):
+
+1. **AES-128 core** (`src/common/aes.c`): ECB + CTR, with host known-answer
+   tests, before any decrypted read/write is possible.
+2. **Key derivation**: eMMC CID (via the SD/MMC layer) + Console ID
+   (`[0x4004D00]`/`[0x4004D04]`) -> the per-console NAND keyX/keyY and the CTR
+   IV `SHA1(CID) + addr/16` (GBATEK "DSi SD/MMC Internal NAND Layout").
+3. **Decrypted NAND access**: decrypt sector 0 to read the real MBR/partition
+   table, then mount the decrypted `twln` FAT16 volume.
+4. **TMD-exploit install**: locate `title/00030017/<region>/content/title.tmd`,
+   append the payload to make it 81920 bytes, set the folder's FAT read-only
+   attribute, keep the FAT mirrors consistent, and re-encrypt the changed
+   sectors.
+5. **Uninstall / coexistence**: restore the TMD to 520 bytes, clear the
+   attributes, and detect an existing install (oversized TMD and/or a `0xFF800`
+   footer).
+6. **MBR / footer / region handling**: region variants, the nocash footer, and
+   the TMD size self-check patch.
+
+Until phases 1-4 exist, `make installer-retail` is the only way to touch retail
+NAND and is explicitly unsafe for that reason.
+
+### 34.13 Offline installer: validated crypto + SafeUnlaunch-compatible TMD edits
+
+The per-console NAND crypto is implemented and **validated against a real retail
+dump** (`src/common/aes.c`, `src/common/sha1.c`, `src/common/dsi_crypto.c`; host
+suites 16 and 17). The scheme is:
+
+```
+KeyX = f(CPU/Console ID at 0x4004D00/0x4004D04)
+KeyY = 0AB9DC76 BD4DC4D3 202DDD1D E1A00005
+Key  = ((KeyX XOR KeyY) + FFFEFB4E295902582A680F5F1A4F3E79) ROL 42   (128-bit)
+CTR  = SHA1(eMMC CID)[0:16] + (byte_address / 0x10)   (LE; byte-reversed AES)
+```
+
+`make nand-tool` builds `build/tools/dsi_nand_tool` (`info` / `decrypt` /
+`encrypt` / `verify`); whole-image decrypt+re-encrypt round-trips exactly, and
+the decrypted MBR/VBR match the documented DSi layout.
+
+`scripts/dsi_nand_install.py` edits a *decrypted* image's `twln` FAT16: it
+locates `title/00030017/<region>/content/title.tmd` and rewrites the payload,
+updating the FAT chain (both copies) and the directory entry, then the image is
+re-encrypted. It is validated against the dump by rewriting the file with
+identical bytes (image unchanged) and with a different size (chain reallocated,
+payload read back exactly); a full decrypt -> edit -> encrypt changes only the
+intended sectors (the TMD data clusters, its directory entry and the FATs).
+
+**SafeUnlaunch layout** (`edo9300/unlaunch-installer`, GPL-3.0 - studied, not
+copied): the DSi stage2 loads a **backup launcher (`HNAA`)** if the real
+launcher's (`HNAE`) TMD is unreadable. SafeUnlaunch installs Unlaunch into the
+`HNAA` backup launcher's TMD and breaks one byte in the real `HNAE` TMD so stage2
+falls back to it. A console already carrying this layout (all our test consoles)
+is updated by **rewriting only the `HNAA` payload** - the real launcher and its
+recovery path are never touched. A stock console additionally needs the `HNAE`
+TMD broken.
+
+The payload itself is boot stage-2's overflow blob (Unlaunch 2.0's is ~80 KiB,
+padded to the SafeUnlaunch 196608-byte form). Producing an OpenLaunch-compatible
+blob is the remaining work before a full "replace Unlaunch" install.
 
 
 

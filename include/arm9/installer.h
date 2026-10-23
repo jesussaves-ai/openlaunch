@@ -11,7 +11,7 @@
  *      write-then-read-back pass. These carry no hardware access, so the whole
  *      transfer/verification logic is exercised by tests/test_installer.c.
  *
- *   2. Hardware glue (compiled only under ENABLE_NAND_WRITE_DANGER, AGENTS.md
+ *   2. Hardware glue (compiled only under ENABLE_NAND_WRITE_DANGER, the project conventions
  *      §5): the SD FAT-file sink, the ARM7 write guard, and the end-to-end
  *      orchestration. The default build links none of it, so the shipped
  *      bootloader remains physically incapable of writing the eMMC.
@@ -26,6 +26,15 @@
 #include "../common/fat_ro.h"
 
 #define INSTALLER_SECTOR_SIZE 512u
+
+/*
+ * Bounded sandbox backup. When the authenticated token carries
+ * INSTALLER_TOKEN_FLAG_SANDBOX the full-image dump is clamped to this many
+ * 512-byte sectors, so NANDBACK.BIN fits on a small (16 MiB) emulator SD image
+ * without exhausting FAT clusters. 0 keeps the full NAND dump. Retail/encrypted
+ * images are refused by the classifier long before this clamp is reached.
+ */
+#define INSTALLER_SANDBOX_BACKUP_SECTORS 0x2000u   /* 4 MiB */
 
 /* Callback signatures for the injected-I/O engines. */
 typedef bool (*installer_read_fn)(void *ctx, u32 lba, u8 out[INSTALLER_SECTOR_SIZE]);
@@ -91,6 +100,22 @@ void installer_sd_source_init(installer_sd_source_t *s, fat_volume_t *vol,
 
 /* Fill `out` with 512 bytes of the payload at byte `offset` (zero past EOF). */
 bool installer_sd_source_read(void *ctx, u32 offset, u8 *out, u32 len);
+
+/*
+ * SD backup persistence verification (always compiled, host-testable).
+ *
+ * `installer_backup_verify()` only re-reads the live NAND, so a dropped or
+ * truncated SD write is invisible to it. This helper re-opens NANDBACK.BIN on
+ * the mounted SD volume and proves the backup really persisted: the file must
+ * exist and be a regular file, its on-disk size must equal `expected_bytes`,
+ * and the SHA-256 of its contents must equal `expected_digest` (the digest of
+ * the NAND data streamed during BACKUP). Returns INSTALLER_ERR_NONE only when
+ * all three hold; a missing/short/corrupt file is INSTALLER_ERR_BACKUP_MISMATCH.
+ */
+installer_error_t installer_backup_verify_sd(
+    fat_volume_t *vol,
+    const u8 expected_digest[SHA256_DIGEST_SIZE],
+    u32 expected_bytes, installer_transfer_t *out);
 
 /* ---- Hardware glue (ENABLE_NAND_WRITE_DANGER only) -------------------- */
 

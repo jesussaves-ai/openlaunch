@@ -7,7 +7,7 @@
  * ways/sets, then data-synchronisation barrier, then invalidate the entire
  * instruction and data caches.
  *
- * AGENTS.md §4.4: flush before handing a buffer to DMA/ARM7; invalidate before
+ * the project conventions: flush before handing a buffer to DMA/ARM7; invalidate before
  * reading memory that DMA/ARM7 wrote. Never use DTCM as a DMA buffer.
  */
 #ifndef DSI_COMMON_CACHE_H

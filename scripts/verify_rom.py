@@ -13,7 +13,7 @@ Checks performed:
      binary size budget; both fit SD chainloading and the NAND .tmd stage-2 /
      ARM7 WRAM constraints). A size telemetry summary is printed.
   5. No dangerous eMMC/NAND write symbols (``sdmmc_write`` etc.) are linked into
-     the ARM7 image (AGENTS.md §5); checked against the linker map files.
+     the ARM7 image (the project conventions); checked against the linker map files.
   6. The banner block referenced by offset 0x068 carries a supported version
      (0x0001/0x0002/0x0003/0x0103), a valid CRC16 over 0x020..0x83F and a
      decodable UTF-16LE title at 0x240.
@@ -50,7 +50,7 @@ BANNER_TITLE_OFF = 0x240
 BANNER_TITLE_CHARS = 128
 BANNER_VERSIONS = (0x0001, 0x0002, 0x0003, 0x0103)
 
-# Symbols that must never appear (AGENTS.md §5: eMMC is read-only by default).
+# Symbols that must never appear (the project conventions: eMMC is read-only by default).
 FORBIDDEN_SYMBOLS = (
     "sdmmc_write",
     "sdmmc_write_sector",

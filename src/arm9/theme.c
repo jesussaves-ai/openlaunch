@@ -11,7 +11,7 @@
  *   2. Thin hardware entry points that map the Engine A palette / backdrop and
  *      the Engine A BG2 bitmap framebuffer. They are only run by the firmware.
  *
- * Register widths (AGENTS.md §3): palette RAM, VRAM and the 2D control
+ * Register widths (the project conventions): palette RAM, VRAM and the 2D control
  * registers only accept 16-bit stores, so every write below goes through
  * REG16(); DISPCNT is a 32-bit register.
  */

@@ -8,7 +8,7 @@
  * self-test.
  *
  * All hardware access is read-only except for HALTCNT on the explicit
- * "[5] Reboot / Halt System" action; the eMMC/NAND guard (AGENTS.md §5) is
+ * "[5] Reboot / Halt System" action; the eMMC/NAND guard (the project conventions) is
  * reported from the build configuration.
  */
 #include "arm9/menu.h"
@@ -305,7 +305,7 @@ static void diag_poll_extkey(void)
 
 /*
  * Read the internal NAND's LBA-0 partition table through the ARM7 and record
- * the result. Read-only: no NAND command is ever issued (AGENTS.md §5).
+ * the result. Read-only: no NAND command is ever issued (the project conventions).
  */
 static void diag_nand(menu_diag_t *d)
 {
@@ -1075,7 +1075,7 @@ static void loader_boot_selected(menu_diag_t *d, fat_volume_t *vol,
  * NAND / HiyaCFW fallback: when the SD card yields no boot target, probe the
  * internal NAND, mount its FAT partition and locate the DSi System Menu
  * launcher. Read-only: the launcher is only located and reported, never
- * written, so the anti-brick guard (AGENTS.md §5) is preserved.
+ * written, so the anti-brick guard (the project conventions) is preserved.
  */
 static bool menu_try_nand_boot(menu_diag_t *d)
 {
@@ -1366,7 +1366,7 @@ static void menu_browse_view(menu_diag_t *d)
 /*
  * Menu item [10]: the NAND installer. This is the only code path in the
  * firmware permitted to write the eMMC, and it is compiled into the image only
- * under ENABLE_NAND_WRITE_DANGER (AGENTS.md §5). In the locked build
+ * under ENABLE_NAND_WRITE_DANGER (the project conventions). In the locked build
  * installer_run() reports INSTALLER_ERR_DISABLED and nothing is written.
  *
  * The modal progress screen is driven by the installer's own progress hook
@@ -1378,6 +1378,14 @@ static void menu_browse_view(menu_diag_t *d)
  */
 static void menu_install_view(menu_diag_t *d)
 {
+#ifdef ENABLE_RETAIL_NAND_WRITE
+    /* DANGER: the retail test build gates every run behind an explicit
+     * L+R+START hold so a retail write can never happen by accident. */
+    if (!installer_ui_confirm_retail()) {
+        d->last_action = "installer cancelled";
+        return;
+    }
+#endif
     d->install_ran = true;
     d->last_action = "NAND installer";
 

@@ -1,7 +1,7 @@
 /*
  * src/arm9/scfg.c
  *
- * TWL SCFG accessors. See include/arm9/scfg.h and AGENTS.md §3.
+ * TWL SCFG accessors. See include/arm9/scfg.h and the project conventions
  *
  * The reference ARM9 crt0 programs SCFG_EXT (0x04004008) with the exact value
  * 0x8307F100 and later masks SCFG_CLK (0x04004004) with 0xFEFE
@@ -181,7 +181,7 @@ void scfg_read_state(scfg_state_t *out)
  *   SCFG_EXT = 0x8307F100    (32 MiB RAM window, NDMA + SCFG access)
  *   SCFG_CLK = SCFG_CLK & 0xFEFE
  *
- * AGENTS.md §5: only the documented SCFG bits are touched. The writes only
+ * the project conventions: only the documented SCFG bits are touched. The writes only
  * happen on a DSi; on a legacy DS the function is a no-op.
  */
 void scfg_apply_boot_config(void)

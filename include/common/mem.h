@@ -9,7 +9,7 @@
  *   FUN_0001c92c (unaligned LE store)
  *
  * The reference used hand-unrolled, word-aligned loops; the reconstructed
- * intent is an aligned bulk copy with scalar head/tail handling. See AGENTS.md
+ * intent is an aligned bulk copy with scalar head/tail handling. See the project conventions
  * §4.3 ("reconstruct intent, do not blindly emit compiler idioms").
  */
 #ifndef DSI_COMMON_MEM_H

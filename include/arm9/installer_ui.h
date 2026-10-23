@@ -71,4 +71,14 @@ void installer_ui_show_abort(const installer_report_t *rep);
 /* Block until the user presses B to return to the main menu. */
 void installer_ui_wait_back(void);
 
+#ifdef ENABLE_RETAIL_NAND_WRITE
+/*
+ * Blocking red DANGER gate for the retail raw-write test build: returns true
+ * only when the user holds L + R + START together for ~2 s, false when they
+ * press B to cancel. Compiled only into the retail test build
+ * (`make installer-retail`).
+ */
+bool installer_ui_confirm_retail(void);
+#endif
+
 #endif /* DSI_ARM9_INSTALLER_UI_H */

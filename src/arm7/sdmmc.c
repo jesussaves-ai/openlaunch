@@ -20,7 +20,7 @@
  * unresponsive card can never wedge the ARM7 (unlike the reference's unbounded
  * `do { } while` loops).
  *
- * SAFETY (AGENTS.md §5): the eMMC path is read-only. The write helper is
+ * SAFETY (the project conventions): the eMMC path is read-only. The write helper is
  * compiled out unless ENABLE_NAND_WRITE_DANGER is defined.
  */
 #include "arm7/sdmmc.h"
@@ -449,7 +449,7 @@ void sdmmc_get_status(const sdmmc_t *c, sdmmc_status_t *out)
 }
 
 /* ------------------------------------------------------------------ */
-/* eMMC write path (gated, AGENTS.md §5)                               */
+/* eMMC write path (gated, the project conventions)                               */
 /* ------------------------------------------------------------------ */
 #ifdef ENABLE_NAND_WRITE_DANGER
 

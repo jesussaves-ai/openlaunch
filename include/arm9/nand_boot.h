@@ -6,7 +6,7 @@
  *
  * The eMMC NAND controller (TMIO port 1) is reachable only from the ARM7, so
  * every transfer here goes through arm9_storage_read_sectors() exactly like the
- * SD reader. No write path exists (AGENTS.md §5): the NAND is read-only.
+ * SD reader. No write path exists (the project conventions): the NAND is read-only.
  */
 #ifndef DSI_ARM9_NAND_BOOT_H
 #define DSI_ARM9_NAND_BOOT_H

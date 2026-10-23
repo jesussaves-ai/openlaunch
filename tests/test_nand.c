@@ -218,6 +218,74 @@ static void test_policy(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Retail-encrypted vs decrypted-sandbox image classification          */
+/* ------------------------------------------------------------------ */
+
+static void test_image_classify(void)
+{
+    u8 mbr[NAND_SECTOR_SIZE];
+    u8 footer[NAND_SECTOR_SIZE];
+
+    /* Decrypted sandbox: a plaintext 0x55AA MBR and no footer. */
+    memset(mbr, 0, sizeof(mbr));
+    set_sig(mbr);
+    set_pc_entry(mbr, 0u, FAT_PART_TYPE_FAT16, 0x100u, 0x2000u);
+    assert(!nand_detect_unlaunch_footer(NULL));
+    assert(nand_classify_image(mbr, NULL) == NAND_IMAGE_DECRYPTED_SANDBOX);
+    {
+        u8 zero_footer[NAND_SECTOR_SIZE];
+
+        memset(zero_footer, 0, sizeof(zero_footer));
+        assert(nand_classify_image(mbr, zero_footer) ==
+               NAND_IMAGE_DECRYPTED_SANDBOX);
+    }
+
+    /* Encrypted retail MBR: no 0x55AA signature. */
+    memset(mbr, 0x5A, sizeof(mbr));
+    assert(nand_classify_image(mbr, NULL) == NAND_IMAGE_ENCRYPTED_RETAIL);
+
+    /* A no$gba / Unlaunch footer always marks a raw retail dump. */
+    memset(footer, 0, sizeof(footer));
+    memcpy(footer, NAND_FOOTER_MAGIC, NAND_FOOTER_MAGIC_LEN);
+    assert(nand_detect_unlaunch_footer(footer));
+    assert(nand_classify_image(mbr, footer) == NAND_IMAGE_ENCRYPTED_RETAIL);
+    /* Even beside an otherwise-plaintext MBR the footer is treated as retail. */
+    memset(mbr, 0, sizeof(mbr));
+    set_sig(mbr);
+    assert(nand_classify_image(mbr, footer) == NAND_IMAGE_ENCRYPTED_RETAIL);
+    assert(nand_classify_image(NULL, footer) == NAND_IMAGE_ENCRYPTED_RETAIL);
+
+    /* A footer that differs in the first byte is not detected. */
+    footer[0] = 'X';
+    assert(!nand_detect_unlaunch_footer(footer));
+
+    /* An unreadable MBR with no footer cannot be proven safe. */
+    assert(nand_classify_image(NULL, NULL) == NAND_IMAGE_UNKNOWN);
+
+    assert(nand_image_kind_text(NAND_IMAGE_DECRYPTED_SANDBOX) != NULL);
+    assert(nand_image_kind_text(NAND_IMAGE_ENCRYPTED_RETAIL) != NULL);
+    assert(nand_image_kind_text(NAND_IMAGE_UNKNOWN) != NULL);
+    assert(nand_image_kind_text((nand_image_kind_t)99) != NULL);
+
+    /* ---- retail raw-write safety floor ---- */
+    /* Inside the bootsafe window. */
+    assert(nand_retail_region_is_safe(NAND_RETAIL_BOOT_GUARD_SECTORS, 1u));
+    assert(nand_retail_region_is_safe(0x1000u, 64u));
+    assert(nand_retail_region_is_safe(NAND_RETAIL_USABLE_SECTORS - 1u, 1u));
+    /* Any overlap with the boot chain is refused. */
+    assert(!nand_retail_region_is_safe(0u, 1u));
+    assert(!nand_retail_region_is_safe(NAND_RETAIL_BOOT_GUARD_SECTORS - 1u, 1u));
+    assert(!nand_retail_region_is_safe(NAND_RETAIL_BOOT_GUARD_SECTORS - 1u,
+                                       4u));
+    /* Past the end of the chip / degenerate. */
+    assert(!nand_retail_region_is_safe(NAND_RETAIL_USABLE_SECTORS, 1u));
+    assert(!nand_retail_region_is_safe(NAND_RETAIL_USABLE_SECTORS - 1u, 2u));
+    assert(!nand_retail_region_is_safe(NAND_RETAIL_USABLE_SECTORS, 0u));
+    assert(!nand_retail_region_is_safe(0x1000u, 0u));
+    assert(!nand_retail_region_is_safe(0xFFFFFFFFu, 0x20u));
+}
+
+/* ------------------------------------------------------------------ */
 /* Deep FAT path resolution (against build/sdcard.img, optional)       */
 /* ------------------------------------------------------------------ */
 
@@ -292,6 +360,7 @@ int main(int argc, char **argv)
     test_pc_mbr_no_signature();
     test_twl_table();
     test_policy();
+    test_image_classify();
 
     if (argc > 1) {
         test_resolve(argv[1]);

@@ -9,7 +9,7 @@
  *   @ref FUN_0602bfdc (0x0602BFDC)  IE2 &= ~mask
  *   @ref entry        (0x0602572C)  IME/IF handling in the boot sequence
  *
- * AGENTS.md §3: all interrupt state is touched through volatile registers so a
+ * the project conventions: all interrupt state is touched through volatile registers so a
  * critical section cannot be reordered by the compiler.
  */
 #ifndef DSI_ARM9_IRQ_H

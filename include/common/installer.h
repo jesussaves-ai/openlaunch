@@ -14,7 +14,7 @@
  * Nothing here touches hardware. The ARM9 glue that performs the transfers
  * lives in src/arm9/installer_backup.c and src/arm9/installer_install.c, and
  * the whole write path is compiled only under ENABLE_NAND_WRITE_DANGER
- * (AGENTS.md §5). Keeping the policy pure makes the safety rules host-testable.
+ * (the project conventions). Keeping the policy pure makes the safety rules host-testable.
  */
 #ifndef DSI_COMMON_INSTALLER_H
 #define DSI_COMMON_INSTALLER_H
@@ -27,6 +27,25 @@
 
 #define INSTALLER_TOKEN_MAGIC   0x4F4C4E43u   /* "OLNC" (little-endian)     */
 #define INSTALLER_TOKEN_VERSION 1u
+
+/*
+ * Token flag bit 0: the package targets a decrypted sandbox image (an emulator
+ * or developer staging volume), not a retail console. It lets the installer
+ * bound the mandatory backup to a size that fits a small emulator SD image
+ * (see INSTALLER_SANDBOX_BACKUP_SECTORS in include/arm9/installer.h). It is
+ * signed like every other field and can never enable writing on a retail image,
+ * which the encrypted-NAND guard refuses first.
+ */
+#define INSTALLER_TOKEN_FLAG_SANDBOX 0x0001u
+
+/*
+ * Token flag bit 1: the package authorises a raw write to a retail console.
+ * Only honoured when the bootloader is also compiled with the loud
+ * ENABLE_RETAIL_NAND_WRITE flag (Makefile: `make installer-retail`), the
+ * runtime confirmation is held, and the target lies in the hardcoded retail
+ * boot-safe window. See the safety note in docs/hardware_notes.md 34.11.
+ */
+#define INSTALLER_TOKEN_FLAG_RETAIL 0x0002u
 
 /*
  * On-disk token layout (96 bytes, little-endian):
@@ -168,6 +187,7 @@ typedef enum {
     INSTALLER_ERR_NO_SD,           /* backup destination unavailable        */
     INSTALLER_ERR_BAD_TOKEN,       /* missing / unsigned / out-of-range      */
     INSTALLER_ERR_BAD_LAYOUT,      /* LBA 0 was not a usable NAND MBR        */
+    INSTALLER_ERR_ENCRYPTED_NAND,  /* retail AES-CTR image: raw staging unsafe */
     INSTALLER_ERR_PROTECTED,       /* target overlaps the boot prefix        */
     INSTALLER_ERR_TARGET_RANGE,    /* target outside the FAT partition       */
     INSTALLER_ERR_BACKUP_FAILED,
@@ -183,6 +203,8 @@ const char *installer_error_text(installer_error_t error);
 typedef struct {
     bool write_enabled;     /* ENABLE_NAND_WRITE_DANGER compiled in       */
     bool sd_present;        /* the SD backup destination is mounted       */
+    bool retail_encrypted;  /* the eMMC image is retail AES-CTR encrypted  */
+    bool retail_write_armed;/* ENABLE_RETAIL_NAND_WRITE + a retail token   */
     bool token_valid;       /* token authenticated AND target in range    */
     bool layout_ok;         /* nand_validate_layout() succeeded           */
     bool backup_verified;   /* the full NAND dump was written + hashed    */
@@ -195,9 +217,10 @@ typedef struct {
 } installer_decision_t;
 
 /*
- * Evaluate the gate in strict order: build flag, SD destination, layout,
- * token, and finally the previously completed backup. Returns the decision and
- * the error that vetoed it (INSTALLER_ERR_NONE when it may proceed).
+ * Evaluate the gate in strict order: build flag, SD destination, retail
+ * encryption, layout, token, and finally the previously completed backup.
+ * Returns the decision and the error that vetoed it (INSTALLER_ERR_NONE when it
+ * may proceed).
  */
 installer_decision_t installer_preflight(const installer_request_t *req);
 

@@ -11,7 +11,7 @@ Token layout (little-endian, 96 bytes)::
 
     0x00  u32  magic           0x4F4C4E43 ("OLNC")
     0x04  u16  version         1
-    0x06  u16  flags           reserved (0)
+    0x06  u16  flags           bit0 = sandbox package, else 0
     0x08  u32  target_lba      first eMMC sector to overwrite
     0x0C  u32  target_sectors  number of sectors to overwrite
     0x10  u32  payload_sectors payload size in sectors (== target_sectors)
@@ -24,7 +24,7 @@ is a *development* key. Override it at build time with
 ``-DINSTALLER_AUTH_KEY=...`` and here with ``--key``.
 
 IMPORTANT: the token is a runtime authorisation layered on top of the mandatory
-``ENABLE_NAND_WRITE_DANGER`` compile-time gate (AGENTS.md §5). A token alone can
+``ENABLE_NAND_WRITE_DANGER`` compile-time gate (the project conventions). A token alone can
 never enable writing in a read-only build.
 """
 
@@ -44,9 +44,18 @@ SIGNED_LEN = 0x40
 SECTOR = 512
 DEFAULT_KEY = b"OpenLaunch-NAND-installer-dev-key"
 
+# Token flag bit 0: sandbox package. Lets the installer bound its backup to a
+# size that fits a small emulator SD image (see INSTALLER_TOKEN_FLAG_SANDBOX in
+# include/common/installer.h).
+FLAG_SANDBOX = 0x0001
+# Token flag bit 1: authorises a raw write to a retail console. Only honoured by
+# a bootloader built with the loud ENABLE_RETAIL_NAND_WRITE flag. DANGER.
+FLAG_RETAIL = 0x0002
+
 
 def build_token(payload: bytes, target_lba: int, key: bytes,
-                target_sectors: int | None = None) -> bytes:
+                target_sectors: int | None = None,
+                flags: int = 0) -> bytes:
     payload_sectors = (len(payload) + SECTOR - 1) // SECTOR
     if payload_sectors == 0:
         raise SystemExit("token: payload is empty")
@@ -59,7 +68,7 @@ def build_token(payload: bytes, target_lba: int, key: bytes,
     padded = payload + b"\x00" * (sectors * SECTOR - len(payload))
     digest = hashlib.sha256(padded).digest()
 
-    head = struct.pack("<IHHIII", MAGIC, VERSION, 0,
+    head = struct.pack("<IHHIII", MAGIC, VERSION, flags & 0xFFFF,
                        target_lba, sectors, payload_sectors) + digest
     head = head + b"\x00" * 12          # reserved field (0x34..0x3F)
     assert len(head) == SIGNED_LEN, len(head)
@@ -91,6 +100,13 @@ def main(argv) -> int:
                     help="authentication key string (defaults to the build key)")
     ap.add_argument("--out", default="INSTALL.KEY",
                     help="output token path (default INSTALL.KEY)")
+    ap.add_argument("--sandbox", action="store_true",
+                    help="mark the package as a sandbox build: the installer "
+                         "bounds its backup to fit a small emulator SD image")
+    ap.add_argument("--retail", action="store_true",
+                    help="DANGER: authorise a raw write to a retail console "
+                         "(only honoured by an installer-retail build; the "
+                         "target must lie inside the bootsafe window)")
     args = ap.parse_args(argv)
 
     with open(args.payload, "rb") as fh:
@@ -98,7 +114,10 @@ def main(argv) -> int:
 
     key = (args.key.encode("utf-8") if args.key is not None else DEFAULT_KEY)
 
-    token = build_token(payload, args.target_lba, key, args.target_sectors)
+    flags = (FLAG_SANDBOX if args.sandbox else 0) | \
+            (FLAG_RETAIL if args.retail else 0)
+    token = build_token(payload, args.target_lba, key, args.target_sectors,
+                        flags)
     if not verify_token(token, key):
         raise SystemExit("token: self-verification failed")
 

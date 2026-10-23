@@ -187,6 +187,73 @@ const char *nand_layout_status_text(nand_layout_status_t status);
  */
 bool nand_region_is_protected(const nand_layout_t *layout, u32 lba, u32 count);
 
+/* ---- Retail-encrypted vs decrypted-sandbox image classification -------- */
+
+/*
+ * no$gba / Unlaunch eMMC footer. On a raw eMMC image the footer lives either
+ * in the normally-zerofilled sector at byte 0xFF800 (LBA 0x7FC) or is appended
+ * after the image; its first field is the 16-byte ASCII id "DSi eMMC CID/CPU"
+ * (GBATEK "DSi SD/MMC Images"). It carries the per-console CID + Console ID
+ * needed to decrypt the image, so its presence proves the image is a raw,
+ * per-console AES-CTR encrypted retail dump - never a decrypted staging image.
+ */
+#define NAND_FOOTER_LBA        0x7FCu
+#define NAND_FOOTER_MAGIC      "DSi eMMC CID/CPU"
+#define NAND_FOOTER_MAGIC_LEN  16u
+
+/*
+ * How an eMMC image has to be treated. Only a decrypted sandbox image (a
+ * plaintext MBR, no footer) may be touched by the raw-sector staging harness;
+ * a retail image is AES-CTR encrypted with a console-unique key and its
+ * filesystems additionally require the TMD exploit, so raw staging is refused.
+ */
+typedef enum {
+    NAND_IMAGE_UNKNOWN = 0,       /* MBR unreadable: cannot classify        */
+    NAND_IMAGE_DECRYPTED_SANDBOX, /* plaintext 0x55AA MBR, no footer        */
+    NAND_IMAGE_ENCRYPTED_RETAIL   /* no 0x55AA, or a no$gba/Unlaunch footer */
+} nand_image_kind_t;
+
+/*
+ * True when `footer_sector` (the sector at byte offset 0xFF800) begins with
+ * the no$gba / Unlaunch footer id. NULL is not a footer. Pure.
+ */
+bool nand_detect_unlaunch_footer(const u8 *footer_sector);
+
+/*
+ * Classify an eMMC image from its sector 0 (the MBR) and its byte-0xFF800
+ * footer sector. Fail-closed: a footer is always retail, an unreadable MBR is
+ * UNKNOWN, and only a valid plaintext 0x55AA MBR with no footer is a usable
+ * decrypted sandbox. Pure (no device access), so the installer can prove an
+ * image is safe to stage before it reads a single payload byte.
+ */
+nand_image_kind_t nand_classify_image(const u8 *mbr_sector,
+                                      const u8 *footer_sector);
+
+/* Human-readable text for an image kind (never NULL). */
+const char *nand_image_kind_text(nand_image_kind_t kind);
+
+/* ---- Retail raw-write safety floor (opt-in dangerous path) ------------- */
+
+/*
+ * On a retail DSi the boot chain lives in the first 0x10EE00 bytes (MBR, stage2
+ * boot info, stage2 ARM9/ARM7 and footer; GBATEK "DSi SD/MMC Internal NAND
+ * Layout") and the main (encrypted) FAT16 partition begins at 0x10EE00 =
+ * sector 0x877. Because that MBR is AES-CTR encrypted, nand_validate_layout()
+ * cannot read it and the derived protected prefix is unavailable. This
+ * hardcoded floor is the best-effort guard for the opt-in retail raw-write
+ * path: it keeps every write clear of the boot chain (stage1/stage2) and the
+ * no$gba footer, so the console - and an existing Unlaunch install - survive.
+ */
+#define NAND_RETAIL_BOOT_GUARD_SECTORS  0x877u    /* byte 0x10EE00           */
+#define NAND_RETAIL_USABLE_SECTORS      0x78000u  /* 240 MiB usable eMMC     */
+
+/*
+ * True when the half-open sector range [lba, lba+count) lies wholly inside the
+ * retail-safe window [NAND_RETAIL_BOOT_GUARD_SECTORS, NAND_RETAIL_USABLE_SECTORS).
+ * Fail closed on a zero length or overflow. Pure.
+ */
+bool nand_retail_region_is_safe(u32 lba, u32 count);
+
 /* ---- Boot-redirect policy (pure) -------------------------------------- */
 
 /* Inputs to the redirect decision. */

@@ -54,7 +54,7 @@
 #define IPC_CMD_GET_EXTKEY      0x100Fu   /* -> (flags<<16)|extkey bits     */
 
 /*
- * ---- ARM7-gated hardware delegation (AGENTS.md architectural rule) -----
+ * ---- ARM7-gated hardware delegation (architectural rule) -----
  *
  * The TMIO SD/eMMC controller and the firmware SPI flash are reachable only
  * from the ARM7. The ARM9 never touches their registers: it packages the
@@ -99,7 +99,7 @@
  * ---- Guarded NAND write path (ENABLE_NAND_WRITE_DANGER only) ------------
  *
  * The whole write path exists only in a build that defines
- * ENABLE_NAND_WRITE_DANGER (AGENTS.md §5). Even there, the ARM7 refuses to
+ * ENABLE_NAND_WRITE_DANGER (the project conventions). Even there, the ARM7 refuses to
  * write the onboard eMMC until it has been explicitly armed:
  *
  * IPC_CMD_NAND_GUARD request payload (IPC_REQ_NAND_GUARD_WORDS words):

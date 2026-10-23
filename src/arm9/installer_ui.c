@@ -9,7 +9,7 @@
  * use the shared text console and are only ever reached on the ARM9.
  *
  * Nothing here writes the eMMC: the UI only observes the installer engine's
- * progress hook and reports the result (AGENTS.md §5).
+ * progress hook and reports the result (the project conventions).
  */
 #include "arm9/installer_ui.h"
 #include "arm9/console.h"
@@ -185,7 +185,9 @@ void installer_ui_begin(void)
     console_clear();
     console_puts(0, 0, CONSOLE_PAL_CYAN, "OPENLAUNCH NAND INSTALLER");
     console_puts(0, 1, CONSOLE_PAL_RED, "MODAL - DO NOT POWER OFF");
-#ifdef ENABLE_NAND_WRITE_DANGER
+#ifdef ENABLE_RETAIL_NAND_WRITE
+    console_puts(0, 2, CONSOLE_PAL_RED, "GUARD: RETAIL WRITE ARMED!");
+#elif defined(ENABLE_NAND_WRITE_DANGER)
     console_puts(0, 2, CONSOLE_PAL_RED, "GUARD: WRITE PATH ARMED");
 #else
     console_puts(0, 2, CONSOLE_PAL_GREEN, "GUARD: NAND WRITE LOCKED");
@@ -351,3 +353,63 @@ void installer_ui_wait_back(void)
         }
     }
 }
+
+#ifdef ENABLE_RETAIL_NAND_WRITE
+
+/*
+ * DANGER gate for the retail raw-write build. This is deliberately hard to
+ * trigger: the user must hold L + R + START (all ARM9-local KEYINPUT buttons,
+ * so no IPC dependency) for ~2 s while the warning screen is displayed; B
+ * cancels. It exists only to prevent an accidental retail write.
+ */
+#define INSTALLER_UI_RETAIL_ARM_MASK (INPUT_L | INPUT_R | INPUT_START)
+#define INSTALLER_UI_RETAIL_HOLD_FRAMES 120u
+
+bool installer_ui_confirm_retail(void)
+{
+    input_state_t keys = { 0u, 0u, 0u };
+    u32 hold = 0u;
+
+    console_select(CONSOLE_MAIN);
+    console_clear();
+    console_puts(0, 0, CONSOLE_PAL_RED, "*** DANGER ***");
+    console_puts(0, 1, CONSOLE_PAL_RED, "RETAIL NAND WRITE BUILD");
+    console_puts(0, 3, CONSOLE_PAL_YELLOW, "This build can RAW-WRITE a");
+    console_puts(0, 4, CONSOLE_PAL_YELLOW, "retail DSi eMMC in plaintext.");
+    console_puts(0, 6, CONSOLE_PAL_RED, "It cannot install a working image");
+    console_puts(0, 7, CONSOLE_PAL_RED, "and may corrupt the System Menu.");
+    console_puts(0, 9, CONSOLE_PAL_GREY, "Boot chain (stage1/stage2) and any");
+    console_puts(0, 10, CONSOLE_PAL_GREY, "Unlaunch install are left intact.");
+    console_puts(0, 12, CONSOLE_PAL_GREY, "A verified NANDBACK.BIN is written");
+    console_puts(0, 13, CONSOLE_PAL_GREY, "before any write.");
+    console_puts(0, 15, CONSOLE_PAL_WHITE, "HOLD L+R+START to continue");
+    console_puts(0, 17, CONSOLE_PAL_CYAN, "B: CANCEL");
+
+    console_select(CONSOLE_SUB);
+    console_clear();
+    console_puts(0, 0, CONSOLE_PAL_RED, "RETAIL WRITE CONFIRMATION");
+    console_puts(0, 2, CONSOLE_PAL_GREY, "Release all buttons, then hold");
+    console_puts(0, 3, CONSOLE_PAL_WHITE, "L + R + START together.");
+    console_puts(0, 6, CONSOLE_PAL_RED, "STILL YOUR OWN RISK.");
+    console_puts(0, 8, CONSOLE_PAL_CYAN, "B: CANCEL");
+
+    input_poll(&keys);
+    for (;;) {
+        ui_wait_vblank();
+        input_poll(&keys);
+
+        if (input_pressed(&keys, INPUT_B)) {
+            return false;
+        }
+        if ((keys.held & INSTALLER_UI_RETAIL_ARM_MASK) ==
+            INSTALLER_UI_RETAIL_ARM_MASK) {
+            if (++hold >= INSTALLER_UI_RETAIL_HOLD_FRAMES) {
+                return true;
+            }
+        } else {
+            hold = 0u;
+        }
+    }
+}
+
+#endif /* ENABLE_RETAIL_NAND_WRITE */

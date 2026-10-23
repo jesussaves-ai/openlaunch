@@ -6,7 +6,7 @@
 #     make CROSS=arm-none-eabi- DEVKITARM=/opt/devkitpro/devkitARM
 #
 # Language: strict C99 (-std=c99). GNU ARM assembly is used only for crt0 /
-# vectors / CP15 (see AGENTS.md §2).
+# vectors / CP15 (see the project conventions).
 #
 # Targets:
 #   make            build the runnable ROM (build/openlaunch.nds)
@@ -47,6 +47,7 @@ ARM7_BIN   := $(BUILD)/arm7.bin
 # ---- Chainload test payload + deterministic SD image ---------------------
 HELLO_ROM        := $(BUILD)/hello_payload.nds
 SD_IMAGE         := $(BUILD)/sdcard.img
+SD_INSTALLER_IMAGE := $(BUILD)/sdcard_installer.img
 PAYLOAD_ARM9_ELF := $(BUILD)/payload/arm9.elf
 PAYLOAD_ARM7_ELF := $(BUILD)/payload/arm7.elf
 PAYLOAD_ARM9_BIN := $(BUILD)/payload/arm9.bin
@@ -75,10 +76,19 @@ CFLAGS_COMMON += -DENABLE_AUTOBOOT
 endif
 
 # NAND installer write path. DISABLED by default: the eMMC is read-only
-# (AGENTS.md §5, scripts/verify_rom.py). Build with `make NAND_WRITE_DANGER=1`
+# (the project conventions, scripts/verify_rom.py). Build with `make NAND_WRITE_DANGER=1`
 # to compile in the guarded backup + flash pipeline (menu item [10]).
 ifeq ($(NAND_WRITE_DANGER),1)
 CFLAGS_COMMON += -DENABLE_NAND_WRITE_DANGER
+endif
+
+# Opt-in RETAIL raw-write path. DANGER: this arms raw plaintext writes on a
+# retail, AES-CTR encrypted eMMC. It cannot produce a valid install and may
+# corrupt the System Menu; it is a last-resort diagnostic path only. It also
+# requires NAND_WRITE_DANGER=1. Build with `make installer-retail`. See
+# docs/hardware_notes.md 34.11.
+ifeq ($(RETAIL_NAND_WRITE),1)
+CFLAGS_COMMON += -DENABLE_RETAIL_NAND_WRITE
 endif
 
 # ---- Per-CPU flags -------------------------------------------------------
@@ -101,14 +111,16 @@ LDFLAGS_FREESTANDING := -nostartfiles -nostdlib \
 SRCS_ARM7 := $(wildcard src/arm7/*.c) $(wildcard src/common/*.c)
 SRCS_ARM9 := $(wildcard src/arm9/*.c) $(wildcard src/common/*.c)
 ASM_ARM7  := $(wildcard src/arm7/*.s)
-ASM_ARM9  := $(wildcard src/arm9/*.s)
+# overflow_bootstrap.s is *not* part of the ARM9 image: it is assembled into a
+# standalone raw blob embedded in the HNAA payload (see openlaunch-payload).
+ASM_ARM9  := $(filter-out src/arm9/overflow_bootstrap.s,$(wildcard src/arm9/*.s))
 
 OBJS_ARM7 := $(patsubst %.c,$(BUILD)/arm7/%.o,$(SRCS_ARM7)) \
              $(patsubst %.s,$(BUILD)/arm7/%.o,$(ASM_ARM7))
 OBJS_ARM9 := $(patsubst %.c,$(BUILD)/arm9/%.o,$(SRCS_ARM9)) \
              $(patsubst %.s,$(BUILD)/arm9/%.o,$(ASM_ARM9))
 
-.PHONY: all rom run check verify size clean host-test arm9-decompile sd-image release smoke-test configure-emulator nand-installer
+.PHONY: all rom run check verify size clean host-test arm9-decompile sd-image sd-image-installer release smoke-test configure-emulator nand-installer installer-test installer-retail nand-tool openlaunch-payload
 
 all: rom
 
@@ -222,13 +234,85 @@ $(SD_IMAGE): $(HELLO_ROM) scripts/make_sd_image.py
 
 sd-image: $(HELLO_ROM) $(SD_IMAGE)
 
+# Sandbox installer fixtures: the same SD image plus OLBOOT.NDS and a signed
+# sandbox INSTALL.KEY, so the guarded installer's six stages can be exercised
+# against a decrypted sandbox NAND. The default build/sdcard.img stays clean
+# (tests/test_installer.c asserts it ships no INSTALL.KEY).
+sd-image-installer: $(HELLO_ROM) scripts/make_sd_image.py
+	python3 scripts/make_sd_image.py --hello $(HELLO_ROM) \
+		--out $(SD_INSTALLER_IMAGE) --with-installer-fixtures
+	@echo "[*] sandbox installer SD image: $(SD_INSTALLER_IMAGE)"
+
 # ---- Guarded NAND installer variant (DISABLED by default) ---------------
 # Builds the full backup + flash pipeline into an isolated tree so the default
-# build/ (and its read-only guarantee, AGENTS.md §5) is untouched. The result
-# is build/nand/openlaunch.nds; flash it only via an authenticated package.
+# build/ (and its read-only guarantee, the project conventions) is untouched. The result
+# is build/nand/openlaunch.nds plus build/nand/sdcard_installer.img; the latter
+# is a sandbox-only test fixture, never a retail install package.
 nand-installer:
 	$(MAKE) BUILD=build/nand NAND_WRITE_DANGER=1 rom sd-image
+	$(MAKE) BUILD=build/nand sd-image-installer
 	@echo "[*] guarded installer ROM: build/nand/openlaunch.nds"
+	@echo "[*] sandbox fixtures   : build/nand/sdcard_installer.img"
+
+# Separate write-enabled TEST build. Arms the full eMMC write path but still
+# refuses retail encrypted NAND; intended for a decrypted sandbox NAND image or
+# emulator. Safest way to exercise the six stages and their error paths.
+installer-test:
+	$(MAKE) BUILD=build/installer-test NAND_WRITE_DANGER=1 rom sd-image
+	$(MAKE) BUILD=build/installer-test sd-image-installer
+	@echo "[*] write-enabled test ROM : build/installer-test/openlaunch.nds"
+	@echo "[*] sandbox fixtures       : build/installer-test/sdcard_installer.img"
+
+# DANGEROUS retail raw-write test build. See docs/hardware_notes.md 34.11.
+# It writes plaintext to a retail encrypted eMMC and can corrupt the System
+# Menu; the boot chain and any Unlaunch install are left intact. Use only on a
+# sacrificial or hardmod-recoverable console.
+installer-retail:
+	@echo "***********************************************************"
+	@echo "*** DANGER: building the RETAIL raw-write test image.   ***"
+	@echo "*** It can write PLAINTEXT to a retail eMMC, cannot     ***"
+	@echo "*** install a working image and may corrupt the System ***"
+	@echo "*** Menu. Use only on a sacrificial/hardmod console.    ***"
+	@echo "***********************************************************"
+	$(MAKE) BUILD=build/installer-retail NAND_WRITE_DANGER=1 RETAIL_NAND_WRITE=1 rom sd-image
+	python3 scripts/make_sd_image.py --hello build/installer-retail/hello_payload.nds \
+		--out build/installer-retail/sdcard_installer.img \
+		--with-installer-fixtures --retail-token
+	@echo "[*] RETAIL raw-write ROM   : build/installer-retail/openlaunch.nds"
+	@echo "[*] retail fixtures        : build/installer-retail/sdcard_installer.img"
+
+# ---- Host tool: offline NAND decrypt/encrypt/verify + layout info ---------
+# Reuses the shared src/common crypto. Never touches a console.
+NAND_TOOL := $(BUILD)/tools/dsi_nand_tool
+nand-tool:
+	@mkdir -p $(dir $(NAND_TOOL))
+	$(HOST_CC) $(HOST_CFLAGS) -O2 -o $(NAND_TOOL) tools/dsi_nand_tool.c \
+		src/common/dsi_crypto.c src/common/aes.c src/common/sha1.c \
+		src/common/mem.c
+	@echo "[*] offline NAND tool: $(NAND_TOOL)"
+
+# ---- OpenLaunch bootcode payload (Unlaunch-format container) -------------
+# Packs the ARM9/ARM7 binaries into the self-describing container that the
+# backup-launcher (HNAA) title.tmd expects, and wires the stage-2 TMD-overflow
+# callback slots to a small in-place bootstrap. See docs/openlaunch_payload.md.
+BOOTSTRAP_OBJ := $(BUILD)/boot/overflow_bootstrap.o
+BOOTSTRAP_BIN := $(BUILD)/overflow_bootstrap.bin
+PAYLOAD_BIN   := $(BUILD)/openlaunch_payload.bin
+
+$(BOOTSTRAP_OBJ): src/arm9/overflow_bootstrap.s
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS_ARM9) -c -o $@ $<
+
+$(BOOTSTRAP_BIN): $(BOOTSTRAP_OBJ)
+	$(OBJCOPY) -O binary -j .text $< $@
+
+$(PAYLOAD_BIN): $(ARM9_BIN) $(ARM7_BIN) $(BOOTSTRAP_BIN) \
+                scripts/make_openlaunch_payload.py
+	python3 scripts/make_openlaunch_payload.py --arm9 $(ARM9_BIN) \
+		--arm7 $(ARM7_BIN) --bootstrap $(BOOTSTRAP_BIN) \
+		--out $(PAYLOAD_BIN)
+
+openlaunch-payload: $(PAYLOAD_BIN)
 
 # ---- Reproducible release bundle (build/release/ + tar.gz) ---------------
 # Builds the diagnostic, live-chainload and autoboot variants (each in its own
@@ -239,7 +323,7 @@ release:
 	python3 scripts/make_release.py
 
 # ---- Verification harness ------------------------------------------------
-verify: $(ROM) $(HELLO_ROM) $(SD_IMAGE)
+verify: $(ROM) $(HELLO_ROM) $(SD_IMAGE) $(PAYLOAD_BIN)
 	python3 scripts/verify_rom.py --rom $(ROM) \
 		--expect-title OPENLAUNCH \
 		--expect-banner-title "OpenLaunch / Clean-Room TWL Bootloader" \
@@ -250,6 +334,7 @@ verify: $(ROM) $(HELLO_ROM) $(SD_IMAGE)
 		--arm9-elf $(PAYLOAD_ARM9_ELF) --arm7-elf $(PAYLOAD_ARM7_ELF) \
 		--arm9-bin $(PAYLOAD_ARM9_BIN) --arm7-bin $(PAYLOAD_ARM7_BIN)
 	python3 scripts/verify_sd_image.py --image $(SD_IMAGE) --hello $(HELLO_ROM)
+	python3 scripts/verify_openlaunch_payload.py --payload $(PAYLOAD_BIN)
 
 # ---- Memory footprint ----------------------------------------------------
 size: $(ARM9_ELF) $(ARM7_ELF)
@@ -362,6 +447,15 @@ HOST_SRCS_INSTALLER_UI := tests/test_installer_ui.c \
                           src/common/installer.c src/common/sha256.c \
                           src/common/nand.c src/common/fat_ro.c \
                           src/common/mem.c
+# AES-128 (FIPS-197) + SHA-1 (FIPS 180-4) core: the foundation for the DSi
+# per-console NAND crypto (suite 16).
+HOST_SRCS_CRYPTO := tests/test_crypto.c \
+                    src/common/aes.c src/common/sha1.c
+# DSi per-console NAND key derivation + AES-CTR, with real-dump known-answer
+# vectors (suite 17).
+HOST_SRCS_DSICRYPTO := tests/test_dsi_crypto.c \
+                       src/common/dsi_crypto.c src/common/aes.c \
+                       src/common/sha1.c src/common/mem.c
 
 host-test: $(SD_IMAGE)
 	@mkdir -p $(BUILD)
@@ -380,6 +474,8 @@ host-test: $(SD_IMAGE)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_theme $(HOST_SRCS_THEME)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_installer $(HOST_SRCS_INSTALLER)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_installer_ui $(HOST_SRCS_INSTALLER_UI)
+	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_crypto $(HOST_SRCS_CRYPTO)
+	$(HOST_CC) $(HOST_CFLAGS) -o $(BUILD)/host_test_dsi_crypto $(HOST_SRCS_DSICRYPTO)
 	$(BUILD)/host_test_mem
 	$(BUILD)/host_test_arm9
 	$(BUILD)/host_test_console
@@ -395,3 +491,5 @@ host-test: $(SD_IMAGE)
 	$(BUILD)/host_test_theme $(SD_IMAGE)
 	$(BUILD)/host_test_installer $(SD_IMAGE)
 	$(BUILD)/host_test_installer_ui
+	$(BUILD)/host_test_crypto
+	$(BUILD)/host_test_dsi_crypto

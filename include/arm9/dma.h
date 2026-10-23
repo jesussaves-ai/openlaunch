@@ -8,7 +8,7 @@
  *   @ref FUN_0602bf88 (0x0602BF88)  clear the auxiliary DMA block at
  *                                   0x04004100 (0x74 bytes)
  *
- * AGENTS.md §4.4: buffers handed to DMA must not live in DTCM, and the data
+ * the project conventions: buffers handed to DMA must not live in DTCM, and the data
  * cache must be flushed before a transfer starts.
  */
 #ifndef DSI_ARM9_DMA_H

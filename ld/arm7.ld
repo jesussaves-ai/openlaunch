@@ -6,7 +6,7 @@
  *
  *   entry == _start == 0x02380000
  *
- * Memory map (AGENTS.md §3):
+ * Memory map (the project conventions):
  *   MAIN_RAM  0x02380000  4 MiB Main RAM (256 KiB modelled here)
  *   IWRAM     0x03800000  64 KiB dedicated ARM7 WRAM (stacks)
  *

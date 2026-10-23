@@ -232,18 +232,26 @@ Built as `build/host_test_theme` (passes `build/sdcard.img` as `argv[1]`).
 * `nand_validate_layout()` + `nand_region_is_protected()` (`src/common/nand.c`):
   a valid PC MBR, signature/empty/no-FAT/too-small/out-of-bounds rejection, the
   protected boot prefix, and fail-closed overflow/NULL handling;
+* the image classifier (`nand_detect_unlaunch_footer()` /
+  `nand_classify_image()` / `nand_image_kind_text()`): a decrypted sandbox MBR,
+  an encrypted retail MBR, and a `no$gba`/Unlaunch `"DSi eMMC CID/CPU"` footer all
+  classify as expected (and the footer wins even beside a plaintext MBR);
 * the signed installer token (`installer_token_parse()` /
   `installer_token_verify()` / `installer_token_encode()`): round-trip,
   tamper detection, and magic/version/size/reserved/range rejection;
-* the pre-flight cascade (`installer_preflight()`), the region planner
-  (`installer_plan_region()`, including the protected/target-range/payload-size
-  vetoes) and the state machine (`installer_advance()`);
+* the pre-flight cascade (`installer_preflight()`), including the retail
+  `INSTALLER_ERR_ENCRYPTED_NAND` veto and its exact status text, the region
+  planner (`installer_plan_region()`, including the protected/target-range/
+  payload-size vetoes) and the state machine (`installer_advance()`);
 * the streaming engines with injected I/O: `installer_backup_stream()`
   (hash + sink agree with the source, read failure aborts) and
   `installer_flash_region()` (write + byte-for-byte read-back, digest check,
   dropped-write divergence);
+* `installer_backup_verify_sd()` against `build/sdcard.img`: a missing
+  `NANDBACK.BIN` and a silently dropped (read-only card) write are both caught
+  as `INSTALLER_ERR_BACKUP_MISMATCH`, while a correctly written file verifies;
 * the FAT root-file writer (`src/common/fat_rw.c`) against the
-  generated `build/sdcard.img`: 8.3 name validation, a 13000-byte multi-cluster
+  generated `build/sdcard.img`: 8.3 name validation, a 13312-byte multi-cluster
   write, duplicate-name rejection, read-back through the read-only parser, and
   `installer_sd_source_read()` zero-padding past EOF;
 * the progress hook (`installer_set_progress_hook()` /
@@ -304,7 +312,7 @@ and `build/hello_payload.nds`), which asserts:
   `--expect-banner-title`);
 * the `0x068` banner offset resolves to a block with a supported version, a
   correct CRC16 over `0x020..0x83F` and a decodable UTF-16LE title;
-* no eMMC/NAND write symbols (AGENTS.md §5) are present in the linker maps.
+* no eMMC/NAND write symbols (the project conventions) are present in the linker maps.
 
 It then runs `scripts/verify_sd_image.py`, which independently re-checks the
 generated `build/sdcard.img`: the MBR signature and FAT16 partition entry, the

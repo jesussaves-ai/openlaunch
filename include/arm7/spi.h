@@ -72,7 +72,7 @@ bool spi_firmware_id(u32 *out);
  * chip-select held across the whole transaction.
  *
  * This is the ARM7-side hardware primitive behind IPC_CMD_READ_FIRMWARE
- * (AGENTS.md architectural rule: the ARM9 must not drive SPI itself).
+ * (architectural rule: the ARM9 must not drive SPI itself).
  * Read-only; it never issues a program/erase command.
  */
 bool spi_firmware_read_buf(u32 address, void *dst, u32 len);

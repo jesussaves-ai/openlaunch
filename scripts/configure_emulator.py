@@ -66,6 +66,7 @@ INI_NAMES = ("melonDS.ini", "config.ini")
 TOML_TABLE_SD = "DSi.SD"
 TOML_KEY_ENABLE = "Enable"
 TOML_KEY_PATH = "ImagePath"
+TOML_KEY_READONLY = "ReadOnly"
 TOML_TABLE_EMU = "Emu"
 TOML_KEY_CONSOLE = "ConsoleType"
 
@@ -262,14 +263,21 @@ def _ini_set(text: str, key: str, value: str):
     return "\n".join(lines) + trailing, True
 
 
-def update_toml(text: str, sd_path: str, set_console: bool = True):
-    """Apply the OpenLaunch SD-card settings to a melonDS TOML document."""
+def update_toml(text: str, sd_path: str, set_console: bool = True,
+                read_only: bool = False):
+    """Apply the OpenLaunch SD-card settings to a melonDS TOML document.
+
+    ``read_only`` defaults to False: the guarded installer writes its mandatory
+    NANDBACK.BIN backup through the DSi SD card, and melonDS silently drops
+    writes to a read-only card. Pass ``read_only=True`` to opt back in.
+    """
     changed = False
     # The parent [DSi] table must be explicit (see _toml_ensure_table).
     text, step = _toml_ensure_table(text, "DSi")
     changed = changed or step
     for key, literal in ((TOML_KEY_ENABLE, "true"),
-                         (TOML_KEY_PATH, toml_quote(sd_path))):
+                         (TOML_KEY_PATH, toml_quote(sd_path)),
+                         (TOML_KEY_READONLY, "true" if read_only else "false")):
         text, step = _toml_set(text, TOML_TABLE_SD, key, literal)
         changed = changed or step
     if set_console:
@@ -301,7 +309,7 @@ def update_ini(text: str, sd_path: str, set_console: bool = True):
 
 
 def apply_target(path: str, kind: str, sd_path: str, *, create: bool,
-                 set_console: bool, backup: bool, dry_run: bool,
+                 set_console: bool, read_only: bool, backup: bool, dry_run: bool,
                  quiet: bool) -> bool:
     """Update one config file. Returns True when a change is (or would be) made."""
     existed = os.path.isfile(path)
@@ -314,7 +322,7 @@ def apply_target(path: str, kind: str, sd_path: str, *, create: bool,
         text, crlf = "", False
 
     if kind == "toml":
-        new_text, changed = update_toml(text, sd_path, set_console)
+        new_text, changed = update_toml(text, sd_path, set_console, read_only)
     else:
         new_text, changed = update_ini(text, sd_path, set_console)
 
@@ -352,12 +360,14 @@ def apply_target(path: str, kind: str, sd_path: str, *, create: bool,
 # ---------------------------------------------------------------------------
 # Isolated configuration (used by scripts/smoke_test_emu.py)
 # ---------------------------------------------------------------------------
-def write_isolated_config(config_home: str, sd_path: str) -> str:
+def write_isolated_config(config_home: str, sd_path: str,
+                          read_only: bool = False) -> str:
     """Write a throwaway melonDS config under ``config_home`` and return its path.
 
     This never reads or writes the user's real melonDS configuration; it is the
     same layout ``configure_emulator`` would produce, so the smoke test exercises
-    the exact settings the helper installs.
+    the exact settings the helper installs. The SD card is writable by default so
+    the installer's SD backup can persist.
     """
     cfg_dir = os.path.join(config_home, "melonDS")
     os.makedirs(cfg_dir, exist_ok=True)
@@ -376,7 +386,7 @@ def write_isolated_config(config_home: str, sd_path: str) -> str:
         "[%s]" % TOML_TABLE_SD,
         "%s = true" % TOML_KEY_ENABLE,
         "%s = %s" % (TOML_KEY_PATH, toml_quote(sd_path)),
-        "ReadOnly = true",
+        "%s = %s" % (TOML_KEY_READONLY, "true" if read_only else "false"),
         "",
     ]
     with open(cfg_path, "w", encoding="utf-8") as fh:
@@ -406,6 +416,9 @@ def main(argv) -> int:
                     help="do not write a .openlaunch.bak before updating")
     ap.add_argument("--no-console-type", action="store_true",
                     help="leave Emu.ConsoleType untouched")
+    ap.add_argument("--read-only", action="store_true",
+                    help="mark the emulated DSi SD card read-only (default is "
+                         "writable so the installer's SD backup can persist)")
     ap.add_argument("--check", action="store_true",
                     help="exit non-zero unless every target is already set")
     ap.add_argument("--quiet", action="store_true",
@@ -415,7 +428,7 @@ def main(argv) -> int:
     sd_path = os.path.abspath(args.sd)
 
     if args.isolated:
-        cfg = write_isolated_config(args.isolated, sd_path)
+        cfg = write_isolated_config(args.isolated, sd_path, args.read_only)
         log("wrote isolated config %s" % cfg, args.quiet)
         return 0
 
@@ -449,7 +462,8 @@ def main(argv) -> int:
                 pending = True
                 continue
             text, _ = read_text(path)
-            _, changed = (update_toml(text, sd_path, not args.no_console_type)
+            _, changed = (update_toml(text, sd_path, not args.no_console_type,
+                                      args.read_only)
                           if kind == "toml"
                           else update_ini(text, sd_path, not args.no_console_type))
             if changed:
@@ -462,6 +476,7 @@ def main(argv) -> int:
             path, kind, sd_path,
             create=not args.no_create,
             set_console=not args.no_console_type,
+            read_only=args.read_only,
             backup=not args.no_backup,
             dry_run=args.dry_run,
             quiet=args.quiet)

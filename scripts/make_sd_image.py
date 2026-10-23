@@ -24,6 +24,11 @@ canonical, unpatched ``"NONE"`` DLDI stub in their ARM9 segment (1 KiB
 reserved), so the bootloader's clean-room DLDI scanner detects it and patches it
 in RAM with the built-in read-only driver during staging.
 
+With ``--with-installer-fixtures`` the image additionally carries ``OLBOOT.NDS``
+(the installer payload) and a matching signed sandbox ``INSTALL.KEY`` so the
+guarded installer's six stages can be exercised against a decrypted sandbox
+NAND. The default image stays clean (it ships no ``INSTALL.KEY``).
+
 Nothing here needs ``sudo``, ``mount`` or ``mtools``: the MBR, BPB, FAT tables,
 root-directory entries and data clusters are written byte by byte.
 
@@ -37,6 +42,12 @@ import argparse
 import os
 import struct
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import make_installer_token
+except ImportError:  # pragma: no cover - only needed for --with-installer-fixtures
+    make_installer_token = None
 
 # --------------------------------------------------------------------------
 # Geometry (all sizes in 512-byte sectors unless stated otherwise)
@@ -407,7 +418,28 @@ class Fat16Writer:
 # Layout
 # --------------------------------------------------------------------------
 
-def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
+def build_fixture_token(payload_bytes: bytes, token_lba: int,
+                        retail: bool = False) -> bytes:
+    """Return a signed fixture INSTALL.KEY for `payload_bytes`.
+
+    Uses the shared packaging helper (scripts/make_installer_token.py) with the
+    sandbox flag (or, for ``retail=True``, the DANGER retail flag) set. The
+    default development key matches the build.
+    """
+    if make_installer_token is None:
+        raise SystemExit(
+            "installer fixtures require scripts/make_installer_token.py")
+    flags = (make_installer_token.FLAG_RETAIL if retail
+             else make_installer_token.FLAG_SANDBOX)
+    return make_installer_token.build_token(
+        payload_bytes, token_lba, make_installer_token.DEFAULT_KEY,
+        flags=flags)
+
+
+def build_image(hello_bytes: bytes, size_mib: int, *,
+                installer_fixtures: bool = False,
+                token_lba: int = 0x1000,
+                token_retail: bool = False) -> bytes:
     w = Fat16Writer(size_mib * 1024 * 1024 // SECTOR)
     cluster_bytes = SECTORS_PER_CLUSTER * SECTOR
 
@@ -469,6 +501,22 @@ def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
     splash_chain = [cursor + 14 + 2 * subapp_clusters + 2 * i
                     for i in range(splash_clusters)]
 
+    # Optional sandbox installer fixtures: OLBOOT.NDS (the payload the installer
+    # writes to the eMMC) and a matching signed INSTALL.KEY. Allocation resumes
+    # past every chain above, so the default image layout is unchanged.
+    fixture_cursor = cursor + 14 + 2 * subapp_clusters + 2 * splash_clusters
+    olboot_bytes = b""
+    token_bytes = b""
+    olboot_chain: list[int] = []
+    token_chain: list[int] = []
+    if installer_fixtures:
+        olboot_bytes = hello_bytes
+        token_bytes = build_fixture_token(olboot_bytes, token_lba, token_retail)
+        olboot_clusters = max(
+            1, (len(olboot_bytes) + cluster_bytes - 1) // cluster_bytes)
+        olboot_chain = [fixture_cursor + 2 * i for i in range(olboot_clusters)]
+        token_chain = [fixture_cursor + 2 * olboot_clusters]
+
     w.add_file(b"HELLO", b"NDS", hello_chain[0], len(hello_bytes),
                hello_bytes, hello_chain)
     w.add_file(b"BOOT", b"NDS", boot_chain[0], len(boot_bytes),
@@ -487,6 +535,11 @@ def build_image(hello_bytes: bytes, size_mib: int) -> bytes:
                BOOT_CFG_CONTENT, bootcfg_chain)
     w.add_file(b"SPLASH", b"RAW", splash_chain[0], len(splash_bytes),
                splash_bytes, splash_chain)
+    if installer_fixtures:
+        w.add_file(b"OLBOOT", b"NDS", olboot_chain[0], len(olboot_bytes),
+                   olboot_bytes, olboot_chain)
+        w.add_file(b"INSTALL", b"KEY", token_chain[0], len(token_bytes),
+                   token_bytes, token_chain)
     return w.finish()
 
 
@@ -500,6 +553,15 @@ def main(argv) -> int:
                     help="output image path")
     ap.add_argument("--size-mib", type=int, default=DEFAULT_SIZE_MIB,
                     help="image size in MiB (default %d)" % DEFAULT_SIZE_MIB)
+    ap.add_argument("--with-installer-fixtures", action="store_true",
+                    help="also drop OLBOOT.NDS + a signed sandbox INSTALL.KEY "
+                         "on the root so the guarded installer can be exercised")
+    ap.add_argument("--token-lba", type=lambda s: int(s, 0), default=0x1000,
+                    help="sandbox NAND LBA the fixture INSTALL.KEY targets "
+                         "(default 0x1000)")
+    ap.add_argument("--retail-token", action="store_true",
+                    help="DANGER: sign the fixture INSTALL.KEY with the retail "
+                         "flag (for `make installer-retail` testing only)")
     args = ap.parse_args(argv)
 
     if not os.path.isfile(args.hello):
@@ -509,7 +571,10 @@ def main(argv) -> int:
     if len(hello_bytes) < SECTOR:
         ap.error("%s is smaller than one sector" % args.hello)
 
-    image = build_image(hello_bytes, args.size_mib)
+    image = build_image(hello_bytes, args.size_mib,
+                        installer_fixtures=args.with_installer_fixtures,
+                        token_lba=args.token_lba,
+                        token_retail=args.retail_token)
     boot_bytes = make_boot_variant(hello_bytes)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
@@ -542,6 +607,14 @@ def main(argv) -> int:
     print("    OVERLAP.NDS 0x1000 bytes (ARM9 load 0x%08X)"
           % OVERLAP_ARM9_ADDR)
     print("    README.TXT  non-.nds filter sample")
+    if args.with_installer_fixtures:
+        token_bytes = build_fixture_token(hello_bytes, args.token_lba,
+                                          args.retail_token)
+        kind = "retail" if args.retail_token else "sandbox"
+        print("    INSTALL.KEY %6d bytes (%s token, target LBA 0x%X)"
+              % (len(token_bytes), kind, args.token_lba))
+        print("    OLBOOT.NDS  %6d bytes (installer payload = HELLO.NDS)"
+              % len(hello_bytes))
     return 0
 
 

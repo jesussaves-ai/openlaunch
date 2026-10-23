@@ -5,7 +5,7 @@
  *
  * The eMMC NAND controller is ARM7-only, so every read here is delegated over
  * IPC with IPC_STORAGE_DEV_EMMC, mirroring src/arm9/storage.c's SD path. The
- * module is strictly read-only (AGENTS.md §5): no write command is ever issued.
+ * module is strictly read-only (the project conventions): no write command is ever issued.
  */
 #include "arm9/nand_boot.h"
 #include "arm9/storage.h"

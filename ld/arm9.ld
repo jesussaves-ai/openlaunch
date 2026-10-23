@@ -12,7 +12,7 @@
  * and may overwrite them. Keeping the real code after the prefix makes the
  * image survive that.
  *
- * Memory map (AGENTS.md §3):
+ * Memory map (the project conventions):
  *   MAIN_RAM  0x02200000  16 MiB window (2 MiB modelled here)
  *   ITCM      0x01FF8000  32 KiB zero-waitstate code
  *   DTCM      0x0B000000  16 KiB data / stacks

@@ -11,7 +11,7 @@
  *      to the canonical firmware address and trigger IPC_CMD_BOOT_HANDOFF.
  *
  * The actual CPU handoff (branch into the staged image) is compiled in only
- * when ENABLE_CHAINLOAD_BOOT is defined, mirroring the AGENTS.md §5
+ * when ENABLE_CHAINLOAD_BOOT is defined, mirroring the project conventions
  * sandbox-first / default-off policy. Without it the whole staging and IPC
  * preparation runs and the function returns with result->dry_run set, so host
  * tests and diagnostics can exercise the pipeline without jumping into

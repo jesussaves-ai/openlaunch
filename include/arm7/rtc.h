@@ -6,7 +6,7 @@
  * Derived from FUN_0001cf1c, FUN_0001cf40, FUN_0001cf54 and FUN_0001cf60
  * (see docs/hardware_notes.md §6).
  *
- * SAFETY (AGENTS.md §5): the same serial transport reaches the BPTWL power
+ * SAFETY (the project conventions): the same serial transport reaches the BPTWL power
  * management IC. Only the documented RTC/PMIC registers may be written; never
  * probe undocumented addresses.
  */

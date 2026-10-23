@@ -7,7 +7,7 @@
  * The ARM9 never issues a hardware access here: each call packs the operation
  * into a parameterised IPC request, waits for the ARM7 acknowledgement, and
  * maintains the ARM9 data cache around the shared buffer. This is the only
- * ARM9 code allowed to request storage/SPI work (AGENTS.md architectural rule).
+ * ARM9 code allowed to request storage/SPI work (architectural rule).
  */
 #include "arm9/storage.h"
 #include "arm9/ipc.h"

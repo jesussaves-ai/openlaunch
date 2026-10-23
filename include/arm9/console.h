@@ -84,7 +84,7 @@ vu16 *console_map(void);
  * visible columns and rows outside [0, rows) are ignored.
  *
  * `map` is `vu16` so the hardware path keeps the volatile MMIO store
- * semantics required by AGENTS.md while tests can pass a plain buffer.
+ * semantics required by the project conventions while tests can pass a plain buffer.
  */
 void console_render_line(vu16 *map, u32 map_cols, int x, int y, u8 pal,
                          const char *str, u32 cols, u32 rows);

@@ -7,7 +7,7 @@
  * docs/hardware_notes.md (derived from the reference disassembly and from the
  * public DSi register map). Do not invent registers here.
  *
- * AGENTS.md §3: every field is volatile and reached through a typed pointer or
+ * the project conventions: every field is volatile and reached through a typed pointer or
  * the REGx() macro family from types.h.
  */
 #ifndef DSI_COMMON_DSI_HW_H
@@ -16,7 +16,7 @@
 #include "types.h"
 
 /* ===================================================================== */
-/* Memory map (TWL mode) — AGENTS.md §3                                   */
+/* Memory map (TWL mode) — the project conventions                       */
 /* ===================================================================== */
 #define ITCM_BASE        0x01FF8000u   /* 32 KiB  zero-waitstate code       */
 #define MAIN_RAM_BASE    0x02000000u   /* 16 MiB  (low 4 MiB in NDS mode)   */
@@ -33,7 +33,7 @@
 #define ARM7_ENTRY_ADDR  0x02380000u
 
 /* ===================================================================== */
-/* TWL system configuration (SCFG) — AGENTS.md §3                         */
+/* TWL system configuration (SCFG) — the project conventions             */
 /* ===================================================================== */
 /*
  * The whole 0x04004000 page only exists on a DSi. On a legacy DS it is

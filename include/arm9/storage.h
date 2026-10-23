@@ -3,7 +3,7 @@
  *
  * ARM9 client for the ARM7-gated storage and firmware devices.
  *
- * Architectural rule (AGENTS.md): the TMIO SD/eMMC controller and the firmware
+ * Architectural rule (the project conventions): the TMIO SD/eMMC controller and the firmware
  * SPI flash are reachable only from the ARM7. The ARM9 must never touch their
  * registers; it packages an operation into an IPC request and blocks for the
  * reply. These wrappers are the only sanctioned entry points on the ARM9 side.
@@ -34,7 +34,7 @@ bool arm9_storage_read_sectors(u32 device, u32 lba, void *dst, u32 count);
 #ifdef ENABLE_NAND_WRITE_DANGER
 /*
  * Write `count` 512-byte sectors from `src` to `device`
- * (only meaningful with ENABLE_NAND_WRITE_DANGER defined; AGENTS.md §5).
+ * (only meaningful with ENABLE_NAND_WRITE_DANGER defined; the project conventions).
  * `src` MUST be in shared Main RAM. The SD card is written for the mandatory
  * backup; the eMMC is written only after the ARM7 write guard is armed.
  * Returns true when the ARM7 reports IPC_IO_FLAG_OK.

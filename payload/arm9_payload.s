@@ -15,7 +15,7 @@
  *   4. spin in a VBlank-synchronised idle loop.
  *
  * No hardware register here is written outside the documented GBATEK map
- * (AGENTS.md §3); no NAND/eMMC access is performed.
+ * (the project conventions); no NAND/eMMC access is performed.
  */
     .syntax unified
     .arm
