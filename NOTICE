@@ -41,7 +41,18 @@ by this project; the original terms and copyrights apply.
 
    Used as a reference for the NDS bootstub / title-boot path.
 
-4. Build, test, and emulator tooling
+4. TWLMagician / official Unlaunch installer
+
+   Project:  https://github.com/R-YaTian/TWLMagician
+   License:  GNU General Public License, version 3.
+
+   Used as a reference for the official Unlaunch NAND install (append
+   `UNLAUNCH.DSI` to the real launcher's 520-byte `title.tmd`) and for the
+   bundled Unlaunch DSI used while tracing the official ARM9/ARM7 start
+   sequence. See `docs/unlaunch_reference.md`. No TWLMagician source is
+   vendored in this repository.
+
+5. Build, test, and emulator tooling
 
    BlocksDS / devkitARM, melonDS, Python, and other external tools are not
    vendored and remain under their own licenses.

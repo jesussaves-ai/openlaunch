@@ -178,6 +178,13 @@ Consequences:
    copy of the image. An ARM9-side code patch cannot reach the running ARM7.
    The remaining routes are the firmware's own IPC/boot-ring protocol or the
    boot stage where it runs from shared/NWRAM. See `docs/stage2_re.md`.
+   Official reference (`docs/unlaunch_reference.md`, TWLMagician + bundled
+   `UNLAUNCH.DSI`): Unlaunch's ARM9 entry waits for IPCSYNC nibble 14 and
+   acks `0x4E00`; its ARM7 writes 14/13 and then jumps to VRAM `0x06023C90`.
+   The ARM9 never loads the ARM7 - a real title boot has the loader start
+   both CPUs. Next: install the container as the **real launcher** (`HNAE`,
+   520-byte TMD prefix) or reproduce the loader's ARM7 start from the
+   overflow.
 
 ## 3. Recent work (C99 bootloader bring-up)
 
