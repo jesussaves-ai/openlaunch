@@ -41,13 +41,7 @@ by this project; the original terms and copyrights apply.
 
    Used as a reference for the NDS bootstub / title-boot path.
 
-4. FlashGBX (`FlashGBX/`)
-
-   The vendored FlashGBX environment retains its own license and the licenses
-   of its bundled Python packages. See the package metadata under
-   `FlashGBX/lib/.../site-packages/*.dist-info/`.
-
-5. Build, test, and emulator tooling
+4. Build, test, and emulator tooling
 
    BlocksDS / devkitARM, melonDS, Python, and other external tools are not
    vendored and remain under their own licenses.

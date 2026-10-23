@@ -363,5 +363,4 @@ You should have received a copy of the GNU General Public License along with
 this program. If not, see <https://www.gnu.org/licenses/>.
 
 Third-party components and reference material (including the Unlaunch/DSi
-firmware notes under `asm/` and the vendored `FlashGBX/` environment) keep their
-own terms; see [`NOTICE`](NOTICE).
+firmware notes under `asm/`) keep their own terms; see [`NOTICE`](NOTICE).
