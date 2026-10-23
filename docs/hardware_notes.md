@@ -2055,3 +2055,33 @@ blob is the remaining work before a full "replace Unlaunch" install.
 
 
 
+
+### Slot mux and soft-reset are controller-global (live finding)
+
+`SD_CARD_PORT_SELECT` (`0x02`) and `SD_SOFT_RESET` (`0xE0`) belong to the
+controller, not to a card instance. Two `sdmmc_t` instances (SD card and eMMC)
+therefore cannot each "own" the block:
+
+* writing `0xE0` resets **both** slots (melonDS' `DSi_SDHost::Reset()` calls
+  `Ports[0]->Reset()` and `Ports[1]->Reset()`), which discards each card's
+  identified state — the OCR/CSR bits in the emulator, and the selected card /
+  block length on hardware;
+* `0x02` selects the slot the **next** command reaches, so it has to be written
+  before every command, not only at open time.
+
+Symptom seen live (Unlaunch `bootcode.dsi` boot with `BOOT.NDS` autoboot): after
+the eMMC had been opened, every "SD" read silently addressed the eMMC. LBA 63
+returned zeros plus a stray `0x55`, `fat_mount()` failed, and the autoboot never
+found `BOOT.NDS`. In melonDS the reset had cleared the SD card's OCR CCS bit
+(bit 30), so the driver's block number was interpreted as a byte offset:
+`CMD17 arg=63` became `addr=63` instead of `addr=32256`.
+
+Fix (`src/arm7/sdmmc.c`, `src/arm7/ipc.c`):
+
+* `sdmmc_select_port()` writes `0x02` at the start of every command and before
+  the status/presence probe;
+* `ipc_sd_open()` programs and soft-resets the register block **once**
+  (`s_controller_ready`) and, for the second slot, only selects it and runs the
+  card identification.
+
+Regression test: `tests/test_sdmmc.c::test_port_select_before_every_command`.

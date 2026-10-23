@@ -142,11 +142,29 @@ static void tmio_read_response(const sdmmc_t *c, u32 words, u32 *resp)
 }
 
 /*
+ * Select the slot the next command must reach. The SD card and the onboard
+ * eMMC share one TMIO register block and are multiplexed by bit0 of
+ * TMIO_REG_PORTSEL, which is *global controller state*, not per-instance
+ * state. Selecting it only in sdmmc_init_controller() is therefore not
+ * enough: once the eMMC has been opened, every later "SD" command would still
+ * hit the eMMC until something reselects port 0. That was observed live -
+ * after the eMMC probe, reading LBA 0 through the SD path returned the
+ * (encrypted) NAND boot sector and FAT mounts failed. Reselect before every
+ * command so the two instances cannot interfere.
+ */
+void sdmmc_select_port(const sdmmc_t *c)
+{
+    SD_W16(c->base, TMIO_REG_PORTSEL,
+           (u16)(TMIO_PORTSEL_SD | (c->is_emmc ? 1u : 0u)));
+}
+
+/*
  * Push one command: argument, acknowledge stale IRQs, then the command word
  * itself. When `wait_done` is set, poll CMDRESPEND with a bounded timeout.
  */
 static bool tmio_issue(const sdmmc_t *c, u16 cmd_word, u32 arg, bool wait_done)
 {
+    sdmmc_select_port(c);
     SD_W32(c->base, TMIO_REG_ARG, arg);
     SD_W32(c->base, TMIO_REG_STATUS,
            SD_R32(c->base, TMIO_REG_STATUS) & TMIO_ST_ACK_MASK);
@@ -437,6 +455,9 @@ void sdmmc_get_status(const sdmmc_t *c, sdmmc_status_t *out)
     if (c == NULL || out == NULL) {
         return;
     }
+
+    /* The presence/protect bits belong to the currently selected slot. */
+    sdmmc_select_port(c);
 
     status = SD_R32(c->base, TMIO_REG_STATUS);
     wp = SD_R16(c->base, TMIO_REG_WRPROTECT);

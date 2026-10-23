@@ -195,8 +195,19 @@ void sdmmc_init_instance(sdmmc_t *c, uintptr_t base, bool is_emmc);
 void sdmmc_enable_clock(void);
 
 /*
+ * Select the SD slot (bit0=0) or the onboard eMMC (bit0=1) in the shared TMIO
+ * register block. The selection is controller-global state, not per-instance:
+ * call it before any command that must reach a specific slot. Safe to call
+ * repeatedly and cheap (one 16-bit register write).
+ */
+void sdmmc_select_port(const sdmmc_t *c);
+
+/*
  * Program the controller: enable the block clock/power, soft reset, card
  * option, clock, slot select.
+ *
+ * NOTE: the soft reset affects *both* slots (shared register block). Program
+ * it once per boot; for the second slot call sdmmc_select_port() instead.
  *
  * @ref FUN_0001d154  (address 0x01D154) — the reference reset/clock sequence
  * (against the SDIO controller; identical layout).

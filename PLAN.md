@@ -208,6 +208,22 @@ So the launcher-TMD installs (`HNAA`/`HNAE`) remain ARM9-only experiments,
 while `sd:/bootcode.dsi` is the supported launch path. See
 `docs/unlaunch_reference.md`.
 
+The full chain was then exercised end-to-end in melonDS:
+
+* payload built with `AUTOBOOT=1 CHAINLOAD_BOOT=1`, `bootcode.dsi` + `boot.nds`
+  on the SD card;
+* Unlaunch starts `bootcode.dsi` (both CPUs), the menu autoboots `boot.nds`,
+  the ARM7 performs the staged copy and branch, the ARM9 jumps to the new
+  entry;
+* the test payload takes over: **top screen green, bottom screen blue**.
+
+That run exposed a real driver bug: the TMIO slot mux (`0x02`) and soft reset
+(`0xE0`) are controller-global. Opening the eMMC reset the block and left the
+mux on port 1, so later "SD" reads silently read the NAND and the FAT mount
+failed. `sdmmc_select_port()` now reselects before every command and
+`ipc_sd_open()` resets the block only once; regression test in
+`tests/test_sdmmc.c`. See `docs/hardware_notes.md` §4.
+
 ## 3. Recent work (C99 bootloader bring-up)
 
 * **Register widths** — `POSTFLG` is now an 8-bit store (a 32-bit write clobbers

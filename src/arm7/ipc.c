@@ -146,6 +146,16 @@ static bool s_sd_ready;
 static bool s_emmc_ready;
 
 /*
+ * The two slots share one TMIO register block, and its soft-reset (0x0E0)
+ * resets the *whole* controller - both cards lose their identified state.
+ * Program/reset it exactly once, then only re-select the slot for later
+ * opens. Resetting again when the second slot is opened was observed live to
+ * wipe the first card's OCR (melonDS then treats block numbers as byte
+ * addresses) and every later mount/read failed.
+ */
+static bool s_controller_ready;
+
+/*
  * Program the requested slot and, when a card is present, run the read-only
  * card-identification sequence once. `*present` reports the slot state; the
  * controller instance is always returned so the caller can read its status.
@@ -161,9 +171,18 @@ static sdmmc_t *ipc_sd_open(bool emmc, bool *present)
 
     if (!*opened) {
         sdmmc_init_instance(sc, TMIO_SD_BASE, emmc);
-        (void)sdmmc_open(sc);
+        if (!s_controller_ready) {
+            /* First slot: full controller programming/reset. */
+            (void)sdmmc_open(sc);
+            s_controller_ready = true;
+        } else {
+            /* The block is already running: only select this slot. */
+            sdmmc_select_port(sc);
+            sc->initialized = true;
+        }
         *opened = true;
     }
+    sdmmc_select_port(sc);
 
     /*
      * Card-presence gate (read-only probe). The onboard eMMC is always

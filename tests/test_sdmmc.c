@@ -231,6 +231,46 @@ static void test_byte_addressed_argument(void)
     assert(g_arg == 4u * TMIO_BLOCK_BYTES);
 }
 
+/*
+ * The SD card and the eMMC share one TMIO register block; the slot is global
+ * controller state (TMIO_REG_PORTSEL). Selecting it only at open time is not
+ * enough: after the eMMC was used, "SD" reads silently addressed the eMMC
+ * (observed live as FAT mounts failing after the NAND probe). Every command
+ * must reselect its slot.
+ */
+static void test_port_select_before_every_command(void)
+{
+    sdmmc_t sd;
+    sdmmc_t emmc;
+    sdmmc_status_t st;
+    u8 buf[TMIO_BLOCK_BYTES];
+
+    mock_reset();
+    sdmmc_init_instance(&sd, 0u, false);
+    sdmmc_init_instance(&emmc, 0u, true);
+    sd.initialized = true;
+    sd.block_addressed = true;
+    sd.timeout = 4096u;
+    emmc.initialized = true;
+    emmc.block_addressed = true;
+    emmc.timeout = 4096u;
+
+    assert(sdmmc_read(&sd, 0u, buf, sizeof(buf)));
+    assert(MOCK16(TMIO_REG_PORTSEL) == TMIO_PORTSEL_SD);
+
+    assert(sdmmc_read(&emmc, 0u, buf, sizeof(buf)));
+    assert(MOCK16(TMIO_REG_PORTSEL) == TMIO_PORTSEL_EMMC);
+
+    /* Switching back must reselect the SD slot, not inherit the eMMC one. */
+    assert(sdmmc_read(&sd, 0u, buf, sizeof(buf)));
+    assert(MOCK16(TMIO_REG_PORTSEL) == TMIO_PORTSEL_SD);
+
+    /* The presence/protect probe is slot-sensitive as well. */
+    assert(sdmmc_read(&emmc, 0u, buf, sizeof(buf)));
+    sdmmc_get_status(&sd, &st);
+    assert(MOCK16(TMIO_REG_PORTSEL) == TMIO_PORTSEL_SD);
+}
+
 static void test_timeout(void)
 {
     sdmmc_t c;
@@ -397,6 +437,7 @@ int main(void)
     test_error();
     test_read_rejects_partial_block();
     test_get_status();
+    test_port_select_before_every_command();
     test_cmd_word_builder();
     test_status_decoders();
     test_ocr_decoders();

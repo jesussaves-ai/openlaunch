@@ -52,6 +52,25 @@ Notes:
   every DSiWare exploit loads `boot.nds`, while Unlaunch itself autoloads
   `bootcode.dsi`/`bootthis.dsi` (hotkey table in `unlaunch.htm`).
 
+### Full chain verified (2026-10-23)
+
+With the container as `bootcode.dsi`, a ROM as `boot.nds`, and a payload built
+with `AUTOBOOT=1 CHAINLOAD_BOOT=1`, the complete path was exercised in melonDS:
+
+1. Unlaunch starts `bootcode.dsi` as a DSi title (ARM9 `0x02200800`, ARM7
+   `0x02380000`, boot info `0x02FFE000` = our header);
+2. the menu finds `boot.nds`, mounts the SD volume and stages it;
+3. the loader publishes the header/argv and sends `IPC_CMD_BOOT_HANDOFF`;
+4. the ARM7 copies the staged image to its load address and branches; the ARM9
+   jumps to the new image's entry (`0x02000800` for the test payload);
+5. the test payload takes over: **top screen green, bottom screen blue**.
+
+The screens only turn green/blue once the staged payload runs, so this is an
+end-to-end proof of the dual-CPU handoff on the real loader path. Getting there
+required fixing a TMIO bug: the SD/eMMC slot mux and the controller soft-reset
+are global state, so opening the eMMC re-routed later "SD" reads to the NAND
+and the FAT mount failed (see `docs/hardware_notes.md` §4).
+
 ## Install method (what TWLMagician does)
 
 1. Locate the **real launcher** title:
