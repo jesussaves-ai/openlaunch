@@ -166,9 +166,14 @@ Consequences:
    IRQ vector `0x037D4B64` (shared WRAM), MBK6/7/8
    `0x00300000`/`0x00304000`/`0xB837F807`. Redirecting the vector to a loop at
    `0x0237F000` works; redirecting it to `0x02380000` still faults, so the
-   image's early setup needs debugging. This matches the official Unlaunch
-   mechanism (ARM9 remaps shared WRAM). Next: map `0x037D4B64` on the ARM9 and
-   single-step `0x02380000` with the ARM7 stub. See `docs/stage2_re.md`.
+   image's early setup needs debugging. Filling the container offset that
+   corresponds to `0x037F9304` with a branch did not reach it: the ARM7 PC is
+   in shared WRAM, while the container is in the ARM9's main-RAM overlay. The
+   ARM9 mirrors and the old-WRAM window read zero, and the ARM7 sits with
+   IRQs masked. This matches the official Unlaunch mechanism (ARM9 remaps
+   shared WRAM). Next: identify the shared-WRAM bank/window (or trace official
+   Unlaunch's ARM9 MBK writes) and restart/redirect the ARM7. See
+   `docs/stage2_re.md`.
 
 ## 3. Recent work (C99 bootloader bring-up)
 

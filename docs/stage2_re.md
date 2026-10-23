@@ -377,6 +377,16 @@ This matches the official Unlaunch description: the ARM9 starts the ARM7 by
 is to map the shared-WRAM bank containing `0x037D4B64` on the ARM9 and redirect
 that handler, and to single-step `0x02380000` with the ARM7 stub.
 
+The ARM7's PC `0x037F9304` is in **shared WRAM**, not the ARM9's container
+overlay (`0x037DF274`): filling the corresponding container offset with a
+branch did not reach it. The ARM9 mirrors at `0x027D4B64` / `0x027F9304` and
+the old-WRAM window (`0x03000000` under `WRAMSTAT` 0..3) all read zero, so the
+handler/code is not in main RAM or old WRAM that the ARM9 can see. The ARM7
+sits with CPSR `0x9F` (IRQ/FIQ masked) and may be halted/crashed after the
+overflow clobbered its stage-2 code. The next step is to identify the
+shared-WRAM bank/window from the stage-2 setup (or trace the official Unlaunch
+ARM9's MBK writes) and restart/redirect the ARM7.
+
 The remaining routes are:
 
 1. a hijack target in memory the ARM9 *can* write (main RAM or a firmware IPC
