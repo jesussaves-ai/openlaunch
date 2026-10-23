@@ -281,3 +281,37 @@ A minimal header (ARM9/ARM7 entry set, sizes and section tables zeroed so
 `0x02381A78` skips its section validation) was also tried on both routes; the
 stub still parks. So the gate has more state than the header fields alone
 (most likely the loader-side boot mode and the IPCSYNC handshake timing).
+
+## Official Unlaunch boots in melonDS - and does NOT start the launcher ARM7
+
+Installing the bundled `UNLAUNCH.DSI` into the real launcher (`HNAE`, stock
+520-byte TMD prefix) boots Unlaunch v2.0 in melonDS (it shows the splash and a
+harmless "clusters too small" NAND-FAT warning). The earlier `nand.bin` failure
+was the backup-launcher (`HNAA`) route: melonDS then falls back to the
+non-bootable DSi firmware file.
+
+An instrumented melonDS build (`/tmp/opencode/melonDS-src`, logs at
+`/tmp/opencode/trace.log`) shows only three interesting PCs during the whole
+official boot:
+
+```
+ARM9 0x037B8000  (stage-2 code, at reset)
+ARM7 0x037B8000  (stage-2 code, at reset)
+ARM7 0x037D4B64  (stage-2 IRQ dispatcher, IRQ mode)
+```
+
+* The title ARM7 entry `0x02380000` is **never executed**.
+* The boot manager (`0x02381124`/`0x037B9124`) and the parameter block at
+  `0x037DF578` are **never used**.
+* `0x02FFE000` stays zero.
+* The ARM7 ends up running the stage-2/system firmware (`0x037Dxxxx`), not the
+  launcher's ARM7 image.
+
+So a **launcher install does not start the launcher's ARM7** - the ARM7 is the
+system firmware, and Unlaunch's menu is ARM9-only. Our ARM7 image not starting
+is therefore expected for this install type, not a mapping/timing failure.
+
+Starting our ARM7 requires the **title-boot path** that Unlaunch uses when it
+launches a title from its menu (build the boot info, then trigger the system
+firmware's title boot). That is the next reverse target, in Unlaunch's ARM9
+menu/loader code rather than the boot path.
