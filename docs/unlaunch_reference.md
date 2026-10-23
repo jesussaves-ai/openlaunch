@@ -276,3 +276,8 @@ The official NAND does not boot under melonDS (the GDB stub never reaches its
 first `Enter`, even with break-on-startup), so the official loader state cannot
 be traced there. The remaining options are a different emulator/debug setup, a
 hardware trace, or a different takeover point.
+
+A minimal header (ARM9/ARM7 entry set, sizes and section tables zeroed so
+`0x02381A78` skips its section validation) was also tried on both routes; the
+stub still parks. So the gate has more state than the header fields alone
+(most likely the loader-side boot mode and the IPCSYNC handshake timing).
