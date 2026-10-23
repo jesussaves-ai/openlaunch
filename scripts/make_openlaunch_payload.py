@@ -21,6 +21,12 @@ decoded from a real retail dump and ``asm/UNLAUNCH.DSI``:
     0xF800  ARM7 binary
     ...      padded to the container size
 
+The header is a *complete* NDS/TWL header, matching UNLAUNCH.DSI: Nintendo logo
+at 0xC0, logo CRC16 at 0x15C, header CRC16 at 0x15E, card-control words,
+banner, unit code 0x03 and the DSi extended fields. The first 0x40 bytes are
+enough for the overflow, but stage 2 only considers the container bootable as
+a title (and can only start its ARM7) when the full header is valid.
+
 ## Placement note
 
 The overflow overwrites stage-2's own data/BSS (RAM ~0x037DF06C..0x037F3C70),
@@ -57,8 +63,11 @@ import os
 import struct
 import sys
 
+import pack_nds
+
 HEADER_SIZE = 0x4000
 SIZE_OF_UNLAUNCH = 196088   # payload; TMD = 520 + payload = 196608
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ---- Exploit geometry (must match docs/stage2_re.md) ----------------------
 BUF_BASE      = 0x037DF06C   # stage-2 fixed TMD buffer
@@ -112,6 +121,45 @@ def _slot_offsets():
     return offs
 
 
+def _build_nds_header(arm9: bytes, arm7: bytes, *, name: bytes,
+                      arm9_off: int, arm9_base: int, arm9_entry: int,
+                      arm7_off: int, arm7_base: int, arm7_entry: int,
+                      pad_to: int) -> bytes:
+    """Build a complete NDS/TWL header for the container.
+
+    This mirrors the header Unlaunch carries: Nintendo logo, both CRC16s,
+    card-control words, a banner and the DSi extended header. Stage 2 can only
+    boot the container as a title (and therefore start its ARM7) when this
+    header is valid; the old first-0x40-bytes-only header is enough for the
+    overflow but not for the title-boot path.
+    """
+    logo = pack_nds.load_logo(os.path.join(ROOT, "asm", "UNLAUNCH.DSI"))
+    hdr = bytearray(pack_nds.build_header(
+        (arm9_off, arm9_entry, arm9_base, len(arm9)),
+        (arm7_off, arm7_entry, arm7_base, len(arm7)),
+        True, logo, pad_to, pack_nds.device_capacity_for(pad_to),
+        title=b"OPENLAUNCH", game_code=b"OLNC", maker_code=b"\0\0",
+        banner_offset=0x840))
+
+    # Container identity (16 bytes) and the Unlaunch header fields.
+    hdr[0x00:0x10] = name[:16].ljust(16, b"\0")
+    hdr[0x10] = 0x00                # maker code low
+    hdr[0x11] = 0x00                # maker code high
+    hdr[0x12] = 0x03                # DSi-exclusive unit code
+    hdr[0x13] = 0x00                # encryption seed
+    struct.pack_into("<I", hdr, 0x1C, 0x00000001)
+
+    banner = pack_nds.build_banner("OpenLaunch")
+    hdr[0x840:0x840 + len(banner)] = banner
+
+    # Recompute after all patches above.
+    struct.pack_into("<H", hdr, 0x15C,
+                     pack_nds.crc16(hdr[0xC0:0xC0 + 0x9C]))
+    struct.pack_into("<H", hdr, 0x15E,
+                     pack_nds.crc16(bytes(hdr[:0x15E])))
+    return bytes(hdr)
+
+
 def build(arm9: bytes, arm7: bytes, *,
           name: bytes = b"OPENLAUNCH.DSI",
           arm9_off: int = 0x4000, arm9_base: int = 0x02200000,
@@ -130,17 +178,11 @@ def build(arm9: bytes, arm7: bytes, *,
                          % (arm7_off, len(arm7), pad_to))
 
     out = bytearray(pad_to)
-    out[HDR_NAME:HDR_NAME + 16] = name[:16].ljust(16, b"\x00")
-    struct.pack_into("<I", out, 0x10, 0x00030000)
-    struct.pack_into("<I", out, 0x1C, 0x00000001)
-    struct.pack_into("<I", out, HDR_ARM9_OFF, arm9_off)
-    struct.pack_into("<I", out, HDR_ARM9_ENTRY, arm9_entry)
-    struct.pack_into("<I", out, HDR_ARM9_BASE, arm9_base)
-    struct.pack_into("<I", out, HDR_ARM9_SIZE, len(arm9))
-    struct.pack_into("<I", out, HDR_ARM7_OFF, arm7_off)
-    struct.pack_into("<I", out, HDR_ARM7_ENTRY, arm7_entry)
-    struct.pack_into("<I", out, HDR_ARM7_BASE, arm7_base)
-    struct.pack_into("<I", out, HDR_ARM7_SIZE, len(arm7))
+    out[:HEADER_SIZE] = _build_nds_header(
+        arm9, arm7, name=name,
+        arm9_off=arm9_off, arm9_base=arm9_base, arm9_entry=arm9_entry,
+        arm7_off=arm7_off, arm7_base=arm7_base, arm7_entry=arm7_entry,
+        pad_to=pad_to)
     out[arm9_off:arm9_off + len(arm9)] = arm9
     out[arm7_off:arm7_off + len(arm7)] = arm7
 

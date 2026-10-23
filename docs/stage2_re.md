@@ -344,6 +344,14 @@ WRAM-A/B/C window at `0x03FC0000` returns zero, as do the stack words
 NWRAM, so the ARM9 cannot rewrite them. That rules out both the stack slide and
 the IRQ-vector hijack from the ARM9.
 
+A complete NDS/TWL header (Nintendo logo, both CRC16s, banner, unit code 3) was
+added to the container to match UNLAUNCH.DSI; stage 2 still reaches the ARM9
+through the overflow and the ARM7 markers stay zero. The genuine-header
+`--keep-prefix` shape on HNAA and an HNAE (official-Unlaunch) install were also
+tested; neither started the ARM7. A retail System Menu boot with a breakpoint
+on stage 2's `0x037B9AC4` hand-off did not hit it in the trace window, so the
+title-boot route needs an ARM7-side trace.
+
 The remaining routes are:
 
 1. a hijack target in memory the ARM9 *can* write (main RAM or a firmware IPC

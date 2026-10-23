@@ -4,8 +4,9 @@
 Independently re-checks the container produced by
 ``scripts/make_openlaunch_payload.py``:
 
-  1. the self-describing header (magic name, 0x00030000 / 0x00000001 words and
-     the ARM9/ARM7 offset/entry/base/size fields);
+  1. the self-describing header (magic name, 0x00030000 / 0x00000001 words,
+     the ARM9/ARM7 offset/entry/base/size fields, unit code 0x03 and both
+     NDS/TWL CRC16s);
   2. the ARM9 and ARM7 images fit and do not overlap;
   3. the two stage-2 callback slots (RAM 0x037F3870 / 0x037F3898) and the whole
      32-entry handler table (RAM 0x037F3B68) point at the same, in-container
@@ -49,6 +50,20 @@ def u32(buf, off):
     return struct.unpack_from("<I", buf, off)[0]
 
 
+def u16(buf, off):
+    return struct.unpack_from("<H", buf, off)[0]
+
+
+def crc16(data):
+    """Modbus/ARC CRC16 (seed 0xFFFF, polynomial 0xA001)."""
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
+    return crc & 0xFFFF
+
+
 def main(argv) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -78,6 +93,16 @@ def main(argv) -> int:
             "got 0x%08X" % u32(p, 0x10))
     c.check(u32(p, 0x1C) == 0x00000001, "header word 0x1C == 1",
             "got 0x%08X" % u32(p, 0x1C))
+    c.check(p[0x12] == 0x03, "unit code is DSi-exclusive (0x03)",
+            "got 0x%02X" % p[0x12])
+    c.check(u16(p, 0x15C) == crc16(p[0xC0:0xC0 + 0x9C]),
+            "Nintendo logo CRC16 is valid",
+            "stored 0x%04X, expected 0x%04X"
+            % (u16(p, 0x15C), crc16(p[0xC0:0xC0 + 0x9C])))
+    c.check(u16(p, 0x15E) == crc16(p[:0x15E]),
+            "NDS header CRC16 is valid",
+            "stored 0x%04X, expected 0x%04X"
+            % (u16(p, 0x15E), crc16(p[:0x15E])))
 
     arm9_off = u32(p, 0x20)
     arm9_entry = u32(p, 0x24)

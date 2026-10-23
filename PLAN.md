@@ -158,9 +158,12 @@ Consequences:
    vector at `0x03FFFFFC` (written by the reference `FUN_00020b58`) is equally
    unreachable: it reads zero through every NWRAM window. Both are ARM7-private
    aliases, so the stack slide and the IRQ-vector hijack are blocked from the
-   ARM9. Next: a writable target in main RAM or a firmware IPC handler, an IPC
-   command that restarts the ARM7, or a real title install so stage 2 starts
-   both CPUs. See `docs/stage2_re.md`.
+   ARM9. A full NDS/TWL header (logo, both CRC16s, banner, unit code 3) was
+   added to the container to match UNLAUNCH.DSI; the genuine-header HNAA and
+   HNAE installs were also tested and none started the ARM7. Next: a writable
+   target in main RAM or a firmware IPC handler, an IPC command that restarts
+   the ARM7, or a real title install so stage 2 starts both CPUs. See
+   `docs/stage2_re.md`.
 
 ## 3. Recent work (C99 bootloader bring-up)
 

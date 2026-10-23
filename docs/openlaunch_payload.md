@@ -90,6 +90,11 @@ ARM9/ARM7 flat images to their linked bases, writes the ARM7 takeover marker at
 `0x0237FFF0`, cleans/invalidates the caches and branches to the ARM9 entry. The
 ARM9 entry then arms the jumpslide (see [`stage2_re.md`](stage2_re.md)). Building the payload is:
 
+The header at `0x0000` is a **complete NDS/TWL header** matching
+`UNLAUNCH.DSI`: Nintendo logo, logo/header CRC16, card-control words, a banner
+and unit code `0x03`. The first 0x40 bytes are enough for the overflow, but
+stage 2 needs the valid header to consider the container bootable as a title.
+
 ```
 make openlaunch-payload          # -> build/openlaunch_payload.bin
 ```
@@ -127,7 +132,9 @@ changed. `scripts/dsi_nand_install.py verify` re-checks a decrypted image.
 * the container is built and written, and reads back byte-exact;
 * a full `decrypt -> edit -> encrypt` round-trips and is sector-scoped;
 * the container carries the overflow bootstrap + slot/table pointers, verified
-  structurally (`make verify`).
+  structurally (`make verify`);
+* the container carries a complete, CRC-valid NDS/TWL header (Nintendo logo,
+  logo/header CRC16, banner, unit code `0x03`) matching `UNLAUNCH.DSI`.
 
 **Remaining (validation, not construction):**
 * the exploit entry is **reproduced and observed end-to-end in melonDS**: the
@@ -143,9 +150,11 @@ changed. `scripts/dsi_nand_install.py verify` re-checks a decrypted image.
   ARM7 writes a ready marker at `0x0237FFF4`, which is the emulator/GDB check.
   The mechanism is adapted from Astronaut (GPL-3.0-or-later) and is documented
   in [`stage2_re.md`](stage2_re.md). A melonDS run shows the slide arms but the
-  firmware ARM7 stack is at `0x03FFFFC0`, not in Astronaut's window, so the
-  ARM7 does not start yet; the old IPCSYNC route remains as
-  `make ARM7_HANDOFF=1` for the title-boot case.
+  firmware ARM7 stack is at `0x03FFFFC0` and its IRQ vector at `0x03FFFFFC`;
+  both are ARM7-private aliases unreachable through NWRAM, so the ARM7 does not
+  start yet. The container now carries a full valid NDS/TWL header, and the
+  genuine-header HNAA and HNAE installs were tested; none started the ARM7. The
+  old IPCSYNC route remains as `make ARM7_HANDOFF=1` for the title-boot case.
 * `nand_patched.bin` is still **not hardware-validated**: flash only on a console
   with a full NAND backup (docs §34).
 
