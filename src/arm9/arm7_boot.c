@@ -85,10 +85,40 @@ void arm9_boot_arm7(void)
 
     /* ---- publish, then ring the ARM7 ---- */
     dsi_memcpy((void *)(uintptr_t)ARM9_BOOTINFO_ADDR, hdr, ARM9_BOOTINFO_SIZE);
+    /* The stage-2 ARM7 boot path reads its header from 0x02FFE000. */
+    dsi_memcpy((void *)(uintptr_t)0x02FFE000u, hdr, ARM9_BOOTINFO_SIZE);
 
+    /*
+     * Stage-2 ARM7 boot: the ARM7 is parked in its message-ring consumer.
+     * The ring is fed by IPC command 2 (argument = byte in the upper bits),
+     * and the boot path expects 4, then 5, then 6.
+     */
+    REG16(IPC_FIFOCNT) = 0x8001u;
+    {
+        static const u8 msgs[3] = {4u, 5u, 6u};
+        u32 m;
+        for (m = 0u; m < 3u; m++) {
+            volatile u32 d;
+            for (d = 0u; d < 0x00040000u; d++) {
+            }
+            REG32(IPC_FIFOSEND) = 2u | ((u32)msgs[m] << 6);
+        }
+    }
+
+    /*
+     * Echo the ARM7 boot handshake: it writes a nibble and waits for the
+     * ARM9 to write the same one (6 -> 5 -> 8 -> 4 -> 0 in the live trace).
+     */
     for (i = 0; i < IPCSYNC_POLL_MAX; i++) {
-        if ((REG16(IPC_SYNC) & 0xFFu) == IPCSYNC_ARM7_READY) {
-            break;
+        u16 ips = REG16(IPC_SYNC);
+        u8 arm7 = (u8)(ips & 0x0Fu);
+        u8 ours = (u8)((ips >> 8) & 0x0Fu);
+
+        if (arm7 != ours) {
+            REG16(IPC_SYNC) = (u16)((u16)arm7 << 8);
+            if (arm7 == 0u) {
+                break;
+            }
         }
     }
     REG16(IPC_SYNC) = IPCSYNC_ARM7_GO;
