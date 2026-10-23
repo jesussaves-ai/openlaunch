@@ -89,6 +89,13 @@ void arm9_boot_arm7(void)
     dsi_memcpy((void *)(uintptr_t)0x02FFE000u, hdr, ARM9_BOOTINFO_SIZE);
 
     /*
+     * The ARM7's boot path keeps the 0x02FFE000 header only when it sees
+     * IPCSYNC 6; otherwise it memsets the header.  Announce it before the
+     * ring messages so the gate passes.
+     */
+    REG16(IPC_SYNC) = 0x0600u;
+
+    /*
      * Stage-2 ARM7 boot: the ARM7 is parked in its message-ring consumer.
      * The ring is fed by IPC command 2 (argument = byte in the upper bits),
      * and the boot path expects 4, then 5, then 6.
@@ -116,6 +123,12 @@ void arm9_boot_arm7(void)
 
         if (arm7 != ours) {
             REG16(IPC_SYNC) = (u16)((u16)arm7 << 8);
+            /*
+             * The ARM7 boot path memsets 0x02FFE000 before its handshake;
+             * republish our header on every ack so the boot manager sees it
+             * when it builds the jump block.
+             */
+            dsi_memcpy((void *)(uintptr_t)0x02FFE000u, hdr, ARM9_BOOTINFO_SIZE);
             if (arm7 == 0u) {
                 break;
             }
