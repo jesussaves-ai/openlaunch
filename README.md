@@ -266,6 +266,12 @@ our header (`"OPENLAUNCH"`, ARM9 `0x02200800`/`0xB33C`, ARM7
 `docs/unlaunch_reference.md` for the full trace and why the launcher-TMD route
 reaches only the ARM9.
 
+With `make AUTOBOOT=1 CHAINLOAD_BOOT=1 rom`, the menu also autoboots
+`sd:/boot.nds` through the dual-CPU chainloader. That path is verified
+end-to-end: the staged test payload takes over the screen (green/blue), and
+the ARM7 performs the staged copy + branch before the ARM9 jumps to the new
+entry.
+
 ## Repository layout
 
 ```text
