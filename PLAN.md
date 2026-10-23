@@ -174,7 +174,11 @@ Consequences:
    ARM9 mirrors and the old-WRAM window read zero, and the ARM7 sits with
    IRQs masked. This matches the official Unlaunch mechanism (ARM9 remaps
    shared WRAM). Next: identify the shared-WRAM bank/window (or trace official
-   Unlaunch's ARM9 MBK writes) and restart/redirect the ARM7. Reference clue:
+   Unlaunch's ARM9 MBK writes) and restart/redirect the ARM7. Matching the
+   ARM9's MBK6-8 to the ARM7's exposes WRAM-C at `0x03800000`, but a jump at
+   the PC-mapped `0x03801304` had no effect; the ARM7 appears halted/crashed.
+   Setting PC/CPSR through melonDS's GDB `P` command segfaulted the emulator,
+   so register-level restart needs no$gba or a patched stub. Reference clue:
    the disassembled ARM9 uses MBK1/MBK6/MBK9 (WRAM-A), not the WRAM-C slice
    (literals near `0x060274F0`, code near `0x06025988`). See
    `docs/stage2_re.md`.

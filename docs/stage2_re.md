@@ -410,6 +410,13 @@ next attempt is to write an ARM7 entry/jump into the now-visible WRAM-C region
 (`0x03800000`) and see whether the stage-2 ARM7 executes it, or to trace an
 official Unlaunch NAND through the same stubs.
 
+The matched window exposes WRAM-C at `0x03800000`. The live ARM7 PC
+`0x037F9304` would map to `0x03801304` if the ARM7's window starts at
+`0x037F8000`, but writing a jump there produced no effect - consistent with the
+ARM7 being halted/crashed (CPSR `0x9F`) rather than fetching that window.
+Trying to set PC/CPSR through the melonDS GDB `P` command **segfaulted
+melonDS 1.1.r76**, so register-level restart needs no$gba or a patched stub.
+
 The remaining routes are:
 
 1. a hijack target in memory the ARM9 *can* write (main RAM or a firmware IPC
