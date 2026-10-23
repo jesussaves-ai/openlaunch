@@ -63,6 +63,22 @@ bool arm9_ipc_try_recv(u32 *out)
  * words; the reply header carries the payload word count in bits 16-19, so the
  * caller does not need to know the size of each command's reply.
  */
+/*
+ * Send one word, giving the peer up to `timeout` polls to make FIFO room.
+ * Returns false on timeout so a silent peer cannot wedge the caller.
+ */
+static bool arm9_ipc_send_bounded(u32 channel, u32 payload, u32 timeout)
+{
+    u32 i;
+
+    for (i = 0u; i < timeout; i++) {
+        if (arm9_ipc_try_send(channel, payload)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 u32 arm9_ipc_query_args(u32 channel, u32 cmd, const u32 *args, u32 nargs,
                         u32 *reply, u32 max_words, u32 timeout)
 {
@@ -71,9 +87,20 @@ u32 arm9_ipc_query_args(u32 channel, u32 cmd, const u32 *args, u32 nargs,
     bool have_header = false;
     u32 i;
 
-    arm9_ipc_send(channel, ipc_request_header(cmd, nargs));
+    /*
+     * Bounded sends: arm9_ipc_send() spins forever while the send FIFO is
+     * full, so a peer that is silent (or not speaking our protocol) deadlocks
+     * the caller once 16 words are queued. Give up within `timeout` polls and
+     * report a timeout instead of wedging the console.
+     */
+    if (!arm9_ipc_send_bounded(channel, ipc_request_header(cmd, nargs), timeout)) {
+        return 0u;
+    }
     for (i = 0u; i < nargs; i++) {
-        arm9_ipc_send(channel, (args != NULL) ? args[i] : 0u);
+        if (!arm9_ipc_send_bounded(channel, (args != NULL) ? args[i] : 0u,
+                                   timeout)) {
+            return 0u;
+        }
     }
 
     for (i = 0u; i < timeout; i++) {
