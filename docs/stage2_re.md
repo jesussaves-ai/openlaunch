@@ -239,15 +239,20 @@ loader 0x037BAA18 x2 (HNAE, HNAA), read helper 0x037B9C30 x4 (the overflow)
 -> 0x02200800   OpenLaunch ARM9 entry          [reached]
 ```
 
-### The ARM7 hand-off (mechanism recovered; not yet effective)
+### The ARM7 hand-off (mechanism recovered; not reachable from the overflow)
 
 The overflow is entirely on the ARM9: the ARM7 keeps running the system
-firmware. Verified in melonDS with a marker write at the top of our
-`arm7_main()` (read back through the ARM9 stub): the marker never appears, so
-our ARM7 image is staged at `0x02380000` by the stub but never executed.
+firmware. Verified in melonDS with a marker write at the top of our `arm7_main()`
+(read back through the ARM9 stub): the marker never appears.
 
-The reference does the same (`unlaunch.dsi`'s ARM9 has **no** reference to
-`0x02380000`), so it also relies on the existing firmware ARM7.
+**The reference is different, and the difference is the whole point.** Unlaunch
+ships its **own** ARM7 image: `asm/UNLAUNCH.DSI`'s header gives ARM7 ROM offset
+`0xF800`, entry `0x02380000` and size `0x205F8`, and 342 of its functions (the SPI,
+RTC, timer, TMIO and IPC dispatcher we have been porting into `src/arm7/`) live
+there. It gets that ARM7 running because unlaunch is installed as the *launcher*,
+so boot stage 2 starts it - and its ARM7 - through the ordinary title-boot flow.
+OpenLaunch reaches control through the TMD-overflow instead, which *bypasses*
+exactly that flow - hence no ARM7.
 
 **The trigger**, recovered from the decrypted stage 2 (`docs` pipeline +
 `scripts/dsi_stage2_decrypt.py`), is a two-sided handshake:
@@ -267,10 +272,9 @@ So the intended sequence is: publish an NDS header at `0x02FFFE00` whose offset
 `0x02380000`), copies 352 bytes to `0x02FFFE00`, then waits for `IPCSYNC == 6`
 (bounded) and writes `0x600`.
 
-**Status: the hand-off is a dead end — the ARM7 is not listening.** The header is
-published correctly (melonDS reads `0x02380000` back from `0x02FFFE34`) and the
-staged ARM7 image is in place at `0x02380000`, but the ARM7 never runs it, and a
-GDB-stub read of ARM7 state at the exploit shows exactly why:
+**Status: not reachable from the overflow.** The header is published correctly
+(melonDS reads `0x02380000` back from `0x02FFFE34`) but the ARM7 never runs it, and
+a GDB-stub read of ARM7 state at the exploit shows why:
 
 * the ARM7's IPCSYNC rounds are driven by its own **boot-mode message ring**
   (`0x037DF6D8` = write index, `0x037DF6DC` = read index, 8-byte ring at
@@ -284,22 +288,25 @@ GDB-stub read of ARM7 state at the exploit shows exactly why:
 
 So no ARM9-side IPCSYNC write can make the running firmware ARM7 jump: the
 decision to boot a title ARM7 lives in the ARM7's **boot** path, which has long
-since run. Reaching it would mean re-entering the ARM7's boot flow (an ARM7
-reset), which the ARM9 cannot trigger and which would be far riskier than useful.
-This is precisely why the reference (`unlaunch.dsi`) never boots its own ARM7 and
-instead talks to the firmware ARM7.
+since run. Reproducing what stage 2 does would mean getting the ARM7 back into its
+boot flow (an ARM7 reset), which the ARM9 cannot trigger and which would be far
+riskier than useful.
 
 `arm9_boot_arm7()` is therefore kept but off by default (`make ARM7_HANDOFF=1`),
-and the work moves to option (2): driving the **firmware** ARM7's own IPC
-services from the ARM9. Two consequences matter for that:
+and the stub no longer stages an ARM7 image either (see
+`src/arm9/overflow_bootstrap.s`). Notes for any future attempt:
 
-* our staged ARM7 image at `0x02380000` overwrites the firmware ARM7's own image
-  in shared WRAM, so staging it (and thus the payload's ARM7 section) must be
-  dropped before the ARM9 can rely on the firmware ARM7;
+* `0x02380000` is **free** at the exploit - a GDB-stub read returns all zero, so
+  the stage-2 ARM7 image has already been consumed/relocated and the *running*
+  ARM7's code is not there (almost certainly relocated into ARM7 IRAM at
+  `0x03800000`). Staging an image at `0x02380000` is therefore a no-op, which is
+  why the copy was removed;
 * the ARM9's IPC registers follow GBATEK (`IPCSYNC`/`IPCFIFOCNT`/`IPCFIFOSEND` at
-  `0x04000180`/`84`/`88`, ARM9 receive at `0x04100000`), but the firmware ARM9
-  itself receives at `0x04100010` in at least one path, so the receive-register
-  base must be confirmed against the firmware before trusting our IPC layer.
+  `0x04000180`/`84`/`88`, ARM9 receive at `0x04100000`) and match unlaunch's own
+  ARM9 (its `entry` writes `IPCFIFOCNT` at `0x04000184`), so our register layout is
+  correct. The menu's IPC self-test times out because it speaks *unlaunch's* ARM7
+  protocol (`include/common/ipc_protocol.h`, dispatcher `FUN_0001f21c`) and only
+  unlaunch's own ARM7 implements that - the system firmware ARM7 does not.
 
 `make openlaunch-payload` builds the wired container; `make verify` and
 `scripts/verify_openlaunch_payload.py` check it structurally. The remaining item

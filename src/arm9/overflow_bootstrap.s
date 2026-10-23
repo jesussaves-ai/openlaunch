@@ -11,8 +11,8 @@
  * Stage 2 later calls the (now clobbered) callback at RAM 0x037F3870 / 0x037F3898
  * through `blx`. This stub is what those pointers point at: it runs *in place*
  * from inside the overlaid payload (RAM 0x037F0EC0 = payload offset 0x11C4C),
- * relocates the real OpenLaunch ARM9/ARM7 images to their linked addresses and
- * jumps to the ARM9 entry.
+ * relocates the OpenLaunch ARM9 image to its linked address and jumps to the ARM9
+ * entry. (The container's ARM7 image is deliberately not staged; see below.)
  *
  * The literal PAYLOAD_BASE below must match scripts/make_openlaunch_payload.py
  * (PAYLOAD_BASE) and the buffer base in docs/stage2_re.md.
@@ -21,7 +21,7 @@
  *   - enters SVC mode with IRQ/FIQ masked;
  *   - disables the MMU and the ARM946 I/D caches (CP15 c1), drains the write
  *     buffer and invalidates the TLB/I-cache (CP15 c7/c8);
- *   - copies the ARM9 and ARM7 flat images into Main RAM;
+ *   - copies the ARM9 flat image into Main RAM (the ARM7 image is not staged);
  *   - branches to the ARM9 entry point (never returns).
  */
     .syntax unified
@@ -56,12 +56,14 @@ overflow_bootstrap_start:
     ldr     r1,  [r9, #HDR_ARM9_SIZE]   @ len
     bl      copy_words
 
-    /* ARM7 image -> arm7 base (staged for the later IPC handoff). */
-    ldr     r1,  [r9, #HDR_ARM7_OFF]
-    add     r2,  r9, r1
-    ldr     r3,  [r9, #HDR_ARM7_BASE]
-    ldr     r1,  [r9, #HDR_ARM7_SIZE]
-    bl      copy_words
+    /*
+     * The container also carries an ARM7 image (unlaunch's does too), but we do
+     * NOT stage it. Running an ARM7 requires stage 2's title-boot flow, which the
+     * overflow deliberately bypasses, so the image would never execute - and
+     * copying it to its linked base 0x02380000 overwrites the firmware ARM7's own
+     * loaded image in shared RAM, damaging a live CPU for no benefit. Staging
+     * stays off until the hand-off is actually solved; see docs/stage2_re.md.
+     */
 
     /* Make the fresh code visible, then hand off to the ARM9 entry. */
     mov     r0, #0

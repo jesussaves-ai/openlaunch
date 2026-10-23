@@ -139,15 +139,17 @@ Consequences:
    `ENABLE_CHAINLOAD_BOOT` (dry run by default) — see
    docs/hardware_notes.md §25. Remaining polish: a hardware/emulator run of a
    real multi-MiB image and the ARM7-WRAM self-copy edge case.)*
-8. ARM7 hand-off for the overflow boot — **concluded not viable**. The trigger is
-   the ARM7's *boot-mode* flow: its boot path `0x02380164` consumes messages
-   `4`/`5`/`6` from a ring at `0x037DF6D8`, and only on `6` calls the boot manager
-   `0x02381000`/`0x02381124`, which rendezvouses with the ARM9's `0x037B9AC4`.
-   At the exploit that ring is untouched, so the ARM7 is already past that flow:
-   no ARM9-side write can make the running firmware ARM7 jump. Implemented and
-   gated (`make ARM7_HANDOFF=1`, `src/arm9/arm7_boot.c`) for the record. The way
-   forward is option (2) — drive the firmware ARM7's own IPC services. See
-   `docs/stage2_re.md`.
+8. ARM7 hand-off for the overflow boot — **not reachable from the overflow**.
+   Unlaunch runs its *own* ARM7 because it is installed as the launcher and boot
+   stage 2 starts both CPUs via the ordinary title-boot flow; the TMD-overflow
+   bypasses exactly that flow. The ARM7's IPCSYNC rounds come from its *boot* path
+   (`0x02380164` consumes messages `4`/`5`/`6` from a ring at `0x037DF6D8`, then
+   `0x02381000`/`0x02381124` rendezvous with the ARM9's `0x037B9AC4`), and at the
+   exploit that ring is untouched - the ARM7 is already past it. `0x02380000` is
+   free/zero, so the stub no longer stages an ARM7 image there. Implemented and
+   gated (`make ARM7_HANDOFF=1`, `src/arm9/arm7_boot.c`) for the record. The open
+   question is whether to boot OpenLaunch the way unlaunch does (as a title, so
+   stage 2 starts the ARM7). See `docs/stage2_re.md`.
 
 ## 3. Recent work (C99 bootloader bring-up)
 
