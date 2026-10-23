@@ -224,16 +224,20 @@ void arm9_main(void)
      *     overflow build the ARM7 sat at an invalid PC and returned S04 on
      *     continue; skipping mbk_init() left it healthy in the BIOS Halt loop.
      *
-     *     Therefore: on the overflow path keep stage 2's slot ownership and
-     *     apply only the clock/extended-RAM configuration. The regular
-     *     homebrew/.nds path still runs the canonical mbk_init().
+     *     The same applies to a real-launcher/title boot: the loader has
+     *     already assigned NWRAM for the running stage-2 ARM7, and its boot
+     *     manager reads a parameter block from NWRAM-C. Rewriting MBK1..5
+     *     moves that block out from under it, so the ARM7 reads zeros and
+     *     never jumps to the title entry.
+     *
+     *     Therefore keep the loader's/stage 2's slot ownership and apply only
+     *     the clock/extended-RAM configuration. scfg_init() remains available
+     *     for callers that want the canonical ownership on a bare .nds boot.
      */
-    if (arm7_taken_over || overflow_boot) {
-        (void)scfg_unlock();
-        scfg_apply_boot_config();
-    } else {
-        (void)scfg_init();
-    }
+    (void)arm7_taken_over;
+    (void)overflow_boot;
+    (void)scfg_unlock();
+    scfg_apply_boot_config();
 
     /* 3. DMA register blocks are cleared before any user of them. */
     arm9_dma_reset();

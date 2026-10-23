@@ -120,3 +120,32 @@ image loaded, but the stage-2 ARM7 boot manager still has to finish its
 private-WRAM loader before it jumps to the title entry. The next reverse
 targets are `0x0238103C` onward (post-handshake setup) and the private-WRAM
 loader at `0x03FFF6D8`/`0x03FFF7D0`.
+
+## The final jump: parameter block at `0x037DF578`
+
+The stage-2 ARM7 boot manager ends by calling a generated stub at `0x03FFF600`
+with `r5 = 0x03FFF600`. The stub:
+
+1. copies `0xE0` bytes from **`0x037DF578`** to `0x03FFF4F0`;
+2. writes IPCSYNC `0x400` and waits for 4 (echo);
+3. copies the segment list and calls the memcpy/memset helpers;
+4. writes IPCSYNC `0x500` and waits for 5;
+5. waits for `VCOUNT == 0`, writes IPCSYNC `0x000` and waits for **0**;
+6. does `ldm` on the copied block and jumps to the dword at **`+0x10`**.
+
+So the ARM9 must place the ARM7 entry (`0x02380000`) at
+`0x037DF578 + 0x10`. The handshake echo sequence observed live is
+`6, 5, 8, 4, 5, 4, 5, 0`.
+
+Important: the ARM7's `0x037DF578` is in **NWRAM-C part 3** (window C starts at
+`0x037B8000`, slot = `(addr >> 15) & 7` = 3, offset `0x7578`). The ARM9's
+`0x037DF578` falls in its own **window A** (NWRAM-A), so writing that address
+from the ARM9 does not reach the ARM7's block. To write it the ARM9 must:
+
+* map NWRAM-C at `0x03800000` (`MBK8 = 0x18303800`);
+* take physical part 3 for the ARM9 (`MBK4` byte 3: `0x8D -> 0x8C`);
+* write at slot 3 / offset `0x7578`, i.e. `0x0381F578`;
+* restore `MBK4`/`MBK8`.
+
+In the GDB test this write did not stick in melonDS (likely a JIT/NWRAM
+remap quirk); doing it from the ARM9 C code is the next step.
