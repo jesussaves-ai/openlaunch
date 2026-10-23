@@ -441,3 +441,25 @@ To start our own ARM7 we can therefore:
 2. drive the same IPCSYNC sequence the launcher uses (`0x06025B9C` helper:
    13, then the 15/0 stages) so the system-firmware ARM7 runs `0x060240BC`
    and jumps to our ARM7 entry.
+
+## Why our launcher cannot trigger the relaunch yet
+
+Our container installed as the launcher leaves the ARM7 in the **stage-2 ring
+consumer** (`0x037B94D4`, waiting for messages), not in the system firmware.
+The official Unlaunch launcher's ARM7 reaches the VRAM system firmware, which
+is what provides the title-boot/relaunch service.
+
+So starting our ARM7 is a two-phase job:
+
+1. **Finish the stage-2 ARM7 boot** from our ARM9, exactly as the launcher
+   does: push ring messages `4/5/6` (IPC command 2), then complete the
+   IPCSYNC `6/5/8/4/0` echo so the ARM7 leaves the boot manager and starts
+   the system firmware in VRAM.
+2. **Trigger the title relaunch** with our boot info at `0x02FFE000` /
+   `0x02FFFE00` (`+0x24` relay ARM9, `+0x34` = `0x02380000`): the ARM9-side
+   IPCSYNC choreography is `0x4007`, then echo `13`, write `0x4D0D`, then
+   echo `1,2,3,4,7,15,0`; the system ARM7 runs `0x060240BC`, the
+   `0x0380F700` stub does 15/0, and it jumps to our ARM7 entry.
+
+Both halves are now mapped; the missing piece was that phase 1 never ran in
+our launcher boot.
