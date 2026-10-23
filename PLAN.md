@@ -154,9 +154,13 @@ Consequences:
    A melonDS run shows the slide arms but the firmware ARM7 never reaches our
    entry: the firmware's reset code uses stacks at `0x03FFFFC0` /
    `0x03FFFF80` / `0x03FFFB7C`, not the Astronaut window, and mapping
-   WRAM-A/B/C at the top of the NWRAM range did not hit it. Next: find the live
-   ARM7 stack mapping, add an IPC/IRQ wake-up, or boot as a title so stage 2
-   starts both CPUs. See `docs/stage2_re.md`.
+   WRAM-A/B/C at the top of the NWRAM range did not hit it. The ARM7 IRQ jump
+   vector at `0x03FFFFFC` (written by the reference `FUN_00020b58`) is equally
+   unreachable: it reads zero through every NWRAM window. Both are ARM7-private
+   aliases, so the stack slide and the IRQ-vector hijack are blocked from the
+   ARM9. Next: a writable target in main RAM or a firmware IPC handler, an IPC
+   command that restarts the ARM7, or a real title install so stage 2 starts
+   both CPUs. See `docs/stage2_re.md`.
 
 ## 3. Recent work (C99 bootloader bring-up)
 

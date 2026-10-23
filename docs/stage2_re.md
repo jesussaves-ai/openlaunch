@@ -335,10 +335,24 @@ the ARM7 jump either. That points at one of:
 * the ARM7 is parked in a state that does not pop the window (its IRQs may be
   masked, or it is halted awaiting a specific event).
 
-The next step is to identify the live ARM7 stack mapping (ARM7 GDB stub, a
-different hijack target, or an IPC/IRQ wake-up after the slide), or to boot
-OpenLaunch as a title so stage 2 starts both CPUs through its normal flow. The
-slide itself is armed correctly; the open question is the target window.
+The same is true of the ARM7's **IRQ jump vector**. The reference ARM7 routine
+`FUN_00020b58` writes `0x03FFFFFC = 0x060245A0` (see
+`asm/decompiled/FUN_00020b58_00020b58.c`; this is the word the ARM7 exception
+vector at `0x00000018` jumps through). Reading `0x03FFFFFC` through every
+WRAM-A/B/C window at `0x03FC0000` returns zero, as do the stack words
+`0x03FFFFC0` and `0x03FFFF80`. Both are ARM7-private / top-of-WRAM aliases, not
+NWRAM, so the ARM9 cannot rewrite them. That rules out both the stack slide and
+the IRQ-vector hijack from the ARM9.
+
+The remaining routes are:
+
+1. a hijack target in memory the ARM9 *can* write (main RAM or a firmware IPC
+   handler);
+2. an IPC command that makes the running firmware ARM7 restart/boot a title;
+3. installing OpenLaunch as a real title so stage 2 starts both CPUs through
+   its normal flow.
+
+The slide itself is armed correctly; the target is the problem.
 
 `make openlaunch-payload` builds the wired container; `make verify` and
 `scripts/verify_openlaunch_payload.py` check it structurally.
