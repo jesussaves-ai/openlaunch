@@ -165,3 +165,23 @@ remap quirk); doing it from the ARM9 C code is the next step.
 * The real-title test's shared-WRAM write did not stick yet (the ARM9's
   `WRAMSTAT`/window state needs to be pinned down); that is the last open
   step before the stub's `+0x10` jump.
+
+### Why the stub still reads zero
+
+`WRAMSTAT` stays `3` throughout. A marker written by the ARM9 into shared WRAM
+at offset `0x7588` (the ARM7's `0x037DF588` fallback) is **cleared** before the
+stub reads it. The boot manager writes its block while its window still maps
+NWRAM-C, then zeroes `MBK6/7/8`; the stub then reads `0x037DF578` through the
+*new* (empty) windows, i.e. shared WRAM, and sees zeros.
+
+So the official flow needs the ARM7's window state to be consistent across the
+block write and the stub read (or the block must be written after the window
+switch, before the stub copy). Our title/loader path currently flips that
+mapping in between.
+
+The remaining work is therefore narrow:
+
+1. determine the exact point where the boot manager writes the block (and into
+   which physical memory);
+2. either keep the windows mapping NWRAM-C until the stub has copied the block,
+   or write the block after the window switch and before the stub copy.
