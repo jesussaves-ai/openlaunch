@@ -144,85 +144,18 @@ Consequences:
    `ENABLE_CHAINLOAD_BOOT` (dry run by default) — see
    docs/hardware_notes.md §25. Remaining polish: a hardware/emulator run of a
    real multi-MiB image and the ARM7-WRAM self-copy edge case.)*
-8. ARM7 hand-off for the overflow boot — **implemented; validation negative on
-   the current test firmware**. Stage 2's own IPCSYNC flow is unreachable from
-   the overflow (its boot-mode ring at `0x037DF6D8` is already past messages
-   `4`/`5`/`6`), so the ARM9 hijacks the running firmware ARM7 instead: the
-   overflow bootstrap stages our ARM7 at `0x02380000`, and
-   `arm9_arm7_takeover()` (`src/arm9/arm7_boot.c`) briefly maps NWRAM-C and
-   overwrites the firmware's return/stack window at `0x03803040` with
-   `0x02380000` (mechanism adapted from Astronaut, GPL-3.0-or-later). The
-   takeover is marker-gated, runs before `scfg_init()`, and only keeps WRAM-C
-   with the ARM7 when the ARM7 ready marker appears. The ARM7 writes a ready
-   marker at `0x0237FFF4`; the old IPCSYNC path remains as
-   `make ARM7_HANDOFF=1`.
-   The slide is now opt-in (`make ASTRO_SLIDE=1`): its MBK5/MBK8 values
-   target a different firmware layout and move the NWRAM-C parts the ARM7 is
-   executing from, producing an illegal-instruction abort (`S04`). Reading the
-   MBK registers little-endian corrected the earlier map: the stage-2 ARM7
-   runs from **NWRAM-C** (window start `0x037B8000`, `MBK8 = 0x07F837B8`,
-   parts 0..7 owned through MBK4/MBK5), not private WRAM. Its IRQ vector is
-   part 0 offset `0x7FFC` (`0x03FFFFFC`) and the handler `0x037D4B64` is part
-   3 offset `0x4B64`.
-   Live finding: `mbk_init()` used to rewrite MBK1..5 with the DS-style
-   canonical slots and thereby moved those parts out from under the running
-   ARM7 (`PC 0x037F9304`, `S04`) - the root cause of every failed takeover.
-   `arm9_main()` now skips `mbk_init()` on the overflow path and keeps stage
-   2's ownership; the ARM7 stays healthy at PC `0x00000EAC` (BIOS Halt),
-   SP `0x037F3290`, CPSR `0x1F`, IME `1`, IE `0x00040008` (Timer0 + IPC
-   receive). An IPC FIFO write sets IF bit 18 and the ARM7 wakes, services the
-   dispatcher, clears IF and halts again.
-   Decisive follow-up: a marker written by the ARM7 at `0x037D4B64` does not
-   appear in any NWRAM-C part, so the live handler and vector are in
-   **ARM7-private WRAM**; the NWRAM-C window at `0x037B8000` only carries a
-   copy of the image. An ARM9-side code patch cannot reach the running ARM7.
-   The remaining routes are the firmware's own IPC/boot-ring protocol or the
-   boot stage where it runs from shared/NWRAM. See `docs/stage2_re.md`.
-   Official reference (`docs/unlaunch_reference.md`, TWLMagician + bundled
-   `UNLAUNCH.DSI`): Unlaunch's ARM9 entry waits for IPCSYNC nibble 14 and
-   acks `0x4E00`; its ARM7 writes 14/13 and then jumps to VRAM `0x06023C90`.
-   The ARM9 never loads the ARM7 - a real title boot has the loader start
-   both CPUs. A live real-launcher install (container in `HNAE`, 520-byte TMD
-   prefix) boots our ARM9 and leaves our ARM7 image at `0x02380000`. The
-   stage-2 ARM7 is still in its boot path: publishing the boot info at
-   `0x02FFFE00` and pushing ring messages 4/5/6 starts the echo handshake
-   (IPCSYNC 6,5,8,4), after which it runs a loader at the top of private WRAM
-   (`0x03FFF6D8`/`0x03FFF7D0`) and does not reach our entry yet. Next:
-   reverse the post-handshake loader (`0x0238103C` onward).
-
-### Verified launch path (2026-10-23)
-
-The stage-2 handshake workaround is no longer the primary route. Unlaunch's
-own filemenu starts the selected file as a DSi title, and that **does** start
-both CPUs from our header. Verified in melonDS with the official Unlaunch v2.0
-install (`HNAE`):
-
-* container on SD as `bootcode.dsi`, selected in the filemenu;
-* boot info `0x02FFE000` = our header (`"OPENLAUNCH"`, ARM9 `0x02200800` /
-  `0xB33C`, ARM7 `0x02380000` / `0x117C`);
-* ARM9 reaches `arm9_main` / `console_init` / `menu_run`;
-* ARM7 writes `JMPD` (`0x0237FFE8`) and `RADY` (`0x0237FFF4`) and runs our IPC
-  dispatcher; the menu reports `ARM7: OK (1)`.
-
-So the launcher-TMD installs (`HNAA`/`HNAE`) remain ARM9-only experiments,
-while `sd:/bootcode.dsi` is the supported launch path. See
-`docs/unlaunch_reference.md`.
-
-The full chain was then exercised end-to-end in melonDS:
-
-* payload built with `AUTOBOOT=1 CHAINLOAD_BOOT=1`, `bootcode.dsi` + `boot.nds`
-  on the SD card;
-* Unlaunch starts `bootcode.dsi` (both CPUs), the menu autoboots `boot.nds`,
-  the ARM7 performs the staged copy and branch, the ARM9 jumps to the new
-  entry;
-* the test payload takes over: **top screen green, bottom screen blue**.
-
-That run exposed a real driver bug: the TMIO slot mux (`0x02`) and soft reset
-(`0xE0`) are controller-global. Opening the eMMC reset the block and left the
-mux on port 1, so later "SD" reads silently read the NAND and the FAT mount
-failed. `sdmmc_select_port()` now reselects before every command and
-`ipc_sd_open()` resets the block only once; regression test in
-`tests/test_sdmmc.c`. See `docs/hardware_notes.md` §4.
+8. ARM7 hand-off for the overflow boot — **solved (melonDS, 2026-10-23)**.
+   Stage 2's ARM7 dispatches tasks through a 12-byte-stride table in NWRAM-C
+   part 4 (`0x037F0000-0x037F7FFF` with the stock window); the dispatcher at
+   `0x037D4D4C` does `ldr r2,[r3,r12]` / `blx r2`. Official Unlaunch takes the
+   part over (MBK8 `0x0C003800`, MBK5 byte0 `0x80`), fills 32 KiB with
+   `0x06023CD4`, flushes and hands the part back (MBK5 byte0 `0x99`), so the
+   next dispatch jumps into its ARM7 image. `arm9_arm7_task_table_fill()` in
+   `src/arm9/arm7_boot.c` does the same with `0x02380000`; on the HNAE install
+   (with `make ARM7_HANDOFF=1`) the ARM7 reaches `0x02380000`, writes
+   `JMPD`/`RADY`, and the menu reports `ARM7: OK (1)`. The earlier
+   Astronaut-style stack slide and the IPCSYNC-only route remain as fallbacks
+   (the slide is disabled by default). See `docs/stage2_re.md`.
 
 ## 3. Recent work (C99 bootloader bring-up)
 

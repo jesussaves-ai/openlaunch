@@ -5,19 +5,19 @@
  *
  * The TMD overflow leaves the ARM9 executing our code while the ARM7 keeps
  * running the system firmware. Stage 2's own IPCSYNC title-boot handshake can
- * no longer reach that ARM7 (it is past its boot path), so the ARM9 hijacks it:
+ * no longer reach that ARM7 (it is past its boot path), so the ARM9 hijacks
+ * the task dispatcher instead:
  *
  *   1. the overflow bootstrap stages our ARM7 image at ARM7_HANDOFF_ENTRY and
  *      sets ARM7_HANDOFF_MARKER_ADDR to ARM7_HANDOFF_MARKER_MAGIC;
- *   2. the ARM9 entry maps NWRAM-C to itself, writes ARM7_HANDOFF_ENTRY over
- *      the firmware ARM7's return/stack window at ARM7_HANDOFF_SLIDE_ADDR, and
- *      restores the mapping;
- *   3. the next return the firmware ARM7 performs pops ARM7_HANDOFF_ENTRY and
- *      starts our ARM7 image.
+ *   2. the ARM9 takes NWRAM-C part 4 (the firmware ARM7's 12-byte-stride task
+ *      table) through MBK5/MBK8, fills the whole 32 KiB with
+ *      ARM7_HANDOFF_ENTRY, and hands the part back to the ARM7;
+ *   3. the next task dispatch (0x037D4D94 `blx r2`) branches to our entry.
  *
- * The mechanism is adapted from Astronaut (Vickerinox/Astronaut, GPL-3.0-or-
- * later); see docs/stage2_re.md. The layout is DSi-specific: the marker and
- * entry live in the Main-RAM window at 0x0237Fxxx that is free at the exploit.
+ * The MBK values below are the ones official Unlaunch uses at 0x06025590; see
+ * docs/stage2_re.md. The marker and entry live in the Main-RAM window at
+ * 0x0237Fxxx that is free at the exploit.
  *
  * Keep the .equ values in src/arm9/overflow_bootstrap.s in sync with this file.
  */
@@ -53,5 +53,19 @@
  */
 #define ARM7_HANDOFF_MBK8_WINDOW   0x0C003800u
 #define ARM7_HANDOFF_MBK5_SLOT     0x00000080u
+
+/*
+ * Stage 2's ARM7 dispatches tasks through a 12-byte-per-entry table that lives
+ * in NWRAM-C part 4 (ARM7 address 0x037F0000-0x037F7FFF with the stock window
+ * 0x037B8000-0x037F8000). The ARM9 can take that part over with MBK5, fill the
+ * whole 32 KiB with one address, and hand it back: the next task dispatch then
+ * branches to that address. This is what official Unlaunch does at 0x06025590
+ * (it fills 0x06023CD4 and then ring 7); see docs/stage2_re.md.
+ */
+#define ARM7_HANDOFF_TASK_WINDOW_ADDR  0x03800000u
+#define ARM7_HANDOFF_TASK_WINDOW_SIZE  0x00008000u
+/* Ownership byte for NWRAM-C part 4: ARM9 slot 0, then ARM7 slot 6. */
+#define ARM7_HANDOFF_PART4_ARM9        0x00000080u
+#define ARM7_HANDOFF_PART4_ARM7        0x00000099u
 
 #endif /* DSI_COMMON_ARM7_HANDOFF_H */

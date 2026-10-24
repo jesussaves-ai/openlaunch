@@ -323,20 +323,25 @@ matching the standard NDS header layout (ARM7 entry at `[+0x34]`).
 
 ### Status of the three routes (2026-10-23, end of session)
 
-**Route 3 (`sd:/bootcode.dsi`) is verified working and is the recommended
-path** — both CPUs start, `JMPD`/`RADY` are written, and the menu self-test
-reports `ARM7: OK (1)`. See the section at the top of this document. Routes 1
-and 2 below reach only the ARM9 side:
+**Two paths now start both CPUs:**
 
-Both launcher routes reach our ARM9 and drive the ARM7 ring/echo handshake:
+* **Route 3 (`sd:/bootcode.dsi`, recommended)** — the loader starts our ARM9
+  and ARM7 directly; `JMPD`/`RADY` are written and the menu reports
+  `ARM7: OK (1)`. See the section at the top of this document.
+* **Routes 1/2 (launcher installs) with `make ARM7_HANDOFF=1`** — the ARM9 runs
+  from the overflow and redirects stage 2's ARM7 task table in NWRAM-C to our
+  entry (`arm9_arm7_task_table_fill()`); the ARM7 then reaches `0x02380000`
+  and the same markers fire. This is the mechanism official Unlaunch uses
+  (`0x06025590`, fill NWRAM-C part 4 with `0x06023CD4`). See
+  `docs/stage2_re.md`.
 
-* **real-launcher (`HNAE`)**: loader boots our ARM9, ARM7 stays in the stage-2
-  boot manager;
-* **TMD overflow (`HNAA`)**: our ARM9 runs from the overflow, ARM7 in the same
-  boot manager.
+The earlier IPCSYNC-only attempts on the launcher routes reached only the ARM9
+side: publishing the header at `0x02FFE000`/`0x02FFFE00` and setting IPCSYNC
+`6` before pushing `4/5/6` leaves the parameter block entry at `0` because the
+ARM7's gate already ran. The task-table redirect does not depend on that gate.
 
-In both, publishing the header at `0x02FFE000`/`0x02FFFE00` and setting
-IPCSYNC `6` before pushing `4/5/6` still leaves the parameter block entry at
+Historically, publishing the header at `0x02FFE000`/`0x02FFFE00` and setting
+IPCSYNC `6` before pushing `4/5/6` still left the parameter block entry at
 `0` and the stub parked at `0x03FFF6E8`. The ARM7's early gate
 (`0x02381A78` + IPCSYNC 6) is evaluated before our ARM9 can influence it, so
 the header is zeroed.

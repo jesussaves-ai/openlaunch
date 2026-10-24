@@ -5,9 +5,12 @@
  * include/arm9/arm7_boot.h and docs/stage2_re.md.
  *
  * Hardware side effects:
- *   - writes a 352-byte boot header to Main RAM 0x02FFFE00 (the canonical
- *     NDS boot-info address);
- *   - reads/polls IPCSYNC (0x04000180) and writes 0x600 to it.
+ *   - arm9_arm7_task_table_fill(): maps NWRAM-C at the ARM9's 0x03800000,
+ *     takes part 4 (MBK5), overwrites the ARM7's task table, hands the part
+ *     back; leaves the ARM9 window at 0x03800000 (as Unlaunch does);
+ *   - arm9_boot_arm7(): writes a 352-byte boot header to Main RAM 0x02FFFE00
+ *     (the canonical NDS boot-info address) and rings IPCSYNC/FIFO;
+ *   - arm9_arm7_takeover(): legacy Astronaut jumpslide, disabled by default.
  */
 #include "arm9/arm7_boot.h"
 #include "arm9/scfg.h"
@@ -156,6 +159,58 @@ void arm9_boot_arm7(void)
  *   - writes 0x800 words of NWRAM-C at 0x03803040;
  *   - cleans/invalidates the ARM9 data cache around the remap.
  */
+/*
+ * Redirect stage 2's ARM7 task dispatcher through NWRAM-C part 4.
+ *
+ * Official Unlaunch's ARM9 does exactly this in its boot code at 0x06025590
+ * (see docs/stage2_re.md): map WRAM-C at 0x03800000, take part 4 for the ARM9,
+ * fill 32 KiB with one address, flush, then hand the part back to the ARM7's
+ * slot 6. The ARM7 task dispatcher (0x037D4D4C) loads its handler from that
+ * table with `ldr r2,[r3,r12]` / `blx r2`, so the next dispatch jumps to the
+ * filled address. This is the hand-off the overflow path actually uses; the
+ * earlier jumpslide guessed the stack window and missed.
+ */
+bool arm9_arm7_task_table_fill(u32 entry)
+{
+    u32 mbk5;
+    u32 i;
+
+    if (!scfg_is_twl_mode()) {
+        return false;
+    }
+    (void)scfg_unlock();
+
+    mbk5 = REG32(MBK5);
+
+    /* 1. Map NWRAM-C into the ARM9's 0x03800000 window and own part 4. */
+    REG32(MBK8) = ARM7_HANDOFF_MBK8_WINDOW;
+    REG8(MBK5) = (u8)ARM7_HANDOFF_PART4_ARM9;
+
+    /* If MBK9 write-protects the part, leave the firmware's layout alone. */
+    if (REG32(MBK8) != ARM7_HANDOFF_MBK8_WINDOW ||
+        REG8(MBK5) != (u8)ARM7_HANDOFF_PART4_ARM9) {
+        REG32(MBK5) = mbk5;
+        return false;
+    }
+
+    /* 2. Every table entry now points at our ARM7 image. */
+    for (i = 0u; i < ARM7_HANDOFF_TASK_WINDOW_SIZE; i += 4u) {
+        REG32(ARM7_HANDOFF_TASK_WINDOW_ADDR + i) = entry;
+    }
+
+    /* 3. Push the stores out before the ARM7 reads the table (no D-cache). */
+    dc_flush_range((const void *)(uintptr_t)ARM7_HANDOFF_TASK_WINDOW_ADDR,
+                   ARM7_HANDOFF_TASK_WINDOW_SIZE);
+    cache_flush_all();
+
+    /* 4. Hand part 4 back: ARM7, slot 6 (the stock table slot). */
+    REG32(MBK5) = (mbk5 & ~0x000000FFu & ~0x00FF0000u) |
+                  ARM7_HANDOFF_PART4_ARM7;
+    cache_flush_all();
+
+    return true;
+}
+
 bool arm9_arm7_takeover(void)
 {
     /* Marker is written by overflow_bootstrap.s after staging the ARM7. */

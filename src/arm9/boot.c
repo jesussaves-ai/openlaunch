@@ -271,6 +271,15 @@ void arm9_main(void)
      */
 #ifdef ENABLE_ARM7_HANDOFF
     if (!arm7_taken_over) {
+        /*
+         * The overflow runs while the firmware ARM7 is already past its boot
+         * flow, so the reference IPCSYNC hand-off cannot reach it. Redirect
+         * stage 2's ARM7 task dispatcher through NWRAM-C first (official
+         * Unlaunch uses the same mechanism), then drive the handshake.
+         */
+        if (overflow_boot) {
+            (void)arm9_arm7_task_table_fill(ARM7_HANDOFF_ENTRY);
+        }
         arm9_boot_arm7();
     }
 #endif

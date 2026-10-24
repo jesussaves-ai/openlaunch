@@ -274,83 +274,81 @@ moment of the overflow that ring is **untouched** (`write == read == 0`, all
 bytes zero): the ARM7 is already past it and running the system firmware. No
 ARM9-side IPCSYNC write can re-enter a boot path that has already completed.
 
-#### The takeover (implemented)
+#### The takeover (solved: NWRAM-C task-table redirect)
 
-The working route is a jumpslide adapted from
-[Astronaut](https://github.com/Vickerinox/Astronaut) (Vickerinox/Astronaut,
-GPL-3.0-or-later, `astronaut/arm9/src/arm7_exploit.rs`). It does not need the
-ARM7 to cooperate:
+**The firmware ARM7 has a task/jump table in NWRAM-C part 4**, and the ARM9 can
+take that part over, fill it with one address, and hand it back. The next task
+dispatch branches to that address. This is the mechanism official Unlaunch
+uses, recovered by differential emulator tracing (2026-10-23).
 
-* the firmware ARM7 keeps its stack in NWRAM-C, reachable at `0x03800000`;
-* the ARM9 temporarily maps WRAM-C to itself
-  (`MBK8 = 0x0C003800`, `MBK5 = 0x00000080`), overwrites the firmware's
-  return/stack window (`0x03803040..0x03805040`, `0x800` words) with our ARM7
-  entry `0x02380000`, cleans the data cache, and restores the exact stage-2
-  MBK5/MBK8 values;
-* the next return the firmware ARM7 performs pops `0x02380000` and starts our
-  image. Astronaut notes that this is timing sensitive; the remap is held for a
-  few microseconds only.
-
-OpenLaunch wires it as follows:
-
-* `src/arm9/overflow_bootstrap.s` stages the container's ARM7 image at
-  `0x02380000` and writes the marker `0x54424C4F` ("OLBT") to `0x0237FFF0`;
-* `arm9_main()` calls `arm9_arm7_takeover()` after IRQs are disabled and the
-  caches are flushed, and **before** `scfg_init()`. The marker makes the call a
-  complete no-op on the ordinary `.nds` boot and on the title-boot path;
-* after a successful takeover, `mbk_init()` is skipped (only `scfg_unlock()` +
-  `scfg_apply_boot_config()` run) so WRAM-C stays with the ARM7 for its IWRAM
-  and stacks;
-* `src/arm7/boot.c` writes `0x59444152` ("RADY") to `0x0237FFF4` once our ARM7
-  is executing. That word is the melonDS/GDB check for a successful hand-off;
-  the menu's IPC self-test is the functional check.
-
-The IPCSYNC route remains available as `make ARM7_HANDOFF=1` and is only
-attempted when the takeover did not arm (for example if MBK9 write-protects
-WRAM-C).
-
-Status: implemented and structurally verified (`make verify`, `make host-test`).
-`arm9_main()` additionally waits for the ARM7 ready marker and only keeps
-stage 2's NWRAM-C ownership when the ARM7 is actually alive; otherwise it falls
-back to the normal `mbk_init()` path.
-
-**Validation note (melonDS, 2026-10-23).** On the available test NAND the
-takeover arms and returns true (the MBK5/MBK8 writes stick and the slide is
-written), but the firmware ARM7 never reaches `0x02380000`. Its reset code -
-found in WRAM-C slot 7 at `0x03838000` - loads these stacks:
+**Where the table is.** The ARM7 dispatcher is at `0x037D4D4C`:
 
 ```
-SVC SP = 0x03FFFFC0
-IRQ SP = 0x03FFFF80
-SYS SP = 0x03FFFB7C
+037D4D4C  push {r3,r4,r5,lr}
+037D4D50  mov  r1,#0xC
+037D4D54  mul  r12,r0,r1          ; r12 = task * 12
+037D4D58  ldr  r3,[pc,#0x64]      ; table base
+037D4D60  ldr  r2,[r3,r12]        ; <-- handler pointer (or 0)
+037D4D8C  ldr  r0,[pc,#0x3C]
+037D4D90  ldr  r0,[r0,r12]
+037D4D94  mov  lr,pc
+037D4D98  blx  r2                 ; <-- dispatch
 ```
 
-The stack is therefore at the top of the `0x03xxxxxx` NWRAM region, not in
-Astronaut's `0x03803040` window. Mapping WRAM-A, WRAM-B or WRAM-C at
-`0x03FC0000` and filling the top 64 KiB (`0x03FF0000..0x04000000`) did not make
-the ARM7 jump either. That points at one of:
+With the stock NWRAM-C window (`0x037B8000-0x037F8000`, slot mask 7) the table
+lands at `0x037F0000-0x037F7FFF` (address bits `(addr>>15)&7 == 6`). The live
+trace confirms the dispatch: at `0x037D4D94` the ARM7 executes `blx r2` with
+`r2 = 0x06023CD4`, and its next PC is `0x06023CD4`.
 
-* the firmware stack lives in ARM7-private / old shared WRAM that the ARM9
-  cannot reach through MBK;
-* the ARM7 is parked in a state that does not pop the window (its IRQs may be
-  masked, or it is halted awaiting a specific event).
+**What Unlaunch does** (ARM9, routine at `0x06025590` in its VRAM image):
 
-The same is true of the ARM7's **IRQ jump vector**. The reference ARM7 routine
-`FUN_00020b58` writes `0x03FFFFFC = 0x060245A0` (see
-`asm/decompiled/FUN_00020b58_00020b58.c`; this is the word the ARM7 exception
-vector at `0x00000018` jumps through). Reading `0x03FFFFFC` through every
-WRAM-A/B/C window at `0x03FC0000` returns zero, as do the stack words
-`0x03FFFFC0` and `0x03FFFF80`. Both are ARM7-private / top-of-WRAM aliases, not
-NWRAM, so the ARM9 cannot rewrite them. That rules out both the stack slide and
-the IRQ-vector hijack from the ARM9.
+```
+MBK8 = 0x0C003800            ; map NWRAM-C at the ARM9's 0x03800000
+MBK5 byte0 = 0x80            ; NWRAM-C part 4 -> ARM9, slot 0
+fill 0x8000 bytes at 0x03800000 with 0x06023CD4
+cache flush
+MBK5 = (old & ~0x000000FF & ~0x00FF0000) | 0x99
+                             ; part 4 -> ARM7, slot 6 (its stock slot)
+```
 
-A complete NDS/TWL header (Nintendo logo, both CRC16s, banner, unit code 3) was
-added to the container to match UNLAUNCH.DSI; stage 2 still reaches the ARM9
-through the overflow and the ARM7 markers stay zero. The genuine-header
-`--keep-prefix` shape on HNAA and an HNAE (official-Unlaunch) install were also
-tested; neither started the ARM7. A retail System Menu boot with a breakpoint
-on stage 2's `0x037B9AC4` hand-off did not hit it in the trace window, so the
-title-boot route needs an ARM7-side trace.
+Live trace of the reference boot:
+
+```
+[MMIO] A9 w32 addr=0400405C val=0C003800 a9pc=060255A4
+[MMIO] A9 w8  addr=04004050 val=00000080 a9pc=060255AC
+[MMIO] A9 w32 addr=04004050 val=9D009599 a9pc=060255E0
+...
+[A7REG] pc=037D4D8C/90/94  ... lr=037D4D9C
+[A7REG] pc=06023CD4         <-- first ARM7 instruction of Unlaunch's image
+```
+
+The fill happens before the IPCSYNC ring; the task dispatch itself is driven by
+the ARM9's IPC traffic (Unlaunch rings after the fill). Note that the ARM9 does
+**not** need to restore MBK8 - Unlaunch leaves its WRAM-C window at
+`0x03800000`.
+
+**Our implementation.** `arm9_arm7_task_table_fill(ARM7_HANDOFF_ENTRY)` in
+`src/arm9/arm7_boot.c` performs exactly those steps, filling the table with
+`0x02380000` (our ARM7 image, staged by `overflow_bootstrap.s`). `arm9_main()`
+calls it from the overflow path (`overflow_boot` marker) before the existing
+`arm9_boot_arm7()` ring handshake.
+
+Verified live in melonDS on the HNAE (real launcher) install:
+
+```
+ARM7 dispatch 0x037D4D94  blx r2 -> 0x02380000
+ARM7 executes 0x02380000 (our crt0) -> 0x02380134 (arm7_main)
+JMPD (0x0237FFE8) = 44504D4A
+RADY (0x0237FFF4) = 59444152
+menu self-test: "ARM7: OK (1)"
+```
+
+**Why the earlier attempts failed.** The Astronaut-style jumpslide assumed the
+ARM7's return/stack window (Astronaut's firmware layout) and the IPCSYNC route
+assumed the boot ring was still consumable. Both were guesses about *where* the
+ARM7 would branch; the task table is the actual indirect branch the firmware
+performs, and it is reachable from the ARM9 through NWRAM-C ownership. The
+private-WRAM handler/vector finding still holds - the table is what avoids it.
 
 ### Live ARM7 trace (melonDS, both cores running)
 

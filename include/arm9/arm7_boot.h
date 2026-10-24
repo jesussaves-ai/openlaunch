@@ -14,12 +14,18 @@
  *     from the overflow it is a no-op. Kept for the title-boot path and for
  *     reference, gated behind `make ARM7_HANDOFF=1`.
  *
+ *   arm9_arm7_task_table_fill()
+ *     The overflow hand-off that works: stage 2's ARM7 dispatches tasks
+ *     through a table in NWRAM-C part 4. The ARM9 takes the part over, fills
+ *     the 32 KiB table with our ARM7 entry and hands it back; the next
+ *     dispatch branches to us. Same mechanism as official Unlaunch
+ *     (0x06025590). See docs/stage2_re.md.
+ *
  *   arm9_arm7_takeover()
- *     The overflow hand-off: hijack the *running* firmware ARM7 with a NWRAM-C
- *     remap and a return-address jumpslide. The overflow bootstrap stages our
- *     ARM7 image at 0x02380000 and sets a marker; this function is marker-gated
- *     so the normal `.nds` build never touches the running ARM7. Adapted from
- *     Astronaut (GPL-3.0-or-later); see docs/stage2_re.md.
+ *     An earlier overflow hand-off: hijack the *running* ARM7 with a NWRAM-C
+ *     remap and a return-address jumpslide (Astronaut, GPL-3.0-or-later). It
+ *     targets the wrong window on this firmware and is disabled by default;
+ *     kept for reference/experiments.
  */
 #ifndef DSI_ARM9_ARM7_BOOT_H
 #define DSI_ARM9_ARM7_BOOT_H
@@ -48,5 +54,19 @@ void arm9_boot_arm7(void);
  * the console is not in TWL mode, or WRAM-C is write-protected.
  */
 bool arm9_arm7_takeover(void);
+
+/*
+ * Redirect the firmware ARM7's task dispatcher (TMD-overflow path).
+ *
+ * Stage 2's ARM7 calls tasks through a table in NWRAM-C part 4. The ARM9 maps
+ * that part to its own 0x03800000 window (MBK8), takes ownership (MBK5 byte 0),
+ * fills the 32 KiB with `entry`, flushes the data cache and hands the part
+ * back to the ARM7 (slot 6). The next dispatch then branches to `entry`.
+ *
+ * Mirrors official Unlaunch's routine at 0x06025590, which fills
+ * 0x06023CD4 and rings IPCSYNC 7. Requires TWL mode; returns false otherwise.
+ * Leaves the ARM9's NWRAM-C window at 0x03800000 (as Unlaunch does).
+ */
+bool arm9_arm7_task_table_fill(u32 entry);
 
 #endif /* DSI_ARM9_ARM7_BOOT_H */

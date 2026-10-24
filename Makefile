@@ -75,10 +75,12 @@ ifeq ($(AUTOBOOT),1)
 CFLAGS_COMMON += -DENABLE_AUTOBOOT
 endif
 
-# ARM7 hand-off for the boot-stage-2 overflow path. EXPERIMENTAL / not yet
-# working: it publishes the boot header at 0x02FFFE00 and rings IPCSYNC, but the
-# firmware ARM7 does not yet take the hand-off (see docs/stage2_re.md). Disabled
-# by default because it overwrites the boot-info the running firmware may use.
+# ARM7 hand-off for the boot-stage-2 overflow path. Verified in melonDS: the
+# ARM9 redirects stage 2's ARM7 task table in NWRAM-C to our entry
+# (arm9_arm7_task_table_fill()) and drives the ring handshake, so the ARM7
+# reaches 0x02380000 and the menu reports "ARM7: OK (1)". Off by default so the
+# ordinary .nds build never touches NWRAM; enable for launcher/overflow tests.
+# See docs/stage2_re.md.
 ifeq ($(ARM7_HANDOFF),1)
 CFLAGS_COMMON += -DENABLE_ARM7_HANDOFF
 endif
