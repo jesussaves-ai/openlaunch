@@ -36,6 +36,7 @@ BUILD      ?= build
 LD_DIR     := ld
 INCLUDES   := -Iinclude
 
+ARM9_RAM   ?= 0x02200000
 ROM        := $(BUILD)/openlaunch.nds
 # Legacy alias so existing scripts and muscle-memory commands keep working.
 LEGACY_ROM := $(BUILD)/dsi_bootloader.nds
@@ -117,6 +118,14 @@ CFLAGS_ARM9 := $(CFLAGS_COMMON) -mcpu=arm946e-s -marm -mfloat-abi=soft
 
 ASFLAGS_ARM7 := $(CFLAGS_ARM7)
 ASFLAGS_ARM9 := $(CFLAGS_ARM9)
+
+# Hardware-safe build: skip the RTC/SD/firmware/NAND probes, BOOT.CFG and the
+# EXTKEY query. Their drivers are not yet validated on a real DSi and the first
+# access wedges the system (observed 2026-10-24). Default builds keep the full
+# feature set for melonDS.
+ifeq ($(SAFE_HW),1)
+CFLAGS_COMMON += -DENABLE_SAFE_BOOT
+endif
 
 # Hardware bring-up beacons: paint the Engine A backdrop at crt0 milestones
 # (magenta = entry, yellow = DTCM/CP15 done, cyan = segments/BSS done). Only
@@ -214,6 +223,7 @@ $(ROM): $(ARM9_BIN) $(ARM7_BIN) scripts/pack_nds.py
 		--arm7 $(ARM7_BIN) --arm7-elf $(ARM7_ELF) \
 		--title "OPENLAUNCH" \
 		--banner-title "OpenLaunch\nClean-Room TWL Bootloader" \
+		--arm9-ram $(ARM9_RAM) \
 		--twl --out $@
 
 # Legacy alias (build/dsi_bootloader.nds) kept as a relative symlink.

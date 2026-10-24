@@ -9,6 +9,7 @@
 #include "arm7/rtc.h"
 #include "arm7/sdmmc.h"
 #include "arm7/spi.h"
+#include "common/arm7_handoff.h"
 #include "common/dsi_hw.h"
 
 /* @ref FUN_0001cc34  (address 0x01CC34) */
@@ -116,9 +117,20 @@ static void ipc_reply_rtc(void)
     rtc_datetime_t dt = { 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
     u32 status = 0u;
 
+#ifdef RTC_HW_READ
     if (rtc_read_datetime(&dt)) {
         status |= IPC_RTC_STATUS_VALID;
     }
+#else
+    /*
+     * The bit-banged RTC/PMIC transport (0x04000138) is not validated on
+     * hardware yet; a read there wedges the ARM7 (observed: the menu stuck at
+     * "STAGE: diag" right after the GET_RTC request). Report the clock as
+     * unavailable instead of touching the bus. Build with -DRTC_HW_READ to
+     * re-enable once the transport is verified.
+     */
+    (void)rtc_read_datetime;
+#endif
     if ((dt.status & 0x40u) != 0u) {
         status |= IPC_RTC_STATUS_POWER_LOW;
     }

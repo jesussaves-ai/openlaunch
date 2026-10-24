@@ -23,6 +23,11 @@ void arm9_ipc_wait_send_empty(void)
  */
 void arm9_ipc_fifo_init(void)
 {
+    /*
+     * Reset and enable the FIFO. No drain: an empty-FIFO read sets the sticky
+     * error bit (observed as 0xCF01 on the ARM7 after the loader handshake).
+     */
+    REG16(IPC_FIFOCNT) = 0x0000u;
     REG16(IPC_FIFOCNT) = IPC_FIFOCNT_INIT_VALUE;
 }
 

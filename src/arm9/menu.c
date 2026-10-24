@@ -345,13 +345,29 @@ static void diag_collect(menu_diag_t *d)
     d->dtcm_base = DTCM_BASE;
 
     diag_ping(d);
+#ifdef ENABLE_SAFE_BOOT
+    /*
+     * Hardware bring-up build: the RTC/SD/firmware/NAND drivers are not
+     * validated on a real DSi yet and a hardware access wedges the system.
+     * Report them as unavailable instead of probing.
+     */
+    (void)diag_query_rtc;
+    (void)diag_query_sd;
+    (void)diag_sd_read;
+    (void)diag_query_fw;
+    (void)diag_read_firmware;
+    (void)diag_nand;
+#else
     diag_query_rtc(d);
     diag_query_sd(d);
     diag_sd_read(d);
     diag_query_fw(d);
     diag_read_firmware(d);
+#endif
     diag_lz77(d);
+#ifndef ENABLE_SAFE_BOOT
     diag_nand(d);
+#endif
 }
 
 /* ---- Unlaunch-style BOOT.CFG / target autoboot ----------------------- */
@@ -1492,7 +1508,13 @@ void menu_run(void)
      * mapped target (or DEFAULT) is probed. With ENABLE_AUTOBOOT the probe
      * result is acted on immediately.
      */
+#ifdef ENABLE_SAFE_BOOT
+    boot_cfg_defaults(&s_boot_cfg);
+    s_boot_cfg_present = false;
+    (void)menu_load_boot_cfg;
+#else
     menu_load_boot_cfg(&diag);
+#endif
 
     /* Apply the BOOT.CFG theme (or the AMOLED defaults) and stage any splash. */
     menu_load_theme(&diag);
@@ -1502,37 +1524,66 @@ void menu_run(void)
      * queried once, then input_poll() merges them with KEYINPUT so the
      * BOOT.CFG X/Y mappings are visible to the resolver.
      */
+#ifdef ENABLE_SAFE_BOOT
+    (void)diag_poll_extkey;
+#else
     diag_poll_extkey();
+#endif
     input_poll(&keys);
     boot_resolve_target(keys.held, &s_boot_cfg, &s_boot_target);
+#ifdef ENABLE_SAFE_BOOT
+    diag.autoboot_checked = true;
+    (void)menu_probe_autoboot;
+#else
     menu_probe_autoboot(&diag, &s_boot_target);
+#endif
 #ifdef ENABLE_AUTOBOOT
     if (s_boot_target.policy == BOOT_POLICY_AUTOBOOT && s_autoboot_entry_valid) {
         menu_autoboot(&diag);
     }
 #endif
 
-    for (;;) {
-        diag_poll_extkey();
-        input_poll(&keys);
+    {
+        bool need_render = true;
 
-        if (input_pressed(&keys, INPUT_DOWN)) {
-            menu_state_move(&state, 1);
-        }
-        if (input_pressed(&keys, INPUT_UP)) {
-            menu_state_move(&state, -1);
-        }
-        if (input_pressed(&keys, INPUT_B)) {
-            diag_collect(&diag);
-            diag.last_action = "Self-test (B)";
-        }
-        if (input_pressed(&keys, INPUT_A)) {
-            menu_execute(&state, &diag);
-        }
+        for (;;) {
+#ifdef ENABLE_SAFE_BOOT
+            (void)diag_poll_extkey;
+#else
+            diag_poll_extkey();
+#endif
+            input_poll(&keys);
 
-        render_telemetry(&diag);
-        render_menu(&state);
+            if (input_pressed(&keys, INPUT_DOWN)) {
+                menu_state_move(&state, 1);
+                need_render = true;
+            }
+            if (input_pressed(&keys, INPUT_UP)) {
+                menu_state_move(&state, -1);
+                need_render = true;
+            }
+            if (input_pressed(&keys, INPUT_B)) {
+                diag_collect(&diag);
+                diag.last_action = "Self-test (B)";
+                need_render = true;
+            }
+            if (input_pressed(&keys, INPUT_A)) {
+                menu_execute(&state, &diag);
+                need_render = true;
+            }
 
-        wait_vblank();
+            /*
+             * Redraw only when something changed: the console writes straight
+             * to VRAM, so redrawing every frame tears/flickers on hardware
+             * (observed on the first working DSi boot).
+             */
+            if (need_render) {
+                render_telemetry(&diag);
+                render_menu(&state);
+                need_render = false;
+            }
+
+            wait_vblank();
+        }
     }
 }

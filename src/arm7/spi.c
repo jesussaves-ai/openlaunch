@@ -30,8 +30,13 @@ u8 spi_xfer(u32 ctrl, u32 data, bool restore_irq)
 
     REG32(SPI_CNT) = ctrl | (data << 16);
 
-    while ((REG32(SPI_CNT) & SPI_CNT_BUSY) != 0u) {
-        /* poll */
+    {
+        u32 guard;
+        for (guard = 0u; guard < 0x00100000u; guard++) {
+            if ((REG32(SPI_CNT) & SPI_CNT_BUSY) == 0u) {
+                break;
+            }
+        }
     }
 
     result = (u8)(REG16(SPI_DATA) & 0xFFu);
