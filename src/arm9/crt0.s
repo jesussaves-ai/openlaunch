@@ -34,9 +34,36 @@ arm9_vectors:
     b   arm9_irq                @ 0x18 IRQ
     b   arm9_fiq                @ 0x1C FIQ
 
+/*
+ * Hardware bring-up beacon: show a solid Engine A backdrop in the given
+ * BGR555 colour. Uses only r0/r12 (no stack, no DTCM), so it is safe at the
+ * very first instruction. Enabled with `make CRT0_BEACON=1`.
+ *
+ *   magenta = entered arm9_reset
+ *   yellow  = DTCM base + CP15 control programmed
+ *   cyan    = ITCM/DTCM copies + BSS clear done (about to call arm9_main)
+ */
+    .macro  BEACON color
+    ldr     r12, =0x05000000
+    ldr     r0,  =\color
+    strh    r0,  [r12]
+    ldr     r12, =0x04000000
+    ldr     r0,  =0x00010000
+    str     r0,  [r12]
+    ldr     r12, =0x04000304
+    ldr     r0,  =0x0000820F
+    strh    r0,  [r12]
+    ldr     r12, =0x0400006C
+    mov     r0,  #0
+    strh    r0,  [r12]
+    .endm
+
     .global arm9_reset
     .type   arm9_reset, %function
 arm9_reset:
+.ifdef ENABLE_CRT0_BEACON
+    BEACON 0x7C1F               @ magenta
+.endif
     /*
      * Put DTCM at 0x0B000000 (16 KiB) before touching the stack. CP15 c9,c1,0:
      * bits[31:12] = base, bits[5:1] = size code (5 => 16 KiB), bit0 = enable.
@@ -53,6 +80,9 @@ arm9_reset:
 
     mov     r0, #0
     mcr     p15, 0, r0, c7, c10, 4      @ data synchronisation barrier
+.ifdef ENABLE_CRT0_BEACON
+    BEACON 0x03FF               @ yellow
+.endif
 
     /* Stacks: supervisor, IRQ and user/system, at the top of DTCM. */
     msr     cpsr_c, #0xD3
@@ -91,6 +121,9 @@ arm9_reset:
 6:  cmp     r0, r1
     blo     5b
 
+.ifdef ENABLE_CRT0_BEACON
+    BEACON 0x7FE0               @ cyan
+.endif
     bl      arm9_main
 7:  b       7b
 

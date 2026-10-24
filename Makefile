@@ -118,6 +118,14 @@ CFLAGS_ARM9 := $(CFLAGS_COMMON) -mcpu=arm946e-s -marm -mfloat-abi=soft
 ASFLAGS_ARM7 := $(CFLAGS_ARM7)
 ASFLAGS_ARM9 := $(CFLAGS_ARM9)
 
+# Hardware bring-up beacons: paint the Engine A backdrop at crt0 milestones
+# (magenta = entry, yellow = DTCM/CP15 done, cyan = segments/BSS done). Only
+# for hardware diagnosis; the default build is unchanged.
+ifeq ($(CRT0_BEACON),1)
+ASFLAGS_ARM9 += -Wa,--defsym,ENABLE_CRT0_BEACON=1
+endif
+
+
 # ---- Linker flags --------------------------------------------------------
 # Bare-metal link: our own crt0 supplies _start, and the linker scripts place
 # every section. -lgcc is linked for compiler intrinsics (__aeabi_*).
