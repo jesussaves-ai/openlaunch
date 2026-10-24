@@ -276,7 +276,9 @@ entry.
 
 This path only reads the SD card; it never writes NAND.
 
-1. `make rom` (default build).
+1. `make rom SAFE_HW=1` (hardware build: skips the not-yet-validated RTC/SD/
+   firmware/NAND/EXTKEY probes, which currently wedge a real DSi). The default
+   build keeps those probes for melonDS.
 2. Copy `build/openlaunch.nds` to the SD card root as `bootcode.dsi`.
 3. Boot the console and start `bootcode.dsi` from Unlaunch's file menu (last
    entry; scroll to the bottom) — or bind it to `NO BUTTON` in `OPTIONS`.

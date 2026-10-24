@@ -157,6 +157,28 @@ Consequences:
    Astronaut-style stack slide and the IPCSYNC-only route remain as fallbacks
    (the slide is disabled by default). See `docs/stage2_re.md`.
 
+### Hardware bring-up: first menu on a retail DSi (2026-10-24)
+
+`bootcode.dsi` now boots to the menu on real hardware. Four ARM7 fixes were
+needed (all found with on-screen markers + a bisected container):
+
+1. **ARM7 stacks/IWRAM moved to 0x03800000** (real ARM7 WRAM). Main RAM at
+   0x02300000 collides with the loader and black-screens the title.
+2. **Poll-only ARM7**: no DSi top-of-WRAM vector write and no IME in the title
+   environment (the loader owns that vector).
+3. **IPC FIFO reset** (disable -> enable) and no drain: an empty-FIFO read sets
+   the sticky error bit (observed `0xCF01`) and no traffic crosses. With this
+   the ARM9<->ARM7 request/reply path works (`TX=1 RX=00001000` PONG).
+4. **Bounded SPI busy-wait** so a flaky firmware chip cannot hang the ARM7.
+
+The menu only redraws on change now (VRAM tearing/flicker). `SAFE_HW=1` skips
+the RTC/SD/firmware/NAND/EXTKEY probes until their drivers are validated.
+
+Open hardware gaps, in order: SD/TMIO (hangs the bus on first access — blocks
+chainloading), EXTKEY query (header-based request stalls; compare with the raw
+PING path), RTC (LSB-first/wrong base; port Astronaut's MSB-first protocol),
+then firmware/NAND probes.
+
 ## 3. Recent work (C99 bootloader bring-up)
 
 * **Register widths** — `POSTFLG` is now an 8-bit store (a 32-bit write clobbers
