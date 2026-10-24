@@ -1512,6 +1512,13 @@ void menu_run(void)
     boot_cfg_defaults(&s_boot_cfg);
     s_boot_cfg_present = false;
     (void)menu_load_boot_cfg;
+#ifdef ENABLE_SD_PROBE
+    /* Hardware bring-up: single SD status transaction to test the TMIO clock. */
+    diag_query_sd(&diag);
+    console_printf(0, 8, CONSOLE_PAL_CYAN, "SDQ=%02X A9ROM=%04X",
+                   (unsigned)diag.sd_flags,
+                   (unsigned)REG16(SCFG_A9ROM));
+#endif
 #else
     menu_load_boot_cfg(&diag);
 #endif

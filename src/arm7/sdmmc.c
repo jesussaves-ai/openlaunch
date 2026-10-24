@@ -308,11 +308,19 @@ void sdmmc_enable_clock(void)
     u32 ext;
 
     /*
-     * Only a DSi in DSi mode (A9ROM == 0x01) owns the TMIO block. 0x03 is a
-     * DSi running an NDS title (DS compatibility) and 0x00 a legacy DS / hidden
-     * page; in both cases the SCFG page must not be reprogrammed.
+     * The TMIO block belongs to the DSi firmware whenever the console runs an
+     * NDS title (A9ROM == 0x03): never reprogram the page then.
+     *
+     * Hardware finding (2026-10-24): in a DSi title boot A9ROM can read 0x00
+     * even though the SCFG page is unlocked (SCFG_EXT.bit31). Gating on
+     * A9ROM == 1 therefore left the SD block unclocked and the first TMIO
+     * access wedged the bus. Accept the access gate as the authority, exactly
+     * like scfg_is_twl_mode() does.
      */
-    if (a9rom != SCFG_A9ROM_DSI_MODE) {
+    if (a9rom == SCFG_A9ROM_NDS_MODE) {
+        return;
+    }
+    if ((REG32(SCFG_EXT) & SCFG_EXT_SCFG_ACCESS) == 0u) {
         return;
     }
 
@@ -334,6 +342,17 @@ void sdmmc_init_controller(sdmmc_t *c)
 
     /* Enable the DSi block clock/power before touching any TMIO register. */
     sdmmc_enable_clock();
+
+    /*
+     * Card power-up delay after enabling the clock (Astronaut uses
+     * SWI 3 delays of 0x900 / 0x1200 before the first command).
+     */
+    {
+        volatile u32 spin = 0x00020000u;
+        while (spin != 0u) {
+            spin--;
+        }
+    }
 
     /* Slot select: bit0 chooses the SD card (0) or the onboard eMMC (1). */
     SD_W16(c->base, TMIO_REG_PORTSEL,

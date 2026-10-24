@@ -116,16 +116,24 @@ endif
 CFLAGS_ARM7 := $(CFLAGS_COMMON) -mcpu=arm7tdmi -marm -mfloat-abi=soft
 CFLAGS_ARM9 := $(CFLAGS_COMMON) -mcpu=arm946e-s -marm -mfloat-abi=soft
 
-ASFLAGS_ARM7 := $(CFLAGS_ARM7)
-ASFLAGS_ARM9 := $(CFLAGS_ARM9)
-
 # Hardware-safe build: skip the RTC/SD/firmware/NAND probes, BOOT.CFG and the
 # EXTKEY query. Their drivers are not yet validated on a real DSi and the first
 # access wedges the system (observed 2026-10-24). Default builds keep the full
 # feature set for melonDS.
 ifeq ($(SAFE_HW),1)
-CFLAGS_COMMON += -DENABLE_SAFE_BOOT
+CFLAGS_ARM7 += -DENABLE_SAFE_BOOT
+CFLAGS_ARM9 += -DENABLE_SAFE_BOOT
 endif
+
+# Hardware bring-up: one SD status transaction at menu start (tests whether the
+# TMIO block is clocked and the card responds).
+ifeq ($(SD_PROBE),1)
+CFLAGS_ARM9 += -DENABLE_SD_PROBE
+endif
+
+
+ASFLAGS_ARM7 := $(CFLAGS_ARM7)
+ASFLAGS_ARM9 := $(CFLAGS_ARM9)
 
 # Hardware bring-up beacons: paint the Engine A backdrop at crt0 milestones
 # (magenta = entry, yellow = DTCM/CP15 done, cyan = segments/BSS done). Only
