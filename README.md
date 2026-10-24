@@ -272,6 +272,28 @@ end-to-end: the staged test payload takes over the screen (green/blue), and
 the ARM7 performs the staged copy + branch before the ARM9 jumps to the new
 entry.
 
+#### Hardware smoke test (zero risk)
+
+This path only reads the SD card; it never writes NAND.
+
+1. `make rom` (default build).
+2. Copy `build/openlaunch.nds` to the SD card root as `bootcode.dsi`.
+3. Boot the console and start `bootcode.dsi` from Unlaunch's file menu (last
+   entry; scroll to the bottom) — or bind it to `NO BUTTON` in `OPTIONS`.
+4. The top screen should show:
+
+   ```
+   SCFG : DSI/TWL 32MB UNLOCKED
+   ARM7 : OK (1)
+   SD   : PRESENT RW ...
+   BOOT : NO BOOT.NDS
+   ```
+
+`ARM7 : OK (1)` is the dual-CPU proof (our ARM7 answers the menu's IPC
+self-test). `NAND : ABSENT` is expected on an encrypted retail NAND.
+If the ARM7 line is not `OK (1)`, that is the failure worth reporting — note
+the surrounding lines and how the payload was started.
+
 ## Repository layout
 
 ```text
